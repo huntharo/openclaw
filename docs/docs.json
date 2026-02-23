@@ -1009,6 +1009,7 @@
                 "pages": [
                   "tools/slash-commands",
                   "tools/skills",
+                  "tools/creating-skills",
                   "tools/skills-config",
                   "tools/clawhub",
                   "tools/plugin"
@@ -1539,6 +1540,7 @@
                 "pages": [
                   "zh-CN/tools/slash-commands",
                   "zh-CN/tools/skills",
+                  "zh-CN/tools/creating-skills",
                   "zh-CN/tools/skills-config",
                   "zh-CN/tools/clawhub",
                   "zh-CN/tools/plugin"
