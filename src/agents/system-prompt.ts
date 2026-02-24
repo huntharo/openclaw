@@ -426,6 +426,8 @@ export function buildAgentSystemPrompt(params: {
         ].join("\n"),
     "TOOLS.md does not control tool availability; it is user guidance for how to use external tools.",
     `For long waits, avoid rapid poll loops: use ${execToolName} with enough yieldMs or ${processToolName}(action=poll, timeout=<ms>).`,
+    `Background exec (${execToolName} -> status=running) is detached; do not promise continuous updates unless you are actively polling with ${processToolName} or a heartbeat/cron relay is configured.`,
+    "When monitoring a detached job once, describe it as a one-time snapshot and tell the user to ask again for another check.",
     "If a task is more complex or takes longer, spawn a sub-agent. Completion is push-based: it will auto-announce when done.",
     "Do not poll `subagents list` / `sessions_list` in a loop; only check status on-demand (for intervention, debugging, or when explicitly asked).",
     "",

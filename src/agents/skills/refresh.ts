@@ -142,6 +142,7 @@ export function ensureSkillsWatcher(params: { workspaceDir: string; config?: Ope
       : 250;
 
   const existing = watchers.get(workspaceDir);
+  const firstWatcherForWorkspace = !existing;
   if (!watchEnabled) {
     if (existing) {
       watchers.delete(workspaceDir);
@@ -204,4 +205,9 @@ export function ensureSkillsWatcher(params: { workspaceDir: string; config?: Ope
   });
 
   watchers.set(workspaceDir, state);
+  if (firstWatcherForWorkspace) {
+    // Force one refresh after process startup so persisted session snapshots
+    // pick up current skill docs even when no filesystem change event fires.
+    bumpSkillsSnapshotVersion({ workspaceDir, reason: "manual" });
+  }
 }

@@ -456,6 +456,22 @@ describe("runHeartbeatOnce", () => {
     }
   });
 
+  it("allows event-driven runs even when periodic heartbeat is not enabled for the agent", async () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: { heartbeat: { every: "30m" } },
+        list: [{ id: "main" }, { id: "ops", heartbeat: { every: "1h" } }],
+      },
+    };
+
+    const res = await runHeartbeatOnce({
+      cfg,
+      agentId: "main",
+      reason: "wake",
+    });
+    expect(res.status).toBe("ran");
+  });
+
   it("skips outside active hours", async () => {
     const cfg: OpenClawConfig = {
       agents: {

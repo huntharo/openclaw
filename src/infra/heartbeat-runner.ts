@@ -49,7 +49,7 @@ import {
   isExecCompletionEvent,
 } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
-import { resolveHeartbeatReasonKind } from "./heartbeat-reason.js";
+import { isHeartbeatEventDrivenReason, resolveHeartbeatReasonKind } from "./heartbeat-reason.js";
 import { resolveHeartbeatVisibility } from "./heartbeat-visibility.js";
 import {
   type HeartbeatRunResult,
@@ -571,18 +571,19 @@ export async function runHeartbeatOnce(opts: {
   const cfg = opts.cfg ?? loadConfig();
   const agentId = normalizeAgentId(opts.agentId ?? resolveDefaultAgentId(cfg));
   const heartbeat = opts.heartbeat ?? resolveHeartbeatConfig(cfg, agentId);
-  if (!heartbeatsEnabled) {
+  const eventDriven = isHeartbeatEventDrivenReason(opts.reason);
+  if (!heartbeatsEnabled && !eventDriven) {
     return { status: "skipped", reason: "disabled" };
   }
-  if (!isHeartbeatEnabledForAgent(cfg, agentId)) {
+  if (!isHeartbeatEnabledForAgent(cfg, agentId) && !eventDriven) {
     return { status: "skipped", reason: "disabled" };
   }
-  if (!resolveHeartbeatIntervalMs(cfg, undefined, heartbeat)) {
+  if (!resolveHeartbeatIntervalMs(cfg, undefined, heartbeat) && !eventDriven) {
     return { status: "skipped", reason: "disabled" };
   }
 
   const startedAt = opts.deps?.nowMs?.() ?? Date.now();
-  if (!isWithinActiveHours(cfg, heartbeat, startedAt)) {
+  if (!isWithinActiveHours(cfg, heartbeat, startedAt) && !eventDriven) {
     return { status: "skipped", reason: "quiet-hours" };
   }
 
@@ -1067,20 +1068,9 @@ export function startHeartbeatRunner(opts: {
         reason: "disabled",
       } satisfies HeartbeatRunResult;
     }
-    if (!heartbeatsEnabled) {
-      return {
-        status: "skipped",
-        reason: "disabled",
-      } satisfies HeartbeatRunResult;
-    }
-    if (state.agents.size === 0) {
-      return {
-        status: "skipped",
-        reason: "disabled",
-      } satisfies HeartbeatRunResult;
-    }
 
     const reason = params?.reason;
+    const eventDriven = isHeartbeatEventDrivenReason(reason);
     const requestedAgentId = params?.agentId ? normalizeAgentId(params.agentId) : undefined;
     const requestedSessionKey = params?.sessionKey?.trim() || undefined;
     const isInterval = reason === "interval";
@@ -1092,8 +1082,29 @@ export function startHeartbeatRunner(opts: {
       const targetAgentId = requestedAgentId ?? resolveAgentIdFromSessionKey(requestedSessionKey);
       const targetAgent = state.agents.get(targetAgentId);
       if (!targetAgent) {
-        scheduleNext();
-        return { status: "skipped", reason: "disabled" };
+        if (!eventDriven) {
+          scheduleNext();
+          return { status: "skipped", reason: "disabled" };
+        }
+        try {
+          const res = await runOnce({
+            cfg: state.cfg,
+            agentId: targetAgentId,
+            heartbeat: resolveHeartbeatConfig(state.cfg, targetAgentId),
+            reason,
+            sessionKey: requestedSessionKey,
+            deps: { runtime: state.runtime },
+          });
+          scheduleNext();
+          return res.status === "ran" ? { status: "ran", durationMs: Date.now() - startedAt } : res;
+        } catch (err) {
+          const errMsg = formatErrorMessage(err);
+          log.error(`heartbeat runner: targeted fallback runOnce threw unexpectedly: ${errMsg}`, {
+            error: errMsg,
+          });
+          scheduleNext();
+          return { status: "failed", reason: errMsg };
+        }
       }
       try {
         const res = await runOnce({
@@ -1118,6 +1129,19 @@ export function startHeartbeatRunner(opts: {
         scheduleNext();
         return { status: "failed", reason: errMsg };
       }
+    }
+
+    if (!heartbeatsEnabled) {
+      return {
+        status: "skipped",
+        reason: "disabled",
+      } satisfies HeartbeatRunResult;
+    }
+    if (state.agents.size === 0) {
+      return {
+        status: "skipped",
+        reason: "disabled",
+      } satisfies HeartbeatRunResult;
     }
 
     for (const agent of state.agents.values()) {

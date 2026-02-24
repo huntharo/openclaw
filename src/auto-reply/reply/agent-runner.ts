@@ -17,7 +17,9 @@ import {
 import type { TypingMode } from "../../config/types.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { defaultRuntime } from "../../runtime.js";
 import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-format.js";
 import {
@@ -58,10 +60,35 @@ import type { TypingController } from "./typing.js";
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
 const UNSCHEDULED_REMINDER_NOTE =
   "Note: I did not schedule a reminder in this turn, so this will not trigger automatically.";
+const logExecRelayDebug = createSubsystemLogger("agent/exec-relay-debug");
 const REMINDER_COMMITMENT_PATTERNS: RegExp[] = [
   /\b(?:i\s*['’]?ll|i will)\s+(?:make sure to\s+)?(?:remember|remind|ping|follow up|follow-up|check back|circle back)\b/i,
   /\b(?:i\s*['’]?ll|i will)\s+(?:set|create|schedule)\s+(?:a\s+)?reminder\b/i,
 ];
+
+function shouldLogExecRelayDebug(commandBody: string, sessionKey?: string): boolean {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DEBUG_EXEC_RELAY)) {
+    return false;
+  }
+  const match = process.env.OPENCLAW_DEBUG_EXEC_MATCH?.trim().toLowerCase();
+  if (!match) {
+    return true;
+  }
+  const haystack = `${sessionKey ?? ""}\n${commandBody}`.toLowerCase();
+  return haystack.includes(match);
+}
+
+function logExecRelayRunDebug(
+  enabled: boolean,
+  runId: string,
+  stage: string,
+  message: string,
+): void {
+  if (!enabled) {
+    return;
+  }
+  logExecRelayDebug.info(`runId=${runId} stage=${stage} ${message}`);
+}
 
 function hasUnbackedReminderCommitment(text: string): boolean {
   const normalized = text.toLowerCase();
@@ -126,6 +153,7 @@ export async function runReplyAgent(params: {
   shouldInjectGroupIntro: boolean;
   typingMode: TypingMode;
 }): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  const relayDebugEnabled = shouldLogExecRelayDebug(params.commandBody, params.sessionKey);
   const {
     commandBody,
     followupRun,
@@ -391,6 +419,16 @@ export async function runReplyAgent(params: {
       directlySentBlockKeys,
     } = runOutcome;
     let { didLogHeartbeatStrip, autoCompactionCompleted } = runOutcome;
+    logExecRelayRunDebug(
+      relayDebugEnabled,
+      runId,
+      "reply-run-result",
+      `payloadCount=${runResult.payloads?.length ?? 0} didSendViaMessagingTool=${
+        runResult.didSendViaMessagingTool ? "yes" : "no"
+      } sentTextCount=${runResult.messagingToolSentTexts?.length ?? 0} sentMediaCount=${
+        runResult.messagingToolSentMediaUrls?.length ?? 0
+      } sentTargetCount=${runResult.messagingToolSentTargets?.length ?? 0}`,
+    );
 
     if (
       shouldInjectGroupIntro &&
@@ -422,6 +460,12 @@ export async function runReplyAgent(params: {
       blockReplyPipeline.stop();
     }
     if (pendingToolTasks.size > 0) {
+      logExecRelayRunDebug(
+        relayDebugEnabled,
+        runId,
+        "reply-pending-tool-tasks",
+        `count=${pendingToolTasks.size}`,
+      );
       await Promise.allSettled(pendingToolTasks);
     }
 
@@ -492,6 +536,7 @@ export async function runReplyAgent(params: {
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0) {
+      logExecRelayRunDebug(relayDebugEnabled, runId, "reply-empty", "reason=no-run-payloads");
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 
@@ -514,8 +559,17 @@ export async function runReplyAgent(params: {
     });
     const { replyPayloads } = payloadResult;
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
+    logExecRelayRunDebug(
+      relayDebugEnabled,
+      runId,
+      "reply-filtered",
+      `inputPayloads=${payloadArray.length} outputPayloads=${replyPayloads.length} blockStreaming=${
+        blockStreamingEnabled ? "yes" : "no"
+      } directSentKeys=${directlySentBlockKeys?.size ?? 0}`,
+    );
 
     if (replyPayloads.length === 0) {
+      logExecRelayRunDebug(relayDebugEnabled, runId, "reply-empty", "reason=all-payloads-filtered");
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 

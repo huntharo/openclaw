@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+import { isTruthyEnvValue } from "../infra/env.js";
 import { type ExecHost, maxAsk, minSecurity, resolveSafeBins } from "../infra/exec-approvals.js";
 import { getTrustedSafeBinDirs } from "../infra/exec-safe-bin-trust.js";
 import {
@@ -8,6 +9,7 @@ import {
   resolveShellEnvFallbackTimeoutMs,
 } from "../infra/shell-env.js";
 import { logInfo } from "../logger.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseAgentSessionKey, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { markBackgrounded } from "./bash-process-registry.js";
 import { processGatewayAllowlist } from "./bash-tools.exec-host-gateway.js";
@@ -43,6 +45,27 @@ import {
   truncateMiddle,
 } from "./bash-tools.shared.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
+
+const logExecRelayDebug = createSubsystemLogger("agent/exec-relay-debug");
+
+function shouldLogExecRelayDebug(command: string, execCommand?: string): boolean {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DEBUG_EXEC_RELAY)) {
+    return false;
+  }
+  const match = process.env.OPENCLAW_DEBUG_EXEC_MATCH?.trim().toLowerCase();
+  if (!match) {
+    return true;
+  }
+  const haystack = `${command}\n${execCommand ?? command}`.toLowerCase();
+  return haystack.includes(match);
+}
+
+function logExecToolDebug(enabled: boolean, sessionId: string, stage: string, text: string): void {
+  if (!enabled) {
+    return;
+  }
+  logExecRelayDebug.info(`session=${sessionId} stage=${stage} ${text}`);
+}
 
 export type { BashSandboxConfig } from "./bash-tools.shared.js";
 export type {
@@ -210,7 +233,8 @@ export function createExecTool(
       if (!allowBackground && (backgroundRequested || yieldRequested)) {
         warnings.push("Warning: background execution is disabled; running synchronously.");
       }
-      const yieldWindow = allowBackground
+      const shouldYield = allowBackground && (backgroundRequested || yieldRequested);
+      const yieldWindow = shouldYield
         ? backgroundRequested
           ? 0
           : clampWithDefault(
@@ -434,6 +458,17 @@ export function createExecTool(
         timeoutSec: effectiveTimeout,
         onUpdate,
       });
+      const execDebugEnabled = shouldLogExecRelayDebug(params.command, execCommandOverride);
+      logExecToolDebug(
+        execDebugEnabled,
+        run.session.id,
+        "tool-run-start",
+        `pty=${usePty ? "yes" : "no"} allowBackground=${allowBackground ? "yes" : "no"} backgroundRequested=${
+          backgroundRequested ? "yes" : "no"
+        } yieldRequested=${yieldRequested ? "yes" : "no"} yieldWindowMs=${
+          yieldWindow ?? "sync"
+        } timeoutSec=${effectiveTimeout}`,
+      );
 
       let yielded = false;
       let yieldTimer: NodeJS.Timeout | null = null;
@@ -482,6 +517,14 @@ export function createExecTool(
           }
           yielded = true;
           markBackgrounded(run.session);
+          logExecToolDebug(
+            execDebugEnabled,
+            run.session.id,
+            "tool-yield-running",
+            `reason=${yieldWindow === 0 ? "background:true" : "yield-window"} pid=${
+              run.session.pid ?? "n/a"
+            }`,
+          );
           resolveRunning();
         };
 
@@ -495,6 +538,12 @@ export function createExecTool(
               }
               yielded = true;
               markBackgrounded(run.session);
+              logExecToolDebug(
+                execDebugEnabled,
+                run.session.id,
+                "tool-yield-running",
+                `reason=yield-window pid=${run.session.pid ?? "n/a"}`,
+              );
               resolveRunning();
             }, yieldWindow);
           }
@@ -505,13 +554,41 @@ export function createExecTool(
             if (yieldTimer) {
               clearTimeout(yieldTimer);
             }
+            logExecToolDebug(
+              execDebugEnabled,
+              run.session.id,
+              "tool-outcome",
+              `status=${outcome.status} yielded=${yielded ? "yes" : "no"} backgrounded=${
+                run.session.backgrounded ? "yes" : "no"
+              } exitCode=${outcome.exitCode ?? "null"} durationMs=${outcome.durationMs} aggregatedChars=${
+                outcome.aggregated.length
+              }`,
+            );
             if (yielded || run.session.backgrounded) {
+              logExecToolDebug(
+                execDebugEnabled,
+                run.session.id,
+                "tool-outcome-ignored",
+                "reason=already-returned-running",
+              );
               return;
             }
             if (outcome.status === "failed") {
+              logExecToolDebug(
+                execDebugEnabled,
+                run.session.id,
+                "tool-reject-failed",
+                `reason=${(outcome.reason ?? "Command failed.").slice(0, 400)}`,
+              );
               reject(new Error(outcome.reason ?? "Command failed."));
               return;
             }
+            logExecToolDebug(
+              execDebugEnabled,
+              run.session.id,
+              "tool-resolve-completed",
+              `aggregatedChars=${outcome.aggregated.length}`,
+            );
             resolve({
               content: [
                 {
@@ -532,7 +609,19 @@ export function createExecTool(
             if (yieldTimer) {
               clearTimeout(yieldTimer);
             }
+            logExecToolDebug(
+              execDebugEnabled,
+              run.session.id,
+              "tool-outcome-error",
+              `yielded=${yielded ? "yes" : "no"} backgrounded=${run.session.backgrounded ? "yes" : "no"} error=${String(err).slice(0, 400)}`,
+            );
             if (yielded || run.session.backgrounded) {
+              logExecToolDebug(
+                execDebugEnabled,
+                run.session.id,
+                "tool-outcome-error-ignored",
+                "reason=already-returned-running",
+              );
               return;
             }
             reject(err as Error);

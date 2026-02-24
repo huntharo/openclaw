@@ -69,6 +69,8 @@ describe("isCronSystemEvent", () => {
 
   it("returns false for exec completion events", () => {
     expect(isCronSystemEvent("Exec finished (gateway id=abc, code 0)")).toBe(false);
+    expect(isCronSystemEvent("Exec completed (abc123, code 0)")).toBe(false);
+    expect(isCronSystemEvent("Exec failed (abc123, signal SIGTERM)")).toBe(false);
   });
 
   it("returns true for real cron reminder content", () => {

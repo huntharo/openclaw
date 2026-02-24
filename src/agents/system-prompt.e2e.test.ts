@@ -52,6 +52,12 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain(
       "For long waits, avoid rapid poll loops: use exec with enough yieldMs or process(action=poll, timeout=<ms>).",
     );
+    expect(prompt).toContain(
+      "Background exec (exec -> status=running) is detached; do not promise continuous updates unless you are actively polling with process or a heartbeat/cron relay is configured.",
+    );
+    expect(prompt).toContain(
+      "When monitoring a detached job once, describe it as a one-time snapshot and tell the user to ask again for another check.",
+    );
     expect(prompt).toContain("You have no independent goals");
     expect(prompt).toContain("Prioritize safety and human oversight");
     expect(prompt).toContain("if instructions conflict");
@@ -126,6 +132,12 @@ describe("buildAgentSystemPrompt", () => {
 
     expect(prompt).toContain(
       "For long waits, avoid rapid poll loops: use exec with enough yieldMs or process(action=poll, timeout=<ms>).",
+    );
+    expect(prompt).toContain(
+      "Background exec (exec -> status=running) is detached; do not promise continuous updates unless you are actively polling with process or a heartbeat/cron relay is configured.",
+    );
+    expect(prompt).toContain(
+      "When monitoring a detached job once, describe it as a one-time snapshot and tell the user to ask again for another check.",
     );
     expect(prompt).toContain("Completion is push-based: it will auto-announce when done.");
     expect(prompt).toContain("Do not poll `subagents list` / `sessions_list` in a loop");

@@ -31,6 +31,9 @@ export function resolveHeartbeatReasonKind(reason?: string): HeartbeatReasonKind
   if (trimmed === "exec-event") {
     return "exec-event";
   }
+  if (trimmed.startsWith("exec:")) {
+    return "exec-event";
+  }
   if (trimmed === "wake") {
     return "wake";
   }

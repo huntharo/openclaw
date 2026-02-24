@@ -202,4 +202,39 @@ describe("startHeartbeatRunner", () => {
 
     runner.stop();
   });
+
+  it("routes event-driven targeted wakes even when that agent has no periodic heartbeat config", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+
+    const runSpy = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    const runner = startHeartbeatRunner({
+      cfg: {
+        agents: {
+          defaults: { heartbeat: { every: "30m" } },
+          list: [{ id: "main" }, { id: "ops" }],
+        },
+      } as OpenClawConfig,
+      runOnce: runSpy,
+    });
+
+    requestHeartbeatNow({
+      reason: "wake",
+      agentId: "ops",
+      sessionKey: "agent:ops:telegram:group:-100123",
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "ops",
+        reason: "wake",
+        sessionKey: "agent:ops:telegram:group:-100123",
+      }),
+    );
+
+    runner.stop();
+  });
 });

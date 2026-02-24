@@ -1,5 +1,9 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  resetHeartbeatWakeStateForTests,
+  setHeartbeatWakeHandler,
+} from "../infra/heartbeat-wake.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import { getFinishedSession, resetProcessRegistryForTests } from "./bash-process-registry.js";
 import { createExecTool, createProcessTool, execTool, processTool } from "./bash-tools.js";
@@ -58,6 +62,7 @@ async function runBackgroundEchoLines(lines: string[]) {
 beforeEach(() => {
   resetProcessRegistryForTests();
   resetSystemEventsForTest();
+  resetHeartbeatWakeStateForTests();
 });
 
 describe("exec tool backgrounding", () => {
@@ -107,6 +112,17 @@ describe("exec tool backgrounding", () => {
     },
     isWin ? 15_000 : 5_000,
   );
+
+  it("does not auto-background unless background/yield is explicitly requested", async () => {
+    const customBash = createExecTool({ backgroundMs: 10, timeoutSec: 5 });
+    const result = await customBash.execute("call-auto-yield", {
+      command: joinCommands([yieldDelayCmd, "echo done"]),
+    });
+
+    expect(result.details.status).toBe("completed");
+    const textBlock = result.content.find((chunk) => chunk.type === "text");
+    expect(textBlock?.text ?? "").toContain("done");
+  });
 
   it("supports explicit background", async () => {
     const result = await execTool.execute("call1", {
@@ -331,44 +347,65 @@ describe("exec exit codes", () => {
 });
 
 describe("exec notifyOnExit", () => {
-  it("enqueues a system event when a backgrounded exec exits", async () => {
-    const tool = createExecTool({
-      allowBackground: true,
-      backgroundMs: 0,
-      notifyOnExit: true,
-      sessionKey: "agent:main:main",
+  it("enqueues a system event and targeted wake when a backgrounded exec exits", async () => {
+    const wakeCalls: Array<{ reason?: string; sessionKey?: string }> = [];
+    const disposeWakeHandler = setHeartbeatWakeHandler(async (opts) => {
+      wakeCalls.push({ reason: opts.reason, sessionKey: opts.sessionKey });
+      return { status: "ran", durationMs: 1 };
     });
+    try {
+      const tool = createExecTool({
+        allowBackground: true,
+        backgroundMs: 0,
+        notifyOnExit: true,
+        sessionKey: "agent:main:main",
+      });
 
-    const result = await tool.execute("call1", {
-      command: echoAfterDelay("notify"),
-      background: true,
-    });
+      const result = await tool.execute("call1", {
+        command: echoAfterDelay("notify"),
+        background: true,
+      });
 
-    expect(result.details.status).toBe("running");
-    const sessionId = (result.details as { sessionId: string }).sessionId;
+      expect(result.details.status).toBe("running");
+      const sessionId = (result.details as { sessionId: string }).sessionId;
 
-    const prefix = sessionId.slice(0, 8);
-    let finished = getFinishedSession(sessionId);
-    let hasEvent = peekSystemEvents("agent:main:main").some((event) => event.includes(prefix));
-    await expect
-      .poll(
-        () => {
-          finished = getFinishedSession(sessionId);
-          hasEvent = peekSystemEvents("agent:main:main").some((event) => event.includes(prefix));
-          return Boolean(finished && hasEvent);
-        },
-        { timeout: isWin ? 12_000 : 5_000, interval: 20 },
-      )
-      .toBe(true);
-    if (!finished) {
-      finished = getFinishedSession(sessionId);
+      const prefix = sessionId.slice(0, 8);
+      let finished = getFinishedSession(sessionId);
+      let hasEvent = peekSystemEvents("agent:main:main").some((event) => event.includes(prefix));
+      await expect
+        .poll(
+          () => {
+            finished = getFinishedSession(sessionId);
+            hasEvent = peekSystemEvents("agent:main:main").some((event) => event.includes(prefix));
+            return Boolean(finished && hasEvent);
+          },
+          { timeout: isWin ? 12_000 : 5_000, interval: 20 },
+        )
+        .toBe(true);
+      if (!finished) {
+        finished = getFinishedSession(sessionId);
+      }
+      if (!hasEvent) {
+        hasEvent = peekSystemEvents("agent:main:main").some((event) => event.includes(prefix));
+      }
+
+      expect(finished).toBeTruthy();
+      expect(hasEvent).toBe(true);
+      await expect
+        .poll(
+          () =>
+            wakeCalls.some(
+              (call) =>
+                typeof call.reason === "string" &&
+                call.reason.startsWith("exec:") &&
+                call.sessionKey === "agent:main:main",
+            ),
+          { timeout: isWin ? 12_000 : 5_000, interval: 20 },
+        )
+        .toBe(true);
+    } finally {
+      disposeWakeHandler();
     }
-    if (!hasEvent) {
-      hasEvent = peekSystemEvents("agent:main:main").some((event) => event.includes(prefix));
-    }
-
-    expect(finished).toBeTruthy();
-    expect(hasEvent).toBe(true);
   });
 
   it("skips no-op completion events when command succeeds without output", async () => {

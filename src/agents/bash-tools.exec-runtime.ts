@@ -1,10 +1,13 @@
 import path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
+import { isTruthyEnvValue } from "../infra/env.js";
 import type { ExecAsk, ExecHost, ExecSecurity } from "../infra/exec-approvals.js";
 import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
 import { mergePathPrepend } from "../infra/path-prepend.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import type { ProcessSession } from "./bash-process-registry.js";
 import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
@@ -97,6 +100,125 @@ export const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
 export const DEFAULT_APPROVAL_REQUEST_TIMEOUT_MS = 130_000;
 const DEFAULT_APPROVAL_RUNNING_NOTICE_MS = 10_000;
 const APPROVAL_SLUG_LENGTH = 8;
+const logExecRelayDebug = createSubsystemLogger("agent/exec-relay-debug");
+const DEFAULT_EXEC_RELAY_DEBUG_CHUNK_CHARS = 2000;
+const MIN_EXEC_RELAY_DEBUG_CHUNK_CHARS = 80;
+const MAX_EXEC_RELAY_DEBUG_CHUNK_CHARS = 20_000;
+
+type ExecRelayDebugState = {
+  enabled: boolean;
+  chunkChars: number;
+  breakEnabled: boolean;
+  breakStage?: string;
+  breakMatch?: string;
+  breakConsumed: boolean;
+};
+
+function resolveExecRelayDebugChunkChars() {
+  return clampWithDefault(
+    readEnvInt("OPENCLAW_DEBUG_EXEC_CHUNK_CHARS"),
+    DEFAULT_EXEC_RELAY_DEBUG_CHUNK_CHARS,
+    MIN_EXEC_RELAY_DEBUG_CHUNK_CHARS,
+    MAX_EXEC_RELAY_DEBUG_CHUNK_CHARS,
+  );
+}
+
+function sanitizeDebugLogText(value: string, maxChars: number) {
+  const trimmed = value.length <= maxChars ? value : `${value.slice(0, maxChars)}…`;
+  return JSON.stringify(trimmed);
+}
+
+function resolveExecRelayDebugState(params: {
+  command: string;
+  execCommand: string;
+  sessionId: string;
+  workdir: string;
+  usePty: boolean;
+  hasSandbox: boolean;
+  timeoutSec: number;
+}): ExecRelayDebugState {
+  const enabled = isTruthyEnvValue(process.env.OPENCLAW_DEBUG_EXEC_RELAY);
+  if (!enabled) {
+    return {
+      enabled: false,
+      chunkChars: DEFAULT_EXEC_RELAY_DEBUG_CHUNK_CHARS,
+      breakEnabled: false,
+      breakConsumed: false,
+    };
+  }
+
+  const match = process.env.OPENCLAW_DEBUG_EXEC_MATCH?.trim().toLowerCase();
+  if (match) {
+    const haystack = `${params.command}\n${params.execCommand}`.toLowerCase();
+    if (!haystack.includes(match)) {
+      return {
+        enabled: false,
+        chunkChars: DEFAULT_EXEC_RELAY_DEBUG_CHUNK_CHARS,
+        breakEnabled: false,
+        breakConsumed: false,
+      };
+    }
+  }
+
+  const chunkChars = resolveExecRelayDebugChunkChars();
+  const breakEnabled = isTruthyEnvValue(process.env.OPENCLAW_DEBUG_EXEC_BREAK);
+  const breakStage = process.env.OPENCLAW_DEBUG_EXEC_BREAK_STAGE?.trim().toLowerCase() || undefined;
+  const breakMatch = process.env.OPENCLAW_DEBUG_EXEC_BREAK_MATCH?.trim().toLowerCase() || undefined;
+
+  logExecRelayDebug.info(
+    `enabled session=${params.sessionId} pty=${params.usePty ? "yes" : "no"} sandbox=${
+      params.hasSandbox ? "yes" : "no"
+    } timeoutSec=${params.timeoutSec} workdir=${params.workdir} command=${sanitizeDebugLogText(
+      params.command,
+      chunkChars,
+    )} execCommand=${sanitizeDebugLogText(params.execCommand, chunkChars)}`,
+  );
+
+  return {
+    enabled: true,
+    chunkChars,
+    breakEnabled,
+    breakStage,
+    breakMatch,
+    breakConsumed: false,
+  };
+}
+
+function maybeBreakExecRelayDebug(
+  state: ExecRelayDebugState,
+  stage: string,
+  matchText?: string,
+): void {
+  if (!state.enabled || !state.breakEnabled || state.breakConsumed) {
+    return;
+  }
+  const stageNeedle = state.breakStage;
+  if (stageNeedle && stageNeedle !== stage.toLowerCase()) {
+    return;
+  }
+  if (state.breakMatch) {
+    const haystack = (matchText ?? "").toLowerCase();
+    if (!haystack.includes(state.breakMatch)) {
+      return;
+    }
+  }
+  state.breakConsumed = true;
+  logExecRelayDebug.warn(`debugger break requested at stage=${stage}`);
+  // oxlint-disable-next-line eslint(no-debugger)
+  debugger;
+}
+
+function emitExecRelayDebugLog(
+  state: ExecRelayDebugState,
+  sessionId: string,
+  stage: string,
+  text: string,
+) {
+  if (!state.enabled) {
+    return;
+  }
+  logExecRelayDebug.info(`session=${sessionId} stage=${stage} ${text}`);
+}
 
 export const execSchema = Type.Object({
   command: Type.String({ description: "Shell command to execute" }),
@@ -247,7 +369,10 @@ function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "faile
     ? `Exec ${status} (${session.id.slice(0, 8)}, ${exitLabel}) :: ${output}`
     : `Exec ${status} (${session.id.slice(0, 8)}, ${exitLabel})`;
   enqueueSystemEvent(summary, { sessionKey });
-  requestHeartbeatNow({ reason: `exec:${session.id}:exit` });
+  requestHeartbeatNow({
+    reason: `exec:${session.id}:exit`,
+    sessionKey,
+  });
 }
 
 export function createApprovalSlug(id: string) {
@@ -273,7 +398,7 @@ export function emitExecSystemEvent(
     return;
   }
   enqueueSystemEvent(text, { sessionKey, contextKey: opts.contextKey });
-  requestHeartbeatNow({ reason: "exec-event" });
+  requestHeartbeatNow({ reason: "exec-event", sessionKey });
 }
 
 export async function runExecProcess(opts: {
@@ -299,7 +424,26 @@ export async function runExecProcess(opts: {
   const startedAt = Date.now();
   const sessionId = createSessionSlug();
   const execCommand = opts.execCommand ?? opts.command;
+  const execEnv: Record<string, string> = { ...opts.env };
+  const execSessionKey = opts.sessionKey?.trim();
+  if (execSessionKey) {
+    if (!execEnv.OPENCLAW_SESSION_KEY) {
+      execEnv.OPENCLAW_SESSION_KEY = execSessionKey;
+    }
+    if (!execEnv.OPENCLAW_AGENT_ID) {
+      execEnv.OPENCLAW_AGENT_ID = resolveAgentIdFromSessionKey(execSessionKey);
+    }
+  }
   const supervisor = getProcessSupervisor();
+  const relayDebugState = resolveExecRelayDebugState({
+    command: opts.command,
+    execCommand,
+    sessionId,
+    workdir: opts.workdir,
+    usePty: opts.usePty,
+    hasSandbox: Boolean(opts.sandbox),
+    timeoutSec: opts.timeoutSec,
+  });
 
   const session: ProcessSession = {
     id: sessionId,
@@ -350,9 +494,32 @@ export async function runExecProcess(opts: {
     });
   };
 
+  let stdoutChunkCount = 0;
+  let stderrChunkCount = 0;
+  const logStreamChunk = (stream: "stdout" | "stderr", chunk: string, stage = "chunk") => {
+    if (!chunk) {
+      return;
+    }
+    const count = stream === "stdout" ? (stdoutChunkCount += 1) : (stderrChunkCount += 1);
+    emitExecRelayDebugLog(
+      relayDebugState,
+      sessionId,
+      `${stream}-${stage}`,
+      `index=${count} chars=${chunk.length} text=${sanitizeDebugLogText(
+        chunk,
+        relayDebugState.chunkChars,
+      )}`,
+    );
+    maybeBreakExecRelayDebug(relayDebugState, `${stream}-${stage}`, chunk);
+  };
+
   const handleStdout = (data: string) => {
     const str = sanitizeBinaryOutput(data.toString());
+    if (!str) {
+      return;
+    }
     for (const chunk of chunkString(str)) {
+      logStreamChunk("stdout", chunk);
       appendOutput(session, "stdout", chunk);
       emitUpdate();
     }
@@ -360,7 +527,11 @@ export async function runExecProcess(opts: {
 
   const handleStderr = (data: string) => {
     const str = sanitizeBinaryOutput(data.toString());
+    if (!str) {
+      return;
+    }
     for (const chunk of chunkString(str)) {
+      logStreamChunk("stderr", chunk);
       appendOutput(session, "stderr", chunk);
       emitUpdate();
     }
@@ -394,7 +565,7 @@ export async function runExecProcess(opts: {
             containerName: opts.sandbox.containerName,
             command: execCommand,
             workdir: opts.containerWorkdir ?? opts.sandbox.containerWorkdir,
-            env: opts.env,
+            env: execEnv,
             tty: opts.usePty,
           }),
         ],
@@ -409,17 +580,32 @@ export async function runExecProcess(opts: {
         mode: "pty" as const,
         ptyCommand: execCommand,
         childFallbackArgv: childArgv,
-        env: opts.env,
+        env: execEnv,
         stdinMode: "pipe-open" as const,
       };
     }
     return {
       mode: "child" as const,
       argv: childArgv,
-      env: opts.env,
+      env: execEnv,
       stdinMode: "pipe-closed" as const,
     };
   })();
+  emitExecRelayDebugLog(
+    relayDebugState,
+    sessionId,
+    "spawn-spec",
+    spawnSpec.mode === "pty"
+      ? `mode=pty command=${sanitizeDebugLogText(spawnSpec.ptyCommand, relayDebugState.chunkChars)}`
+      : `mode=child argv=${sanitizeDebugLogText(spawnSpec.argv.join(" "), relayDebugState.chunkChars)} stdinMode=${
+          spawnSpec.stdinMode
+        }`,
+  );
+  maybeBreakExecRelayDebug(
+    relayDebugState,
+    "spawn-spec",
+    spawnSpec.mode === "pty" ? spawnSpec.ptyCommand : spawnSpec.argv.join(" "),
+  );
 
   let managedRun: ManagedRun | null = null;
   let usingPty = spawnSpec.mode === "pty";
@@ -427,11 +613,24 @@ export async function runExecProcess(opts: {
 
   const onSupervisorStdout = (chunk: string) => {
     if (usingPty) {
+      logStreamChunk("stdout", chunk, "pty-raw");
       const { cleaned, requests } = stripDsrRequests(chunk);
+      if (requests > 0) {
+        emitExecRelayDebugLog(
+          relayDebugState,
+          sessionId,
+          "pty-dsr",
+          `requests=${requests} cleanedChars=${cleaned.length}`,
+        );
+        maybeBreakExecRelayDebug(relayDebugState, "pty-dsr", chunk);
+      }
       if (requests > 0 && managedRun?.stdin) {
         for (let i = 0; i < requests; i += 1) {
           managedRun.stdin.write(cursorResponse);
         }
+      }
+      if (cleaned !== chunk) {
+        logStreamChunk("stdout", cleaned, "pty-clean");
       }
       handleStdout(cleaned);
       return;
@@ -452,6 +651,13 @@ export async function runExecProcess(opts: {
       onStdout: onSupervisorStdout,
       onStderr: handleStderr,
     };
+    emitExecRelayDebugLog(
+      relayDebugState,
+      sessionId,
+      "spawn-start",
+      `backend=${spawnBase.backendId} timeoutMs=${spawnBase.timeoutMs ?? 0} cwd=${opts.workdir}`,
+    );
+    maybeBreakExecRelayDebug(relayDebugState, "spawn-start", execCommand);
     managedRun =
       spawnSpec.mode === "pty"
         ? await supervisor.spawn({
@@ -465,7 +671,21 @@ export async function runExecProcess(opts: {
             argv: spawnSpec.argv,
             stdinMode: spawnSpec.stdinMode,
           });
+    emitExecRelayDebugLog(
+      relayDebugState,
+      sessionId,
+      "spawn-ready",
+      `mode=${spawnSpec.mode} pid=${managedRun.pid ?? "n/a"} usingPty=${usingPty ? "yes" : "no"}`,
+    );
+    maybeBreakExecRelayDebug(relayDebugState, "spawn-ready", String(managedRun.pid ?? ""));
   } catch (err) {
+    emitExecRelayDebugLog(
+      relayDebugState,
+      sessionId,
+      "spawn-error",
+      `mode=${spawnSpec.mode} error=${sanitizeDebugLogText(String(err), relayDebugState.chunkChars)}`,
+    );
+    maybeBreakExecRelayDebug(relayDebugState, "spawn-error", String(err));
     if (spawnSpec.mode === "pty") {
       const warning = `Warning: PTY spawn failed (${String(err)}); retrying without PTY for \`${opts.command}\`.`;
       logWarn(
@@ -489,7 +709,25 @@ export async function runExecProcess(opts: {
           onStdout: handleStdout,
           onStderr: handleStderr,
         });
+        emitExecRelayDebugLog(
+          relayDebugState,
+          sessionId,
+          "pty-fallback-ready",
+          `pid=${managedRun.pid ?? "n/a"} mode=child`,
+        );
+        maybeBreakExecRelayDebug(
+          relayDebugState,
+          "pty-fallback-ready",
+          String(managedRun.pid ?? ""),
+        );
       } catch (retryErr) {
+        emitExecRelayDebugLog(
+          relayDebugState,
+          sessionId,
+          "pty-fallback-error",
+          `error=${sanitizeDebugLogText(String(retryErr), relayDebugState.chunkChars)}`,
+        );
+        maybeBreakExecRelayDebug(relayDebugState, "pty-fallback-error", String(retryErr));
         markExited(session, null, null, "failed");
         maybeNotifyOnExit(session, "failed");
         throw retryErr;
@@ -502,6 +740,13 @@ export async function runExecProcess(opts: {
   }
   session.stdin = managedRun.stdin;
   session.pid = managedRun.pid;
+  emitExecRelayDebugLog(
+    relayDebugState,
+    sessionId,
+    "session-linked",
+    `pid=${session.pid ?? "n/a"} stdin=${session.stdin ? "yes" : "no"}`,
+  );
+  maybeBreakExecRelayDebug(relayDebugState, "session-linked", String(session.pid ?? ""));
 
   const promise = managedRun
     .wait()
@@ -516,6 +761,19 @@ export async function runExecProcess(opts: {
         session.stdin.destroyed = true;
       }
       const aggregated = session.aggregated.trim();
+      emitExecRelayDebugLog(
+        relayDebugState,
+        sessionId,
+        "wait-exit",
+        `reason=${exit.reason} status=${status} exitCode=${exit.exitCode ?? "null"} signal=${
+          exit.exitSignal ?? "null"
+        } durationMs=${durationMs} aggregatedChars=${aggregated.length}`,
+      );
+      maybeBreakExecRelayDebug(
+        relayDebugState,
+        "wait-exit",
+        `${exit.reason} ${exit.exitCode ?? ""} ${exit.exitSignal ?? ""}`,
+      );
       if (status === "completed") {
         const exitCode = exit.exitCode ?? 0;
         const exitMsg = exitCode !== 0 ? `\n\n(Command exited with code ${exitCode})` : "";
@@ -551,6 +809,15 @@ export async function runExecProcess(opts: {
       maybeNotifyOnExit(session, "failed");
       const aggregated = session.aggregated.trim();
       const message = aggregated ? `${aggregated}\n\n${String(err)}` : String(err);
+      emitExecRelayDebugLog(
+        relayDebugState,
+        sessionId,
+        "wait-error",
+        `error=${sanitizeDebugLogText(String(err), relayDebugState.chunkChars)} aggregatedChars=${
+          aggregated.length
+        }`,
+      );
+      maybeBreakExecRelayDebug(relayDebugState, "wait-error", String(err));
       return {
         status: "failed",
         exitCode: null,

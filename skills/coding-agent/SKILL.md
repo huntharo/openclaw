@@ -69,7 +69,7 @@ bash pty:true workdir:~/Projects/myproject command:"codex exec 'Add error handli
 
 ## The Pattern: workdir + background + pty
 
-For longer tasks, use background mode with PTY:
+For longer tasks, use background mode with PTY when you intentionally want detached execution:
 
 ```bash
 # Start agent in target directory (with PTY!)
@@ -93,6 +93,21 @@ process action:kill sessionId:XXX
 ```
 
 **Why workdir matters:** Agent wakes up in a focused directory, doesn't wander off reading unrelated files (like your soul.md 😅).
+
+---
+
+## Foreground vs Background (Important)
+
+- Foreground (`background:false`, no `yieldMs`):
+  - Exec stays attached to the current turn.
+  - Final output can be relayed in the same chat response.
+  - Prefer this when the user expects a direct "done" reply in the same conversation flow.
+
+- Background (`background:true` or `yieldMs`):
+  - Exec detaches and returns early with `status=running` + `sessionId`.
+  - Final output is not automatically relayed by that same tool call.
+  - You must monitor via `process action:poll/log` (or rely on a separate wake/heartbeat flow) and relay updates yourself.
+  - Prefer this for long jobs where detached execution is acceptable.
 
 ---
 
@@ -248,7 +263,16 @@ When you spawn coding agents in the background, keep the user in the loop.
   - the agent finishes (include what changed + where)
 - If you kill a session, immediately say you killed it and why.
 
-This prevents the user from seeing only "Agent failed before reply" and having no idea what happened.
+Important: background mode does not stream final output back automatically. Do not promise milestone/final updates unless you are actively monitoring with `process` and relaying them.
+
+### Monitoring Semantics (User-Facing Contract)
+
+- `monitor that job` is a one-shot status check unless you explicitly keep polling in the same turn.
+- Do not say "I'll keep tailing" or "I'll post the next update automatically" unless you actually started a loop (repeated `process action:poll` with wait) or a heartbeat/cron relay exists.
+- If you only did one check, say that plainly and tell the user how to continue:
+  - "I checked once. Ask `monitor that job` again for another snapshot."
+  - "For automatic updates, enable heartbeat/cron relay."
+- If the job is backgrounded and interactive input may be needed, remind the user that questions from the coding tool are only seen when polled/logged.
 
 ---
 
@@ -272,6 +296,8 @@ When completely finished, run: openclaw system event --text \"Done: Built todos 
 ```
 
 This triggers an immediate wake event — Skippy gets pinged in seconds, not 10 minutes.
+
+Note: wake/system events start a new handling cycle. They are not the same as streaming the original backgrounded tool call's output back through the original turn.
 
 ---
 
