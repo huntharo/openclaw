@@ -2,7 +2,7 @@ import { sequentialize } from "@grammyjs/runner";
 import { apiThrottler } from "@grammyjs/transformer-throttler";
 import { type Message, type UserFromGetMe } from "@grammyjs/types";
 import type { ApiClientOptions } from "grammy";
-import { Bot, webhookCallback } from "grammy";
+import { Bot } from "grammy";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { resolveTextChunkLimit } from "../auto-reply/chunk.js";
 import { isAbortRequestText } from "../auto-reply/reply/abort.js";
@@ -424,8 +424,4 @@ export function createTelegramBot(opts: TelegramBotOptions) {
   });
 
   return bot;
-}
-
-export function createTelegramWebhookCallback(bot: Bot, path = "/telegram-webhook") {
-  return { path, handler: webhookCallback(bot, "http") };
 }

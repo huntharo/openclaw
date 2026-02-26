@@ -163,7 +163,6 @@ vi.mock("grammy", () => ({
     }
   },
   InputFile: class {},
-  webhookCallback: vi.fn(),
 }));
 
 const sequentializeMiddleware = vi.fn();
