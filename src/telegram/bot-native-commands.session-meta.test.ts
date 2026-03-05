@@ -5,32 +5,27 @@ import { createNativeCommandTestParams } from "./bot-native-commands.test-helper
 
 // All mocks scoped to this file only — does not affect bot-native-commands.test.ts
 
-type ResolveConfiguredAcpBindingRecordFn =
-  typeof import("../acp/persistent-bindings.js").resolveConfiguredAcpBindingRecord;
-type EnsureConfiguredAcpBindingSessionFn =
-  typeof import("../acp/persistent-bindings.js").ensureConfiguredAcpBindingSession;
-
-const persistentBindingMocks = vi.hoisted(() => ({
-  resolveConfiguredAcpBindingRecord: vi.fn<ResolveConfiguredAcpBindingRecordFn>(() => null),
-  ensureConfiguredAcpBindingSession: vi.fn<EnsureConfiguredAcpBindingSessionFn>(async () => ({
-    ok: true,
-    sessionKey: "agent:codex:acp:binding:telegram:default:seed",
-  })),
+const persistentBindingRouteMocks = vi.hoisted(() => ({
+  resolveConfiguredAcpRoute: vi.fn(),
+  ensureConfiguredAcpRouteReady: vi.fn(),
 }));
 const sessionMocks = vi.hoisted(() => ({
   recordSessionMetaFromInbound: vi.fn(),
   resolveStorePath: vi.fn(),
 }));
 const replyMocks = vi.hoisted(() => ({
-  dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => undefined),
+  dispatchReplyWithBufferedBlockDispatcher: vi.fn(),
+}));
+const deliveryMocks = vi.hoisted(() => ({
+  deliverReplies: vi.fn(),
 }));
 
-vi.mock("../acp/persistent-bindings.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../acp/persistent-bindings.js")>();
+vi.mock("../acp/persistent-bindings.route.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../acp/persistent-bindings.route.js")>();
   return {
     ...actual,
-    resolveConfiguredAcpBindingRecord: persistentBindingMocks.resolveConfiguredAcpBindingRecord,
-    ensureConfiguredAcpBindingSession: persistentBindingMocks.ensureConfiguredAcpBindingSession,
+    resolveConfiguredAcpRoute: persistentBindingRouteMocks.resolveConfiguredAcpRoute,
+    ensureConfiguredAcpRouteReady: persistentBindingRouteMocks.ensureConfiguredAcpRouteReady,
   };
 });
 vi.mock("../config/sessions.js", () => ({
@@ -59,7 +54,7 @@ vi.mock("../plugins/commands.js", () => ({
   executePluginCommand: vi.fn(async () => ({ text: "ok" })),
 }));
 vi.mock("./bot/delivery.js", () => ({
-  deliverReplies: vi.fn(async () => ({ delivered: true })),
+  deliverReplies: deliveryMocks.deliverReplies,
 }));
 
 function createDeferred<T>() {
@@ -106,28 +101,30 @@ function registerAndResolveStatusHandler(params: {
   cfg: OpenClawConfig;
   allowFrom?: string[];
   groupAllowFrom?: string[];
+  useAccessGroups?: boolean;
 }): {
   handler: TelegramCommandHandler;
   sendMessage: ReturnType<typeof vi.fn>;
 } {
-  const { cfg, allowFrom, groupAllowFrom } = params;
   const commandHandlers = new Map<string, TelegramCommandHandler>();
   const sendMessage = vi.fn().mockResolvedValue(undefined);
+  const baseParams = createNativeCommandTestParams({
+    cfg: params.cfg,
+    allowFrom: params.allowFrom ?? ["*"],
+    groupAllowFrom: params.groupAllowFrom ?? [],
+    useAccessGroups: params.useAccessGroups,
+    bot: {
+      api: {
+        setMyCommands: vi.fn().mockResolvedValue(undefined),
+        sendMessage,
+      },
+      command: vi.fn((name: string, cb: TelegramCommandHandler) => {
+        commandHandlers.set(name, cb);
+      }),
+    } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+  });
   registerTelegramNativeCommands({
-    ...createNativeCommandTestParams({
-      bot: {
-        api: {
-          setMyCommands: vi.fn().mockResolvedValue(undefined),
-          sendMessage,
-        },
-        command: vi.fn((name: string, cb: TelegramCommandHandler) => {
-          commandHandlers.set(name, cb);
-        }),
-      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
-      cfg,
-      allowFrom: allowFrom ?? ["*"],
-      groupAllowFrom: groupAllowFrom ?? [],
-    }),
+    ...baseParams,
   });
 
   const handler = commandHandlers.get("status");
@@ -135,54 +132,21 @@ function registerAndResolveStatusHandler(params: {
   return { handler: handler as TelegramCommandHandler, sendMessage };
 }
 
-function registerAndResolveCommandHandler(params: {
-  commandName: string;
-  cfg: OpenClawConfig;
-  allowFrom?: string[];
-  groupAllowFrom?: string[];
-  useAccessGroups?: boolean;
-}): {
-  handler: TelegramCommandHandler;
-  sendMessage: ReturnType<typeof vi.fn>;
-} {
-  const { commandName, cfg, allowFrom, groupAllowFrom, useAccessGroups } = params;
-  const commandHandlers = new Map<string, TelegramCommandHandler>();
-  const sendMessage = vi.fn().mockResolvedValue(undefined);
-  registerTelegramNativeCommands({
-    ...createNativeCommandTestParams({
-      bot: {
-        api: {
-          setMyCommands: vi.fn().mockResolvedValue(undefined),
-          sendMessage,
-        },
-        command: vi.fn((name: string, cb: TelegramCommandHandler) => {
-          commandHandlers.set(name, cb);
-        }),
-      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
-      cfg,
-      allowFrom: allowFrom ?? [],
-      groupAllowFrom: groupAllowFrom ?? [],
-      useAccessGroups: useAccessGroups ?? true,
-    }),
-  });
-
-  const handler = commandHandlers.get(commandName);
-  expect(handler).toBeTruthy();
-  return { handler: handler as TelegramCommandHandler, sendMessage };
-}
-
 describe("registerTelegramNativeCommands — session metadata", () => {
   beforeEach(() => {
-    persistentBindingMocks.resolveConfiguredAcpBindingRecord.mockClear();
-    persistentBindingMocks.resolveConfiguredAcpBindingRecord.mockReturnValue(null);
-    persistentBindingMocks.ensureConfiguredAcpBindingSession.mockClear();
-    persistentBindingMocks.ensureConfiguredAcpBindingSession.mockResolvedValue({
-      ok: true,
-      sessionKey: "agent:codex:acp:binding:telegram:default:seed",
-    });
+    persistentBindingRouteMocks.resolveConfiguredAcpRoute.mockReset();
+    persistentBindingRouteMocks.resolveConfiguredAcpRoute.mockImplementation(
+      (params: { route: unknown }) => ({
+        configuredBinding: null,
+        route: params.route,
+      }),
+    );
+    persistentBindingRouteMocks.ensureConfiguredAcpRouteReady.mockReset();
+    persistentBindingRouteMocks.ensureConfiguredAcpRouteReady.mockResolvedValue({ ok: true });
     sessionMocks.recordSessionMetaFromInbound.mockClear().mockResolvedValue(undefined);
     sessionMocks.resolveStorePath.mockClear().mockReturnValue("/tmp/openclaw-sessions.json");
     replyMocks.dispatchReplyWithBufferedBlockDispatcher.mockClear().mockResolvedValue(undefined);
+    deliveryMocks.deliverReplies.mockClear().mockResolvedValue({ delivered: true });
   });
 
   it("calls recordSessionMetaFromInbound after a native slash command", async () => {
@@ -220,35 +184,61 @@ describe("registerTelegramNativeCommands — session metadata", () => {
     expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
+  it("injects canonical approval buttons for native command replies", async () => {
+    replyMocks.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+      async ({
+        dispatcherOptions,
+      }: {
+        dispatcherOptions: { deliver: (payload: unknown) => unknown };
+      }) => {
+        await dispatcherOptions.deliver({
+          text: "Mode: foreground\nRun: /approve 7f423fdc allow-once (or allow-always / deny).",
+        });
+      },
+    );
+
+    const { handler } = registerAndResolveStatusHandler({ cfg: {} });
+    await handler(buildStatusCommandContext());
+
+    const deliveredPayload = (
+      deliveryMocks.deliverReplies.mock.calls[0]?.[0] as {
+        replies?: Array<Record<string, unknown>>;
+      }
+    )?.replies?.[0];
+    expect(deliveredPayload).toBeTruthy();
+    expect(deliveredPayload?.["channelData"]).toEqual({
+      telegram: {
+        buttons: [
+          [
+            { text: "Allow Once", callback_data: "/approve 7f423fdc allow-once" },
+            { text: "Allow Always", callback_data: "/approve 7f423fdc allow-always" },
+          ],
+          [{ text: "Deny", callback_data: "/approve 7f423fdc deny" }],
+        ],
+      },
+    });
+  });
+
   it("routes Telegram native commands through configured ACP topic bindings", async () => {
     const boundSessionKey = "agent:codex:acp:binding:telegram:default:feedface";
-    persistentBindingMocks.resolveConfiguredAcpBindingRecord.mockReturnValue({
-      spec: {
-        channel: "telegram",
-        accountId: "default",
-        conversationId: "-1001234567890:topic:42",
-        parentConversationId: "-1001234567890",
-        agentId: "codex",
-        mode: "persistent",
-      },
-      record: {
-        bindingId: "config:acp:telegram:default:-1001234567890:topic:42",
-        targetSessionKey: boundSessionKey,
-        targetKind: "session",
-        conversation: {
-          channel: "telegram",
-          accountId: "default",
-          conversationId: "-1001234567890:topic:42",
-          parentConversationId: "-1001234567890",
+    persistentBindingRouteMocks.resolveConfiguredAcpRoute.mockImplementation(
+      (params: { route: { accountId: string; sessionKey: string; agentId: string } }) => ({
+        configuredBinding: {
+          spec: {
+            conversationId: "-1001234567890:topic:42",
+          },
+          record: {
+            targetSessionKey: boundSessionKey,
+          },
         },
-        status: "active",
-        boundAt: 0,
-      },
-    });
-    persistentBindingMocks.ensureConfiguredAcpBindingSession.mockResolvedValue({
-      ok: true,
-      sessionKey: boundSessionKey,
-    });
+        route: {
+          ...params.route,
+          sessionKey: boundSessionKey,
+          agentId: "codex",
+          matchedBy: "binding.channel",
+        },
+      }),
+    );
 
     const { handler } = registerAndResolveStatusHandler({
       cfg: {},
@@ -257,8 +247,8 @@ describe("registerTelegramNativeCommands — session metadata", () => {
     });
     await handler(buildStatusTopicCommandContext());
 
-    expect(persistentBindingMocks.resolveConfiguredAcpBindingRecord).toHaveBeenCalledTimes(1);
-    expect(persistentBindingMocks.ensureConfiguredAcpBindingSession).toHaveBeenCalledTimes(1);
+    expect(persistentBindingRouteMocks.resolveConfiguredAcpRoute).toHaveBeenCalledTimes(1);
+    expect(persistentBindingRouteMocks.ensureConfiguredAcpRouteReady).toHaveBeenCalledTimes(1);
     const dispatchCall = (
       replyMocks.dispatchReplyWithBufferedBlockDispatcher.mock.calls as unknown as Array<
         [{ ctx?: { CommandTargetSessionKey?: string } }]
@@ -267,34 +257,22 @@ describe("registerTelegramNativeCommands — session metadata", () => {
     expect(dispatchCall?.ctx?.CommandTargetSessionKey).toBe(boundSessionKey);
   });
 
-  it("aborts native command dispatch when configured ACP topic binding cannot initialize", async () => {
-    const boundSessionKey = "agent:codex:acp:binding:telegram:default:feedface";
-    persistentBindingMocks.resolveConfiguredAcpBindingRecord.mockReturnValue({
-      spec: {
-        channel: "telegram",
-        accountId: "default",
-        conversationId: "-1001234567890:topic:42",
-        parentConversationId: "-1001234567890",
-        agentId: "codex",
-        mode: "persistent",
-      },
-      record: {
-        bindingId: "config:acp:telegram:default:-1001234567890:topic:42",
-        targetSessionKey: boundSessionKey,
-        targetKind: "session",
-        conversation: {
-          channel: "telegram",
-          accountId: "default",
-          conversationId: "-1001234567890:topic:42",
-          parentConversationId: "-1001234567890",
+  it("stops command dispatch when configured ACP topic binding is unavailable", async () => {
+    persistentBindingRouteMocks.resolveConfiguredAcpRoute.mockImplementation(
+      (params: { route: { accountId: string; sessionKey: string; agentId: string } }) => ({
+        configuredBinding: {
+          spec: {
+            conversationId: "-1001234567890:topic:42",
+          },
+          record: {
+            targetSessionKey: "agent:codex:acp:binding:telegram:default:feedface",
+          },
         },
-        status: "active",
-        boundAt: 0,
-      },
-    });
-    persistentBindingMocks.ensureConfiguredAcpBindingSession.mockResolvedValue({
+        route: params.route,
+      }),
+    );
+    persistentBindingRouteMocks.ensureConfiguredAcpRouteReady.mockResolvedValue({
       ok: false,
-      sessionKey: boundSessionKey,
       error: "gateway unavailable",
     });
 
@@ -313,38 +291,8 @@ describe("registerTelegramNativeCommands — session metadata", () => {
     );
   });
 
-  it("keeps /new blocked in ACP-bound Telegram topics when sender is unauthorized", async () => {
-    const boundSessionKey = "agent:codex:acp:binding:telegram:default:feedface";
-    persistentBindingMocks.resolveConfiguredAcpBindingRecord.mockReturnValue({
-      spec: {
-        channel: "telegram",
-        accountId: "default",
-        conversationId: "-1001234567890:topic:42",
-        parentConversationId: "-1001234567890",
-        agentId: "codex",
-        mode: "persistent",
-      },
-      record: {
-        bindingId: "config:acp:telegram:default:-1001234567890:topic:42",
-        targetSessionKey: boundSessionKey,
-        targetKind: "session",
-        conversation: {
-          channel: "telegram",
-          accountId: "default",
-          conversationId: "-1001234567890:topic:42",
-          parentConversationId: "-1001234567890",
-        },
-        status: "active",
-        boundAt: 0,
-      },
-    });
-    persistentBindingMocks.ensureConfiguredAcpBindingSession.mockResolvedValue({
-      ok: true,
-      sessionKey: boundSessionKey,
-    });
-
-    const { handler, sendMessage } = registerAndResolveCommandHandler({
-      commandName: "new",
+  it("sends unauthorized responses in the originating topic thread", async () => {
+    const { handler, sendMessage } = registerAndResolveStatusHandler({
       cfg: {},
       allowFrom: [],
       groupAllowFrom: [],
@@ -353,30 +301,6 @@ describe("registerTelegramNativeCommands — session metadata", () => {
     await handler(buildStatusTopicCommandContext());
 
     expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
-    expect(persistentBindingMocks.resolveConfiguredAcpBindingRecord).not.toHaveBeenCalled();
-    expect(persistentBindingMocks.ensureConfiguredAcpBindingSession).not.toHaveBeenCalled();
-    expect(sendMessage).toHaveBeenCalledWith(
-      -1001234567890,
-      "You are not authorized to use this command.",
-      expect.objectContaining({ message_thread_id: 42 }),
-    );
-  });
-
-  it("keeps /new blocked for unbound Telegram topics when sender is unauthorized", async () => {
-    persistentBindingMocks.resolveConfiguredAcpBindingRecord.mockReturnValue(null);
-
-    const { handler, sendMessage } = registerAndResolveCommandHandler({
-      commandName: "new",
-      cfg: {},
-      allowFrom: [],
-      groupAllowFrom: [],
-      useAccessGroups: true,
-    });
-    await handler(buildStatusTopicCommandContext());
-
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
-    expect(persistentBindingMocks.resolveConfiguredAcpBindingRecord).not.toHaveBeenCalled();
-    expect(persistentBindingMocks.ensureConfiguredAcpBindingSession).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledWith(
       -1001234567890,
       "You are not authorized to use this command.",
