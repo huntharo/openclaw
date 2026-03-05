@@ -1127,11 +1127,50 @@ type PendingInput = {
   reject: (err: Error) => void;
 };
 
+function truncatePromptLine(text: string, maxChars = 600): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxChars)}…`;
+}
+
+function extractApprovalPromptContext(requestParams: unknown): {
+  command?: string;
+  cwd?: string;
+  reason?: string;
+} {
+  const record = asRecord(requestParams);
+  if (!record) {
+    return {};
+  }
+  const nested = asRecord(record.commandExecution) ?? asRecord(record.execution) ?? {};
+  const commandActions = Array.isArray(record.commandActions) ? record.commandActions : [];
+  const commandFromActions = commandActions
+    .map((entry) => pickString(asRecord(entry) ?? {}, ["command"], { trim: true }))
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ; ");
+  const commandRaw =
+    pickString(record, ["command", "commandLine", "cmd"]) ??
+    pickString(nested, ["command", "commandLine", "cmd"]) ??
+    (commandFromActions || undefined);
+  const cwdRaw =
+    pickString(record, ["cwd", "workingDirectory", "workdir", "directory"]) ??
+    pickString(nested, ["cwd", "workingDirectory", "workdir", "directory"]);
+  const reasonRaw = pickString(record, ["reason", "message"]) ?? pickString(nested, ["reason"]);
+  return {
+    command: commandRaw ? truncatePromptLine(commandRaw) : undefined,
+    cwd: cwdRaw ? truncatePromptLine(cwdRaw, 260) : undefined,
+    reason: reasonRaw ? truncatePromptLine(reasonRaw, 260) : undefined,
+  };
+}
+
 function buildPromptText(params: {
   method: string;
   requestId: string;
   options: string[];
   question?: string;
+  requestParams?: unknown;
   expiresAt: number;
 }): string {
   const lines = [`🧭 Agent input requested (${params.requestId})`];
@@ -1152,6 +1191,19 @@ function buildPromptText(params: {
   const seconds = Math.max(1, Math.round((params.expiresAt - Date.now()) / 1000));
   lines.push(`Expires in: ${seconds}s`);
   if (/requestapproval/i.test(params.method)) {
+    const approvalContext = extractApprovalPromptContext(params.requestParams);
+    if (approvalContext.command || approvalContext.cwd || approvalContext.reason) {
+      lines.push("");
+      if (approvalContext.command) {
+        lines.push(`Command: ${approvalContext.command}`);
+      }
+      if (approvalContext.cwd) {
+        lines.push(`Working directory: ${approvalContext.cwd}`);
+      }
+      if (approvalContext.reason) {
+        lines.push(`Reason: ${approvalContext.reason}`);
+      }
+    }
     lines.push("This response will be sent to Codex as an approval decision.");
   }
   return lines.join("\n");
@@ -1331,6 +1383,8 @@ function buildTurnStartVariants(params: {
 export const __testing = {
   getTurnStartRpcMethods,
   buildTurnStartVariants,
+  buildPromptText,
+  extractApprovalPromptContext,
 };
 
 function createJsonRpcClient(settings: CodexAppServerSettings): JsonRpcClient {
@@ -1630,6 +1684,7 @@ export async function runCodexAppServerAgent(
       requestId,
       options,
       question,
+      requestParams,
       expiresAt,
     });
     awaitingInput = true;

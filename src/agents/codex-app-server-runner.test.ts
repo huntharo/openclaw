@@ -58,3 +58,35 @@ describe("codex app server rpc methods", () => {
     }
   });
 });
+
+describe("approval prompt context", () => {
+  it("extracts command and cwd from request approval params", () => {
+    expect(
+      __testing.extractApprovalPromptContext({
+        command: "npm view diver",
+        cwd: "/Users/huntharo/github/jeerreview",
+        reason: "network access required",
+      }),
+    ).toEqual({
+      command: "npm view diver",
+      cwd: "/Users/huntharo/github/jeerreview",
+      reason: "network access required",
+    });
+  });
+
+  it("includes command details in approval prompt text", () => {
+    const prompt = __testing.buildPromptText({
+      method: "item/commandExecution/requestApproval",
+      requestId: "req-1",
+      options: ["Approve", "Deny"],
+      requestParams: {
+        command: "npm view diver",
+        cwd: "/Users/huntharo/github/jeerreview",
+      },
+      expiresAt: Date.now() + 900_000,
+    });
+    expect(prompt).toContain("Command: npm view diver");
+    expect(prompt).toContain("Working directory: /Users/huntharo/github/jeerreview");
+    expect(prompt).toContain("This response will be sent to Codex as an approval decision.");
+  });
+});
