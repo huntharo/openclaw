@@ -17,8 +17,10 @@ import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import { dispatchReplyWithBufferedBlockDispatcher } from "../auto-reply/reply/provider-dispatcher.js";
 import { listSkillCommandsForAgents } from "../auto-reply/skill-commands.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../channels/command-gating.js";
+import { logTypingFailure } from "../channels/logging.js";
 import { createReplyPrefixOptions } from "../channels/reply-prefix.js";
 import { recordInboundSessionMetaSafe } from "../channels/session-meta.js";
+import { createTypingCallbacks } from "../channels/typing.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
@@ -58,6 +60,7 @@ import { TelegramBotOptions } from "./bot.js";
 import { deliverReplies } from "./bot/delivery.js";
 import {
   buildTelegramThreadParams,
+  buildTypingThreadParams,
   buildSenderName,
   buildTelegramGroupFrom,
   buildTelegramGroupPeerId,
@@ -74,6 +77,7 @@ import { resolveTelegramGroupPromptSettings } from "./group-config-helpers.js";
 import { buildInlineKeyboard } from "./send.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
+const TELEGRAM_THREAD_NOT_FOUND_RE = /message thread not found/i;
 
 type TelegramNativeCommandContext = Context & { match?: string };
 
@@ -706,12 +710,49 @@ export const registerTelegramNativeCommands = ({
             channel: "telegram",
             accountId: route.accountId,
           });
+          const sendTyping = async () => {
+            const threadParams = buildTypingThreadParams(threadSpec.id);
+            try {
+              await withTelegramApiErrorLogging({
+                operation: "sendChatAction",
+                runtime,
+                fn: () => bot.api.sendChatAction(chatId, "typing", threadParams),
+              });
+            } catch (err) {
+              if (
+                !threadParams?.message_thread_id ||
+                !TELEGRAM_THREAD_NOT_FOUND_RE.test(String(err))
+              ) {
+                throw err;
+              }
+              logVerbose(
+                `telegram slash typing failed with message_thread_id=${threadParams.message_thread_id}; retrying without thread`,
+              );
+              await withTelegramApiErrorLogging({
+                operation: "sendChatAction",
+                runtime,
+                fn: () => bot.api.sendChatAction(chatId, "typing", undefined),
+              });
+            }
+          };
+          const typingCallbacks = createTypingCallbacks({
+            start: sendTyping,
+            onStartError: (err) => {
+              logTypingFailure({
+                log: logVerbose,
+                channel: "telegram",
+                target: String(chatId),
+                error: err,
+              });
+            },
+          });
 
           await dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,
             cfg,
             dispatcherOptions: {
               ...prefixOptions,
+              typingCallbacks,
               deliver: async (payload, _info) => {
                 const result = await deliverReplies({
                   replies: [payload],

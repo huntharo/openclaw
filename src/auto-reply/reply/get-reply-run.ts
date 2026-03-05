@@ -729,8 +729,25 @@ export async function runPreparedReply(
       });
       await typing.startTypingLoop();
       typing.refreshTypingTtl();
+      let lastCodexTypingPulseAt = 0;
+      const pulseCodexTyping = async () => {
+        const now = Date.now();
+        if (now - lastCodexTypingPulseAt < 2_500) {
+          return;
+        }
+        lastCodexTypingPulseAt = now;
+        try {
+          await opts?.onReplyStart?.();
+        } catch (err) {
+          log.debug("codex typing pulse failed", {
+            error: String(err),
+          });
+        }
+        typing.refreshTypingTtl();
+      };
       const codexProgress = createCodexProgressEmitter({
         emit: async (text) => {
+          await pulseCodexTyping();
           typing.refreshTypingTtl();
           await opts?.onToolResult?.({
             text,
@@ -785,6 +802,7 @@ export async function runPreparedReply(
           if (!text) {
             return;
           }
+          await pulseCodexTyping();
           typing.refreshTypingTtl();
           await codexProgress.push(text);
         },
@@ -793,6 +811,7 @@ export async function runPreparedReply(
           if (!text) {
             return;
           }
+          await pulseCodexTyping();
           typing.refreshTypingTtl();
           // Ensure short buffered partial deltas are delivered before prompting for
           // approvals or other tool-result notices.

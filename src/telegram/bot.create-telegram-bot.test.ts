@@ -1660,6 +1660,7 @@ describe("createTelegramBot", () => {
     });
 
     expect(replySpy).toHaveBeenCalledTimes(1);
+    expect(sendChatActionSpy).toHaveBeenCalledWith(-100123456789, "typing", undefined);
   });
   it("handles forum topic metadata and typing thread fallbacks", async () => {
     const forumCases = [

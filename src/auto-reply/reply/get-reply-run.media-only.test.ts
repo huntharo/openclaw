@@ -518,6 +518,7 @@ describe("runPreparedReply media-only handling", () => {
       };
     });
     const delivered: Array<{ text?: string; channelData?: Record<string, unknown> }> = [];
+    const onReplyStart = vi.fn().mockResolvedValue(undefined);
     const result = await runPreparedReply(
       baseParams({
         sessionEntry,
@@ -530,6 +531,7 @@ describe("runPreparedReply media-only handling", () => {
           commandBodyNormalized: "/codex inspect this quickly",
         } as never,
         opts: {
+          onReplyStart,
           onToolResult: async (payload) => {
             delivered.push({
               text: payload.text,
@@ -561,6 +563,7 @@ describe("runPreparedReply media-only handling", () => {
         ],
       },
     });
+    expect(onReplyStart).toHaveBeenCalled();
   });
 
   it("idle-flushes codex partial text when no new deltas arrive", async () => {
