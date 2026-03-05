@@ -22,6 +22,7 @@ import {
   resolveExecHostApprovalContext,
 } from "./bash-tools.exec-host-shared.js";
 import {
+  buildApprovalPendingMessage,
   DEFAULT_APPROVAL_TIMEOUT_MS,
   createApprovalSlug,
   emitExecSystemEvent,
@@ -180,6 +181,12 @@ export async function executeNodeHostCommand(
       analysisOk,
       allowlistSatisfied,
     }) || obfuscation.detected;
+  const hasCommandChain = /&&|\|\||;|\r|\n/.test(params.command);
+  if (requiresAsk && hasCommandChain) {
+    throw new Error(
+      "exec approval requires a single command segment. Split chained commands so each elevated step is approved separately.",
+    );
+  }
   const invokeTimeoutMs = Math.max(
     10_000,
     (typeof params.timeoutSec === "number" ? params.timeoutSec : params.defaultTimeoutSec) * 1000 +
@@ -323,9 +330,15 @@ export async function executeNodeHostCommand(
       content: [
         {
           type: "text",
-          text:
-            `${warningText}Approval required (id ${approvalSlug}). ` +
-            "Approve to run; updates will arrive after completion.",
+          text: buildApprovalPendingMessage({
+            warningText,
+            approvalSlug,
+            approvalId,
+            command: prepared.cmdText,
+            cwd: runCwd,
+            host: "node",
+            nodeId,
+          }),
         },
       ],
       details: {
