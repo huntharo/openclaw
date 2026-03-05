@@ -3,8 +3,12 @@ import fs from "node:fs";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import { getCliSessionId } from "../../agents/cli-session.js";
+import {
+  isCodexAppServerProvider,
+  runCodexAppServerAgent,
+} from "../../agents/codex-app-server-runner.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
-import { isCliProvider } from "../../agents/model-selection.js";
+import { isCliProvider, normalizeProviderId } from "../../agents/model-selection.js";
 import {
   isCompactionFailureError,
   isContextOverflowError,
@@ -201,6 +205,160 @@ export async function runAgentTurnWithFallback(params: {
             model,
             thinkLevel: params.followupRun.run.thinkLevel,
           });
+
+          if (isCodexAppServerProvider(provider, params.followupRun.run.config)) {
+            const startedAt = Date.now();
+            notifyAgentRunStart();
+            emitAgentEvent({
+              runId,
+              stream: "lifecycle",
+              data: {
+                phase: "start",
+                startedAt,
+              },
+            });
+            return (async () => {
+              let lifecycleTerminalEmitted = false;
+              try {
+                const activeSessionEntry = params.getActiveSessionEntry();
+                const workspaceDir = params.followupRun.run.workspaceDir;
+                const existingThreadId =
+                  activeSessionEntry?.codexProjectKey &&
+                  activeSessionEntry.codexProjectKey !== workspaceDir
+                    ? undefined
+                    : activeSessionEntry?.codexThreadId;
+                const result = await runCodexAppServerAgent({
+                  sessionId: params.followupRun.run.sessionId,
+                  sessionKey: params.sessionKey,
+                  prompt: params.commandBody,
+                  model,
+                  workspaceDir,
+                  config: params.followupRun.run.config,
+                  timeoutMs: params.followupRun.run.timeoutMs,
+                  runId,
+                  existingThreadId,
+                  onPartialReply: async (payload) => {
+                    const text = payload.text?.trim();
+                    if (!text) {
+                      return;
+                    }
+                    emitAgentEvent({
+                      runId,
+                      stream: "assistant",
+                      data: { text },
+                    });
+                    await params.opts?.onPartialReply?.({ text });
+                  },
+                  onToolResult: async (payload) => {
+                    if (payload.text?.trim()) {
+                      emitAgentEvent({
+                        runId,
+                        stream: "tool",
+                        data: {
+                          phase: "codex_app_server_input",
+                          text: payload.text,
+                        },
+                      });
+                      await params.opts?.onToolResult?.({ text: payload.text });
+                    }
+                  },
+                  onPendingUserInput: async (pending) => {
+                    const pendingSessionKey = params.sessionKey;
+                    if (pendingSessionKey && params.activeSessionStore) {
+                      const entry =
+                        params.activeSessionStore[pendingSessionKey] ??
+                        params.getActiveSessionEntry();
+                      if (entry) {
+                        entry.pendingUserInputRequestId = pending?.requestId;
+                        entry.pendingUserInputOptions = pending?.options;
+                        entry.pendingUserInputExpiresAt = pending?.expiresAt;
+                        entry.updatedAt = Date.now();
+                        params.activeSessionStore[pendingSessionKey] = entry;
+                      }
+                    }
+                    if (pendingSessionKey && params.storePath) {
+                      await updateSessionStore(params.storePath, (store) => {
+                        const entry =
+                          store[pendingSessionKey] ??
+                          params.activeSessionStore?.[pendingSessionKey] ??
+                          params.getActiveSessionEntry();
+                        if (!entry) {
+                          return;
+                        }
+                        entry.pendingUserInputRequestId = pending?.requestId;
+                        entry.pendingUserInputOptions = pending?.options;
+                        entry.pendingUserInputExpiresAt = pending?.expiresAt;
+                        entry.updatedAt = Date.now();
+                        store[pendingSessionKey] = entry;
+                      });
+                    }
+                    emitAgentEvent({
+                      runId,
+                      stream: "lifecycle",
+                      data: {
+                        phase: pending ? "agent.user_input.requested" : "agent.user_input.resolved",
+                        pendingRequestId: pending?.requestId,
+                        options: pending?.options,
+                      },
+                    });
+                  },
+                  onInterrupted: async () => {
+                    emitAgentEvent({
+                      runId,
+                      stream: "lifecycle",
+                      data: {
+                        phase: "agent.run.interrupted",
+                      },
+                    });
+                  },
+                });
+
+                emitAgentEvent({
+                  runId,
+                  stream: "lifecycle",
+                  data: {
+                    phase: "end",
+                    startedAt,
+                    endedAt: Date.now(),
+                  },
+                });
+                lifecycleTerminalEmitted = true;
+                return result;
+              } catch (err) {
+                emitAgentEvent({
+                  runId,
+                  stream: "lifecycle",
+                  data: {
+                    phase: "error",
+                    startedAt,
+                    endedAt: Date.now(),
+                    error: String(err),
+                  },
+                });
+                lifecycleTerminalEmitted = true;
+                throw err;
+              } finally {
+                if (!lifecycleTerminalEmitted) {
+                  emitAgentEvent({
+                    runId,
+                    stream: "lifecycle",
+                    data: {
+                      phase: "error",
+                      startedAt,
+                      endedAt: Date.now(),
+                      error: "Codex App Server run completed without lifecycle terminal event",
+                    },
+                  });
+                }
+              }
+            })();
+          }
+
+          if (normalizeProviderId(provider) === "codex-app-server") {
+            throw new Error(
+              'Provider "codex-app-server" is disabled. Set agents.defaults.codexAppServer.enabled=true.',
+            );
+          }
 
           if (isCliProvider(provider, params.followupRun.run.config)) {
             const startedAt = Date.now();

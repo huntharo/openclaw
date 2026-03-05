@@ -50,6 +50,20 @@ export const AgentDefaultsSchema = z
     envelopeElapsed: z.union([z.literal("on"), z.literal("off")]).optional(),
     contextTokens: z.number().int().positive().optional(),
     cliBackends: z.record(z.string(), CliBackendSchema).optional(),
+    codexAppServer: z
+      .object({
+        enabled: z.boolean().optional(),
+        url: z.string().optional(),
+        transport: z.union([z.literal("stdio"), z.literal("websocket")]).optional(),
+        command: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        authToken: z.string().optional(),
+        headers: z.record(z.string(), z.string()).optional(),
+        requestTimeoutMs: z.number().int().positive().optional(),
+        inputTimeoutMs: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
     memorySearch: MemorySearchSchema,
     contextPruning: z
       .object({

@@ -49,6 +49,12 @@ export async function persistSessionUsageUpdate(params: {
   promptTokens?: number;
   systemPromptReport?: SessionSystemPromptReport;
   cliSessionId?: string;
+  codexThreadId?: string;
+  codexRunId?: string;
+  codexProjectKey?: string;
+  pendingUserInputRequestId?: string;
+  pendingUserInputOptions?: string[];
+  pendingUserInputExpiresAt?: number;
   logLabel?: string;
 }): Promise<void> {
   const { storePath, sessionKey } = params;
@@ -88,6 +94,15 @@ export async function persistSessionUsageUpdate(params: {
             model: params.modelUsed ?? entry.model,
             contextTokens: resolvedContextTokens,
             systemPromptReport: params.systemPromptReport ?? entry.systemPromptReport,
+            codexThreadId: params.codexThreadId ?? entry.codexThreadId,
+            codexRunId: params.codexRunId ?? entry.codexRunId,
+            codexProjectKey: params.codexProjectKey ?? entry.codexProjectKey,
+            pendingUserInputRequestId:
+              params.pendingUserInputRequestId ?? entry.pendingUserInputRequestId,
+            pendingUserInputOptions:
+              params.pendingUserInputOptions ?? entry.pendingUserInputOptions,
+            pendingUserInputExpiresAt:
+              params.pendingUserInputExpiresAt ?? entry.pendingUserInputExpiresAt,
             updatedAt: Date.now(),
           };
           if (hasUsage) {
@@ -123,6 +138,15 @@ export async function persistSessionUsageUpdate(params: {
             model: params.modelUsed ?? entry.model,
             contextTokens: params.contextTokensUsed ?? entry.contextTokens,
             systemPromptReport: params.systemPromptReport ?? entry.systemPromptReport,
+            codexThreadId: params.codexThreadId ?? entry.codexThreadId,
+            codexRunId: params.codexRunId ?? entry.codexRunId,
+            codexProjectKey: params.codexProjectKey ?? entry.codexProjectKey,
+            pendingUserInputRequestId:
+              params.pendingUserInputRequestId ?? entry.pendingUserInputRequestId,
+            pendingUserInputOptions:
+              params.pendingUserInputOptions ?? entry.pendingUserInputOptions,
+            pendingUserInputExpiresAt:
+              params.pendingUserInputExpiresAt ?? entry.pendingUserInputExpiresAt,
             updatedAt: Date.now(),
           };
           return applyCliSessionIdToSessionPatch(params, entry, patch);

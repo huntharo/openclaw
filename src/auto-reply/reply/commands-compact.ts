@@ -1,9 +1,5 @@
-import {
-  abortEmbeddedPiRun,
-  compactEmbeddedPiSession,
-  isEmbeddedPiRunActive,
-  waitForEmbeddedPiRunEnd,
-} from "../../agents/pi-embedded.js";
+import { compactEmbeddedPiSession, waitForEmbeddedPiRunEnd } from "../../agents/pi-embedded.js";
+import { abortAgentRun, isAgentRunActive } from "../../agents/run-control.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   resolveFreshSessionTotalTokens,
@@ -64,8 +60,8 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     };
   }
   const sessionId = params.sessionEntry.sessionId;
-  if (isEmbeddedPiRunActive(sessionId)) {
-    abortEmbeddedPiRun(sessionId);
+  if (isAgentRunActive(sessionId)) {
+    abortAgentRun(sessionId);
     await waitForEmbeddedPiRunEnd(sessionId, 15_000);
   }
   const customInstructions = extractCompactInstructions({

@@ -979,6 +979,26 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.imageMaxDimensionPx":
     "Max image side length in pixels when sanitizing transcript/tool-result image payloads (default: 1200).",
   "agents.defaults.cliBackends": "Optional CLI backends for text-only fallback (claude-cli, etc.).",
+  "agents.defaults.codexAppServer":
+    'Codex App Server transport settings for provider "codex-app-server".',
+  "agents.defaults.codexAppServer.enabled":
+    'Enable Codex App Server transport for provider "codex-app-server".',
+  "agents.defaults.codexAppServer.url":
+    "WebSocket endpoint for Codex App Server (ws:// or wss://).",
+  "agents.defaults.codexAppServer.transport":
+    'Transport mode for Codex App Server ("stdio" default, "websocket" optional).',
+  "agents.defaults.codexAppServer.command":
+    'Command used to launch Codex App Server in stdio mode (default: "codex").',
+  "agents.defaults.codexAppServer.args":
+    'Optional extra args appended after "app-server" when launching Codex App Server in stdio mode.',
+  "agents.defaults.codexAppServer.authToken":
+    "Optional bearer token sent as Authorization header when connecting to Codex App Server.",
+  "agents.defaults.codexAppServer.headers":
+    "Optional static headers included in Codex App Server WebSocket handshake.",
+  "agents.defaults.codexAppServer.requestTimeoutMs":
+    "JSON-RPC request timeout in milliseconds for Codex App Server calls.",
+  "agents.defaults.codexAppServer.inputTimeoutMs":
+    "Timeout in milliseconds for user approval/input prompts requested by Codex App Server.",
   "agents.defaults.compaction":
     "Compaction tuning for when context nears token limits, including history share, reserve headroom, and pre-compaction memory flush behavior. Use this when long-running sessions need stable continuity under tight context windows.",
   "agents.defaults.compaction.mode":

@@ -1,5 +1,6 @@
 import type { Message, ReactionTypeEmoji } from "@grammyjs/types";
 import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { queueAgentRunMessage, queueAgentRunMessageBySessionKey } from "../agents/run-control.js";
 import {
   createInboundDebouncer,
   resolveInboundDebounceMs,
@@ -103,6 +104,9 @@ function resolveInboundMediaFileId(msg: Message): string | undefined {
     msg.voice?.file_id
   );
 }
+
+const CODEX_INPUT_CALLBACK_RE = /^codex_input:(?:([^:]+):)?([1-9]\d*)$/i;
+const CODEX_PENDING_INPUT_PROMPT_RE = /agent input requested/i;
 
 export const registerTelegramHandlers = ({
   cfg,
@@ -270,6 +274,7 @@ export const registerTelegramHandlers = ({
     resolvedThreadId?: number;
   }): {
     agentId: string;
+    sessionKey: string;
     sessionEntry: ReturnType<typeof loadSessionStore>[string];
     model?: string;
   } => {
@@ -315,6 +320,7 @@ export const registerTelegramHandlers = ({
     if (storedOverride) {
       return {
         agentId: route.agentId,
+        sessionKey,
         sessionEntry: entry,
         model: storedOverride.provider
           ? `${storedOverride.provider}/${storedOverride.model}`
@@ -326,6 +332,7 @@ export const registerTelegramHandlers = ({
     if (provider && model) {
       return {
         agentId: route.agentId,
+        sessionKey,
         sessionEntry: entry,
         model: `${provider}/${model}`,
       };
@@ -333,9 +340,99 @@ export const registerTelegramHandlers = ({
     const modelCfg = cfg.agents?.defaults?.model;
     return {
       agentId: route.agentId,
+      sessionKey,
       sessionEntry: entry,
       model: typeof modelCfg === "string" ? modelCfg : modelCfg?.primary,
     };
+  };
+
+  const forwardPendingCodexInput = (params: {
+    chatId: number;
+    isGroup: boolean;
+    isForum: boolean;
+    messageThreadId?: number;
+    resolvedThreadId?: number;
+    text: string;
+    source: "callback" | "message";
+    allowWithoutPending?: boolean;
+  }): boolean => {
+    const text = params.text.trim();
+    if (!text) {
+      return false;
+    }
+    const sessionState = resolveTelegramSessionState({
+      chatId: params.chatId,
+      isGroup: params.isGroup,
+      isForum: params.isForum,
+      messageThreadId: params.messageThreadId,
+      resolvedThreadId: params.resolvedThreadId,
+    });
+    const sessionEntry = sessionState.sessionEntry;
+    const pendingRequestId = sessionEntry?.pendingUserInputRequestId?.trim();
+    const pendingExpiresAt = sessionEntry?.pendingUserInputExpiresAt;
+    const sessionId = sessionEntry?.sessionId?.trim();
+    const allowWithoutPending = params.allowWithoutPending === true;
+    if (!pendingRequestId && !allowWithoutPending) {
+      return false;
+    }
+    if (!allowWithoutPending && pendingExpiresAt != null && pendingExpiresAt <= Date.now()) {
+      return false;
+    }
+    const queuedBySessionKey = queueAgentRunMessageBySessionKey(sessionState.sessionKey, text);
+    if (queuedBySessionKey) {
+      logger.info(
+        {
+          chatId: params.chatId,
+          sessionKey: sessionState.sessionKey,
+          sessionId: sessionId ?? null,
+          pendingRequestId: pendingRequestId ?? null,
+          source: params.source,
+          allowWithoutPending,
+        },
+        "telegram codex pending input forwarded",
+      );
+      return true;
+    }
+    if (!sessionId) {
+      logger.info(
+        {
+          chatId: params.chatId,
+          sessionKey: sessionState.sessionKey,
+          pendingRequestId: pendingRequestId ?? null,
+          source: params.source,
+          allowWithoutPending,
+        },
+        "telegram codex pending input forward skipped (missing session id)",
+      );
+      return false;
+    }
+    const queued = queueAgentRunMessage(sessionId, text);
+    if (!queued) {
+      logger.info(
+        {
+          chatId: params.chatId,
+          sessionKey: sessionState.sessionKey,
+          sessionId,
+          pendingRequestId: pendingRequestId ?? null,
+          source: params.source,
+          allowWithoutPending,
+        },
+        "telegram codex pending input forward skipped (no active run)",
+      );
+      return false;
+    }
+    logger.info(
+      {
+        chatId: params.chatId,
+        sessionKey: sessionState.sessionKey,
+        sessionId,
+        pendingRequestId: pendingRequestId ?? null,
+        source: params.source,
+        allowWithoutPending,
+      },
+      "telegram codex pending input forwarded",
+    );
+    return true;
   };
 
   const processMediaGroup = async (entry: MediaGroupEntry) => {
@@ -996,6 +1093,45 @@ export const registerTelegramHandlers = ({
     // Skip sticker-only messages where the sticker was skipped (animated/video)
     // These have no media and no text content to process.
     const hasText = Boolean((msg.text ?? msg.caption ?? "").trim());
+    const repliedToMessage = msg.reply_to_message;
+    const repliedToText = (repliedToMessage?.text ?? repliedToMessage?.caption ?? "").trim();
+    const repliedToHasButtons =
+      ((repliedToMessage as { reply_markup?: { inline_keyboard?: unknown[] } } | undefined)
+        ?.reply_markup?.inline_keyboard?.length ?? 0) > 0;
+    if (
+      hasText &&
+      repliedToMessage?.message_id &&
+      repliedToHasButtons &&
+      CODEX_PENDING_INPUT_PROMPT_RE.test(repliedToText)
+    ) {
+      await withTelegramApiErrorLogging({
+        operation: "editMessageText",
+        runtime,
+        fn: () =>
+          bot.api.editMessageText(chatId, repliedToMessage.message_id, repliedToText || " ", {
+            reply_markup: { inline_keyboard: [] },
+          }),
+      }).catch(() => {});
+    }
+    if (hasText && !(msg.text ?? "").trim().startsWith("/")) {
+      const isReplyToCodexPrompt =
+        repliedToMessage?.message_id != null &&
+        repliedToHasButtons &&
+        CODEX_PENDING_INPUT_PROMPT_RE.test(repliedToText);
+      const forwardedPendingInput = forwardPendingCodexInput({
+        chatId,
+        isGroup: msg.chat.type === "group" || msg.chat.type === "supergroup",
+        isForum: msg.chat.is_forum === true,
+        messageThreadId: msg.message_thread_id,
+        resolvedThreadId,
+        text: (msg.text ?? msg.caption ?? "").trim(),
+        source: "message",
+        allowWithoutPending: isReplyToCodexPrompt,
+      });
+      if (forwardedPendingInput) {
+        return;
+      }
+    }
     if (msg.sticker && !media && !hasText) {
       logVerbose("telegram: skipping sticker-only message (unsupported sticker type)");
       return;
@@ -1121,6 +1257,75 @@ export const registerTelegramHandlers = ({
       }
       const senderId = callback.from?.id ? String(callback.from.id) : "";
       const senderUsername = callback.from?.username ?? "";
+      const codexInputCallback = data.match(CODEX_INPUT_CALLBACK_RE);
+      if (codexInputCallback) {
+        const optionNumber = codexInputCallback[2];
+        logger.info(
+          { chatId, messageId: callbackMessage.message_id, optionNumber, callbackId: callback.id },
+          "telegram codex input callback received",
+        );
+        logVerbose(
+          `telegram codex input callback received: chat=${chatId} message=${callbackMessage.message_id} option=${optionNumber}`,
+        );
+        await withTelegramApiErrorLogging({
+          operation: "editMessageText",
+          runtime,
+          fn: () => {
+            const currentText =
+              (callbackMessage.text ?? callbackMessage.caption ?? "").trim() || " ";
+            return bot.api.editMessageText(
+              callbackMessage.chat.id,
+              callbackMessage.message_id,
+              currentText,
+              {
+                reply_markup: { inline_keyboard: [] },
+              },
+            );
+          },
+        }).catch(() => {});
+        const forwardedPendingInput = forwardPendingCodexInput({
+          chatId,
+          isGroup,
+          isForum,
+          messageThreadId,
+          resolvedThreadId,
+          text: optionNumber,
+          source: "callback",
+          allowWithoutPending: true,
+        });
+        if (forwardedPendingInput) {
+          logger.info(
+            {
+              chatId,
+              messageId: callbackMessage.message_id,
+              optionNumber,
+              callbackId: callback.id,
+            },
+            "telegram codex input callback forwarded",
+          );
+          logVerbose(
+            `telegram codex input callback forwarded directly to active run: chat=${chatId} option=${optionNumber}`,
+          );
+          return;
+        }
+        const syntheticMessage = buildSyntheticTextMessage({
+          base: callbackMessage,
+          from: callback.from,
+          text: optionNumber,
+        });
+        await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
+          forceWasMentioned: true,
+          messageIdOverride: callback.id,
+        });
+        logger.info(
+          { chatId, messageId: callbackMessage.message_id, optionNumber, callbackId: callback.id },
+          "telegram codex input callback forwarded",
+        );
+        logVerbose(
+          `telegram codex input callback forwarded as synthetic message: chat=${chatId} option=${optionNumber}`,
+        );
+        return;
+      }
       const authorizationMode: TelegramEventAuthorizationMode =
         inlineButtonsScope === "allowlist" ? "callback-allowlist" : "callback-scope";
       const senderAuthorization = authorizeTelegramEventSender({
@@ -1133,6 +1338,20 @@ export const registerTelegramHandlers = ({
         context: eventAuthContext,
       });
       if (!senderAuthorization.allowed) {
+        logger.info(
+          {
+            chatId,
+            senderId,
+            senderUsername,
+            mode: authorizationMode,
+            reason: senderAuthorization.reason ?? "unknown",
+            callbackId: callback.id,
+          },
+          "telegram callback denied by sender authorization",
+        );
+        logVerbose(
+          `Blocked telegram callback sender ${senderId || "unknown"} (mode=${authorizationMode} reason=${senderAuthorization.reason ?? "unknown"})`,
+        );
         return;
       }
 

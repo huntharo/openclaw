@@ -91,6 +91,19 @@ vi.mock("../infra/system-events.js", () => ({
   enqueueSystemEvent: enqueueSystemEventSpy,
 }));
 
+const runControlHoisted = vi.hoisted(() => ({
+  queueAgentRunMessage: vi.fn(() => false),
+  queueAgentRunMessageBySessionKey: vi.fn(() => false),
+}));
+export const queueAgentRunMessageSpy: AnyMock = runControlHoisted.queueAgentRunMessage;
+export const queueAgentRunMessageBySessionKeySpy: AnyMock =
+  runControlHoisted.queueAgentRunMessageBySessionKey;
+
+vi.mock("../agents/run-control.js", () => ({
+  queueAgentRunMessage: queueAgentRunMessageSpy,
+  queueAgentRunMessageBySessionKey: queueAgentRunMessageBySessionKeySpy,
+}));
+
 const sentMessageCacheHoisted = vi.hoisted(() => ({
   wasSentByBot: vi.fn(() => false),
 }));
@@ -318,6 +331,10 @@ beforeEach(() => {
   sendMessageDraftSpy.mockReset();
   sendMessageDraftSpy.mockResolvedValue(true);
   enqueueSystemEventSpy.mockReset();
+  queueAgentRunMessageSpy.mockReset();
+  queueAgentRunMessageSpy.mockReturnValue(false);
+  queueAgentRunMessageBySessionKeySpy.mockReset();
+  queueAgentRunMessageBySessionKeySpy.mockReturnValue(false);
   wasSentByBot.mockReset();
   wasSentByBot.mockReturnValue(false);
   listSkillCommandsForAgents.mockReset();

@@ -3,7 +3,7 @@ import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
 import { isCliProvider } from "../../agents/model-selection.js";
-import { queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
+import { queueAgentRunMessage } from "../../agents/run-control.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import {
   resolveAgentIdFromSessionKey,
@@ -189,7 +189,8 @@ export async function runReplyAgent(params: {
   };
 
   if (shouldSteer && isStreaming) {
-    const steered = queueEmbeddedPiMessage(followupRun.run.sessionId, followupRun.prompt);
+    const steerText = followupRun.summaryLine?.trim() || commandBody.trim() || followupRun.prompt;
+    const steered = queueAgentRunMessage(followupRun.run.sessionId, steerText);
     if (steered && !shouldFollowup) {
       await touchActiveSessionEntry();
       typing.cleanup();
@@ -449,6 +450,18 @@ export async function runReplyAgent(params: {
     const cliSessionId = isCliProvider(providerUsed, cfg)
       ? runResult.meta?.agentMeta?.sessionId?.trim()
       : undefined;
+    const normalizedProviderUsed = providerUsed?.trim().toLowerCase();
+    const codexThreadId =
+      normalizedProviderUsed === "codex-app-server"
+        ? runResult.meta?.agentMeta?.sessionId?.trim()
+        : undefined;
+    const codexRunId =
+      normalizedProviderUsed === "codex-app-server"
+        ? runResult.meta?.agentMeta?.runId?.trim()
+        : undefined;
+    const pendingUserInputRequestId = activeSessionEntry?.pendingUserInputRequestId;
+    const pendingUserInputOptions = activeSessionEntry?.pendingUserInputOptions;
+    const pendingUserInputExpiresAt = activeSessionEntry?.pendingUserInputExpiresAt;
     const contextTokensUsed =
       agentCfgContextTokens ??
       lookupContextTokens(modelUsed) ??
@@ -466,6 +479,13 @@ export async function runReplyAgent(params: {
       contextTokensUsed,
       systemPromptReport: runResult.meta?.systemPromptReport,
       cliSessionId,
+      codexThreadId,
+      codexRunId,
+      codexProjectKey:
+        normalizedProviderUsed === "codex-app-server" ? followupRun.run.workspaceDir : undefined,
+      pendingUserInputRequestId,
+      pendingUserInputOptions,
+      pendingUserInputExpiresAt,
     });
 
     // Drain any late tool/block deliveries before deciding there's "nothing to send".

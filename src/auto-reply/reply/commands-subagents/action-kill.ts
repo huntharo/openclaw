@@ -1,4 +1,4 @@
-import { abortEmbeddedPiRun } from "../../../agents/pi-embedded.js";
+import { abortAgentRun } from "../../../agents/run-control.js";
 import { markSubagentRunTerminated } from "../../../agents/subagent-registry.js";
 import {
   loadSessionStore,
@@ -52,7 +52,7 @@ export async function handleSubagentsKillAction(
   });
   const sessionId = entry?.sessionId;
   if (sessionId) {
-    abortEmbeddedPiRun(sessionId);
+    abortAgentRun(sessionId);
   }
 
   const cleared = clearSessionQueues([childKey, sessionId]);

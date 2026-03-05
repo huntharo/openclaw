@@ -360,6 +360,11 @@ export async function dispatchReplyFromConfig(params: {
     let blockCount = 0;
 
     const resolveToolDeliveryPayload = (payload: ReplyPayload): ReplyPayload | null => {
+      const forceToolSummary = (payload.channelData as { forceToolSummary?: unknown } | undefined)
+        ?.forceToolSummary;
+      if (forceToolSummary === true) {
+        return payload;
+      }
       if (shouldSendToolSummaries) {
         return payload;
       }

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { AGENT_LANE_SUBAGENT } from "../../../agents/lanes.js";
-import { abortEmbeddedPiRun } from "../../../agents/pi-embedded.js";
+import { abortAgentRun } from "../../../agents/run-control.js";
 import {
   clearSubagentRunSteerRestart,
   replaceSubagentRunAfterSteer,
@@ -66,7 +66,7 @@ export async function handleSubagentsSendAction(
     markSubagentRunForSteerRestart(targetResolution.entry.runId);
 
     if (targetSessionId) {
-      abortEmbeddedPiRun(targetSessionId);
+      abortAgentRun(targetSessionId);
     }
 
     const cleared = clearSessionQueues([targetResolution.entry.childSessionKey, targetSessionId]);

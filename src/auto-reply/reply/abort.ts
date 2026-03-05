@@ -1,6 +1,6 @@
 import { getAcpSessionManager } from "../../acp/control-plane/manager.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
+import { abortAgentRun } from "../../agents/run-control.js";
 import {
   listSubagentRunsForRequester,
   markSubagentRunTerminated,
@@ -239,7 +239,7 @@ export function stopSubagentsForRequester(params: {
       }
       const entry = store[childKey];
       const sessionId = entry?.sessionId;
-      const aborted = sessionId ? abortEmbeddedPiRun(sessionId) : false;
+      const aborted = sessionId ? abortAgentRun(sessionId) : false;
       const markedTerminated =
         markSubagentRunTerminated({
           runId: run.runId,
@@ -322,7 +322,7 @@ export async function tryFastAbortFromMessage(params: {
       }
     }
     const sessionId = entry?.sessionId;
-    const aborted = sessionId ? abortEmbeddedPiRun(sessionId) : false;
+    const aborted = sessionId ? abortAgentRun(sessionId) : false;
     const cleared = clearSessionQueues([resolvedTargetKey, sessionId]);
     if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
       logVerbose(

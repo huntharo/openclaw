@@ -1,12 +1,14 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import {
-  abortEmbeddedPiRun,
-  isEmbeddedPiRunActive,
-  isEmbeddedPiRunStreaming,
-  resolveEmbeddedSessionLane,
-} from "../../agents/pi-embedded.js";
+  isCodexAppServerProvider,
+  runCodexAppServerAgent,
+} from "../../agents/codex-app-server-runner.js";
+import { resolveEmbeddedSessionLane } from "../../agents/pi-embedded.js";
+import { abortAgentRun, isAgentRunActive, isAgentRunStreaming } from "../../agents/run-control.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   resolveGroupSessionKey,
@@ -16,8 +18,10 @@ import {
   updateSessionStore,
 } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
+import type { TelegramInlineButtons } from "../../telegram/button-types.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { buildInboundMediaNote } from "../media-note.js";
@@ -52,6 +56,224 @@ import { appendUntrustedContext } from "./untrusted-context.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
+const log = createSubsystemLogger("agent/codex-app-server/entry");
+const CODEX_INPUT_CALLBACK_PREFIX = "codex_input";
+
+function isAgentNewCommand(normalizedBody: string | undefined): boolean {
+  return (normalizedBody ?? "").trim().toLowerCase() === "/agent new";
+}
+
+function parseCodexCommandPrompt(normalizedBody: string | undefined): string | null {
+  const body = (normalizedBody ?? "").trim();
+  if (!body) {
+    return null;
+  }
+  const match = body.match(/^\/codex(?:@[^\s]+)?(?:\s+([\s\S]+))?$/i);
+  if (!match) {
+    return null;
+  }
+  return (match[1] ?? "").trim();
+}
+
+const ABSOLUTE_PATH_RE = /(?:^|[\s"'`])((?:\/[^/\s"'`]+)+\/?)/g;
+
+function normalizePromptPathCandidate(raw: string): string {
+  const withoutTrailing = raw.replace(/[),.;:!?]+$/g, "");
+  const trimmed = withoutTrailing.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return path.normalize(trimmed);
+}
+
+function resolveCodexWorkspaceDirFromPrompt(prompt: string, fallbackDir: string): string {
+  const candidates: string[] = [];
+  ABSOLUTE_PATH_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ABSOLUTE_PATH_RE.exec(prompt))) {
+    const candidate = normalizePromptPathCandidate(match[1] ?? "");
+    if (!candidate || !path.isAbsolute(candidate)) {
+      continue;
+    }
+    candidates.push(candidate);
+  }
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isDirectory()) {
+        return candidate;
+      }
+      if (stat.isFile()) {
+        return path.dirname(candidate);
+      }
+    } catch {
+      // ignore nonexistent path candidates
+    }
+  }
+  return fallbackDir;
+}
+
+function truncateCodexContext(text: string, maxChars = 12_000): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const clipped = text.slice(0, maxChars).trimEnd();
+  return `${clipped}\n\n[truncated ${text.length - clipped.length} chars]`;
+}
+
+function buildCodexInputCallbackData(requestId: string | undefined, optionIndex1: number): string {
+  const withRequest = requestId
+    ? `${CODEX_INPUT_CALLBACK_PREFIX}:${requestId}:${optionIndex1}`
+    : "";
+  if (withRequest && withRequest.length <= 64) {
+    return withRequest;
+  }
+  return `${CODEX_INPUT_CALLBACK_PREFIX}:${optionIndex1}`;
+}
+
+function resolveCodexOptionButtonStyle(option: string): "success" | "danger" | "primary" {
+  const normalized = option.trim().toLowerCase();
+  if (normalized.startsWith("deny") || normalized.startsWith("cancel")) {
+    return "danger";
+  }
+  if (normalized.startsWith("approve")) {
+    return "success";
+  }
+  return "primary";
+}
+
+function buildCodexInputButtons(params: {
+  text: string;
+  requestId?: string;
+  options?: string[];
+}): TelegramInlineButtons | undefined {
+  if (!/agent input requested/i.test(params.text)) {
+    return undefined;
+  }
+  const options = params.options?.filter((entry) => entry.trim().length > 0) ?? [];
+  if (options.length === 0) {
+    return undefined;
+  }
+  return options.map((option, idx) => [
+    {
+      text: `${idx + 1}. ${option}`,
+      callback_data: buildCodexInputCallbackData(params.requestId, idx + 1),
+      style: resolveCodexOptionButtonStyle(option),
+    },
+  ]);
+}
+
+function findCodexProgressBoundary(input: string): number {
+  const candidates = ["\n\n", "\n", ". ", "! ", "? "];
+  for (const token of candidates) {
+    const idx = input.lastIndexOf(token);
+    if (idx > 0) {
+      return idx + token.length;
+    }
+  }
+  const whitespace = input.lastIndexOf(" ");
+  return whitespace > 0 ? whitespace + 1 : input.length;
+}
+
+function appendCodexProgressChunk(buffer: string, chunk: string): string {
+  if (!chunk) {
+    return buffer;
+  }
+  if (!buffer) {
+    return chunk;
+  }
+  return `${buffer}${chunk}`;
+}
+
+function createCodexProgressEmitter(params: {
+  emit: (text: string) => Promise<void>;
+  minEmitChars?: number;
+  maxEmitChars?: number;
+  minEmitIntervalMs?: number;
+  idleFlushMs?: number;
+}) {
+  const minEmitChars = Math.max(1, params.minEmitChars ?? 220);
+  const maxEmitChars = Math.max(minEmitChars, params.maxEmitChars ?? 1_000);
+  const minEmitIntervalMs = Math.max(0, params.minEmitIntervalMs ?? 4_000);
+  const idleFlushMs = Math.max(250, params.idleFlushMs ?? minEmitIntervalMs);
+  let buffer = "";
+  let lastEmitAt = 0;
+  let idleTimer: NodeJS.Timeout | undefined;
+
+  const clearIdleFlush = () => {
+    if (!idleTimer) {
+      return;
+    }
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+
+  const scheduleIdleFlush = () => {
+    clearIdleFlush();
+    if (!buffer) {
+      return;
+    }
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      void flush(true);
+    }, idleFlushMs);
+    idleTimer.unref?.();
+  };
+
+  const flush = async (force = false) => {
+    if (!buffer) {
+      clearIdleFlush();
+      return;
+    }
+    const now = Date.now();
+    const dueByTime = now - lastEmitAt >= minEmitIntervalMs;
+    const dueBySize = buffer.length >= maxEmitChars;
+    if (!force && !dueByTime && !dueBySize) {
+      return;
+    }
+    if (!force && buffer.length < minEmitChars) {
+      return;
+    }
+    const emitText = force
+      ? buffer
+      : (() => {
+          const boundary = findCodexProgressBoundary(
+            buffer.length <= maxEmitChars ? buffer : buffer.slice(0, maxEmitChars),
+          );
+          return buffer.slice(0, Math.max(1, boundary));
+        })();
+    buffer = force ? "" : buffer.slice(emitText.length).trimStart();
+    if (!emitText.trim()) {
+      if (buffer) {
+        scheduleIdleFlush();
+      } else {
+        clearIdleFlush();
+      }
+      return;
+    }
+    await params.emit(emitText);
+    lastEmitAt = now;
+    if (buffer) {
+      scheduleIdleFlush();
+    } else {
+      clearIdleFlush();
+    }
+  };
+
+  const push = async (chunk: string) => {
+    if (!chunk) {
+      return;
+    }
+    buffer = appendCodexProgressChunk(buffer, chunk);
+    scheduleIdleFlush();
+    await flush(false);
+  };
+
+  return {
+    push,
+    flush,
+  };
+}
 
 function buildResetSessionNoticeText(params: {
   provider: string;
@@ -274,6 +496,48 @@ export async function runPreparedReply(
     groupSystemPrompt,
   ].filter(Boolean);
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
+  const codexCommandPrompt = parseCodexCommandPrompt(command.commandBodyNormalized);
+  const normalizedCommandBody = (command.commandBodyNormalized ?? "").trim();
+  log.debug("prepared reply command context", {
+    commandSource: ctx.CommandSource ?? "unknown",
+    commandBodyNormalized: command.commandBodyNormalized,
+    rawBodyNormalized: command.rawBodyNormalized,
+    provider,
+    model,
+  });
+  if (normalizedCommandBody.toLowerCase().startsWith("/codex")) {
+    log.info("received /codex command", {
+      commandSource: ctx.CommandSource ?? "unknown",
+      surface: command.surface || "unknown",
+      channel: command.channel || "unknown",
+      isAuthorizedSender: command.isAuthorizedSender,
+      parsed:
+        codexCommandPrompt === null
+          ? "no-match"
+          : codexCommandPrompt
+            ? "with-prompt"
+            : "missing-prompt",
+      commandBodyNormalized: command.commandBodyNormalized,
+    });
+  }
+  if (codexCommandPrompt !== null && !command.isAuthorizedSender) {
+    typing.cleanup();
+    log.warn("rejected /codex command from unauthorized sender", {
+      commandSource: ctx.CommandSource ?? "unknown",
+      channel: command.channel || "unknown",
+      commandBodyNormalized: command.commandBodyNormalized,
+    });
+    return {
+      text: "Only authorized senders can use /codex.",
+    };
+  }
+  if (codexCommandPrompt !== null && !codexCommandPrompt) {
+    typing.cleanup();
+    log.info("replied with /codex usage due to missing prompt");
+    return {
+      text: "Usage: /codex <coding task>. I will run Codex App Server, then summarize it with the current model.",
+    };
+  }
   // Use CommandBody/RawBody for bare reset detection (clean message without structural context).
   const rawBodyTrimmed = (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").trim();
   const baseBodyTrimmedRaw = baseBody.trim();
@@ -318,9 +582,10 @@ export async function runPreparedReply(
   }
   // When the user sends media without text, provide a minimal body so the agent
   // run proceeds and the image/document is injected by the embedded runner.
-  const effectiveBaseBody = baseBodyTrimmed
+  const effectiveBaseBodyBase = baseBodyTrimmed
     ? baseBodyForPrompt
     : "[User sent media without caption]";
+  let effectiveBaseBody = codexCommandPrompt ?? effectiveBaseBodyBase;
   let prefixedBodyBase = await applySessionHints({
     baseBody: effectiveBaseBody,
     abortedLastRun,
@@ -423,18 +688,215 @@ export async function runPreparedReply(
       defaultModel,
     });
   }
+  if (
+    command.isAuthorizedSender &&
+    isAgentNewCommand(command.commandBodyNormalized) &&
+    sessionEntry &&
+    sessionStore &&
+    sessionKey
+  ) {
+    sessionEntry.codexThreadId = undefined;
+    sessionEntry.codexRunId = undefined;
+    sessionEntry.codexProjectKey = undefined;
+    sessionEntry.pendingUserInputRequestId = undefined;
+    sessionEntry.pendingUserInputOptions = undefined;
+    sessionEntry.pendingUserInputExpiresAt = undefined;
+    sessionEntry.updatedAt = Date.now();
+    sessionStore[sessionKey] = sessionEntry;
+    if (storePath) {
+      await updateSessionStore(storePath, (store) => {
+        store[sessionKey] = sessionEntry;
+      });
+    }
+    typing.cleanup();
+    return {
+      text: "✅ Reset Codex App Server thread binding for this session. Next message starts a new thread.",
+    };
+  }
   const sessionIdFinal = sessionId ?? crypto.randomUUID();
   const sessionFile = resolveSessionFilePath(
     sessionIdFinal,
     sessionEntry,
     resolveSessionFilePathOptions({ agentId, storePath }),
   );
+  let codexRelayContext: string | undefined;
+  if (codexCommandPrompt) {
+    const codexWorkspaceDir = resolveCodexWorkspaceDirFromPrompt(codexCommandPrompt, workspaceDir);
+    try {
+      log.info("dispatching /codex task to App Server", {
+        workspaceDir: codexWorkspaceDir,
+        hasExistingThread: Boolean(sessionEntry?.codexThreadId),
+      });
+      await typing.startTypingLoop();
+      typing.refreshTypingTtl();
+      const codexProgress = createCodexProgressEmitter({
+        emit: async (text) => {
+          typing.refreshTypingTtl();
+          await opts?.onToolResult?.({
+            text,
+            channelData: { forceToolSummary: true },
+          });
+        },
+        minEmitChars: 320,
+        maxEmitChars: 1_600,
+        minEmitIntervalMs: 5_000,
+      });
+      await opts?.onToolResult?.({
+        text: "Running Codex App Server...",
+        channelData: { forceToolSummary: true },
+      });
+      const existingThreadId =
+        sessionEntry?.codexProjectKey && sessionEntry.codexProjectKey !== codexWorkspaceDir
+          ? undefined
+          : sessionEntry?.codexThreadId;
+      const updatePendingInput = async (
+        pending: {
+          requestId: string;
+          options: string[];
+          expiresAt: number;
+        } | null,
+      ) => {
+        if (!sessionEntry || !sessionStore || !sessionKey) {
+          return;
+        }
+        sessionEntry.pendingUserInputRequestId = pending?.requestId;
+        sessionEntry.pendingUserInputOptions = pending?.options;
+        sessionEntry.pendingUserInputExpiresAt = pending?.expiresAt;
+        sessionEntry.updatedAt = Date.now();
+        sessionStore[sessionKey] = sessionEntry;
+        if (storePath) {
+          await updateSessionStore(storePath, (store) => {
+            store[sessionKey] = sessionEntry;
+          });
+        }
+      };
+
+      const codexResult = await runCodexAppServerAgent({
+        sessionId: sessionIdFinal,
+        sessionKey,
+        prompt: codexCommandPrompt,
+        workspaceDir: codexWorkspaceDir,
+        config: cfg,
+        timeoutMs,
+        runId: crypto.randomUUID(),
+        existingThreadId,
+        onPartialReply: async (payload) => {
+          const text = payload.text;
+          if (!text) {
+            return;
+          }
+          typing.refreshTypingTtl();
+          await codexProgress.push(text);
+        },
+        onToolResult: async (payload) => {
+          const text = payload.text?.trim();
+          if (!text) {
+            return;
+          }
+          typing.refreshTypingTtl();
+          // Ensure short buffered partial deltas are delivered before prompting for
+          // approvals or other tool-result notices.
+          await codexProgress.flush(true);
+          const codexInputButtons = buildCodexInputButtons({
+            text,
+            requestId: sessionEntry?.pendingUserInputRequestId,
+            options: sessionEntry?.pendingUserInputOptions,
+          });
+          await opts?.onToolResult?.({
+            text,
+            channelData: {
+              forceToolSummary: true,
+              ...(codexInputButtons ? { telegram: { buttons: codexInputButtons } } : {}),
+            },
+          });
+        },
+        onPendingUserInput: async (pending) => {
+          await updatePendingInput(pending ?? null);
+        },
+      });
+      await codexProgress.flush(true);
+
+      const codexText = (codexResult.payloads ?? [])
+        .map((payload) => payload.text?.trim() ?? "")
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+      log.info("completed /codex task from App Server", {
+        payloadCount: codexResult.payloads?.length ?? 0,
+        hasText: Boolean(codexText),
+        threadId: codexResult.meta.agentMeta?.sessionId ?? null,
+        runId: codexResult.meta.agentMeta?.runId ?? null,
+      });
+      codexRelayContext = truncateCodexContext(codexText || "(no text output)");
+      const codexThreadId = codexResult.meta.agentMeta?.sessionId?.trim();
+      const codexRunId = codexResult.meta.agentMeta?.runId?.trim();
+      if (sessionEntry && sessionStore && sessionKey) {
+        sessionEntry.codexThreadId = codexThreadId || sessionEntry.codexThreadId;
+        sessionEntry.codexRunId = codexRunId || sessionEntry.codexRunId;
+        sessionEntry.codexProjectKey = codexWorkspaceDir;
+        sessionEntry.pendingUserInputRequestId = undefined;
+        sessionEntry.pendingUserInputOptions = undefined;
+        sessionEntry.pendingUserInputExpiresAt = undefined;
+        sessionEntry.updatedAt = Date.now();
+        sessionStore[sessionKey] = sessionEntry;
+        if (storePath) {
+          await updateSessionStore(storePath, (store) => {
+            store[sessionKey] = sessionEntry;
+          });
+        }
+      }
+      prefixedCommandBody = [
+        "[You requested a Codex App Server run. Use its output as high-confidence coding context.]",
+        `[Codex App Server Output]\n${codexRelayContext}`,
+        `[User Request]\n${codexCommandPrompt}`,
+      ].join("\n\n");
+      effectiveBaseBody = codexCommandPrompt;
+    } catch (err) {
+      const errText = String(err);
+      if (
+        sessionEntry &&
+        sessionStore &&
+        sessionKey &&
+        /conversation not found|thread not found/i.test(errText)
+      ) {
+        sessionEntry.codexThreadId = undefined;
+        sessionEntry.codexRunId = undefined;
+        sessionEntry.codexProjectKey = undefined;
+        sessionEntry.pendingUserInputRequestId = undefined;
+        sessionEntry.pendingUserInputOptions = undefined;
+        sessionEntry.pendingUserInputExpiresAt = undefined;
+        sessionEntry.updatedAt = Date.now();
+        sessionStore[sessionKey] = sessionEntry;
+        if (storePath) {
+          await updateSessionStore(storePath, (store) => {
+            store[sessionKey] = sessionEntry;
+          });
+        }
+        log.warn("cleared stale codex thread binding after not-found error", {
+          sessionKey,
+          workspaceDir: codexWorkspaceDir,
+        });
+      }
+      typing.cleanup();
+      log.error("failed /codex App Server run", {
+        error: errText,
+      });
+      return {
+        text: `Codex App Server run failed: ${errText}`,
+      };
+    }
+  }
   // Use bodyWithEvents (events prepended, but no session hints / untrusted context) so
   // deferred turns receive system events while keeping the same scope as effectiveBaseBody did.
   const queueBodyBase = [threadContextNote, bodyWithEvents].filter(Boolean).join("\n\n");
-  const queuedBody = mediaNote
+  let queuedBody = mediaNote
     ? [mediaNote, mediaReplyHint, queueBodyBase].filter(Boolean).join("\n").trim()
     : queueBodyBase;
+  if (codexRelayContext) {
+    queuedBody = [queuedBody, `[Codex App Server Output]\n${codexRelayContext}`]
+      .filter(Boolean)
+      .join("\n\n");
+  }
   const resolvedQueue = resolveQueueSettings({
     cfg,
     channel: sessionCtx.Provider,
@@ -442,21 +904,36 @@ export async function runPreparedReply(
     inlineMode: perMessageQueueMode,
     inlineOptions: perMessageQueueOptions,
   });
+  const isTelegramSession =
+    sessionCtx.Provider?.trim().toLowerCase() === "telegram" ||
+    ctx.OriginatingChannel?.trim().toLowerCase() === "telegram";
+  const hasPendingCodexInput =
+    Boolean(sessionEntry?.pendingUserInputRequestId) &&
+    (sessionEntry?.pendingUserInputExpiresAt == null ||
+      sessionEntry.pendingUserInputExpiresAt > Date.now());
+  const effectiveQueue =
+    (isCodexAppServerProvider(provider, cfg) || codexCommandPrompt !== null) &&
+    isTelegramSession &&
+    resolvedQueue.mode === "collect"
+      ? { ...resolvedQueue, mode: "steer" as const }
+      : hasPendingCodexInput && resolvedQueue.mode !== "interrupt"
+        ? { ...resolvedQueue, mode: "steer" as const }
+        : resolvedQueue;
   const sessionLaneKey = resolveEmbeddedSessionLane(sessionKey ?? sessionIdFinal);
   const laneSize = getQueueSize(sessionLaneKey);
-  if (resolvedQueue.mode === "interrupt" && laneSize > 0) {
+  if (effectiveQueue.mode === "interrupt" && laneSize > 0) {
     const cleared = clearCommandLane(sessionLaneKey);
-    const aborted = abortEmbeddedPiRun(sessionIdFinal);
+    const aborted = abortAgentRun(sessionIdFinal);
     logVerbose(`Interrupting ${sessionLaneKey} (cleared ${cleared}, aborted=${aborted})`);
   }
   const queueKey = sessionKey ?? sessionIdFinal;
-  const isActive = isEmbeddedPiRunActive(sessionIdFinal);
-  const isStreaming = isEmbeddedPiRunStreaming(sessionIdFinal);
-  const shouldSteer = resolvedQueue.mode === "steer" || resolvedQueue.mode === "steer-backlog";
+  const isActive = isAgentRunActive(sessionIdFinal);
+  const isStreaming = isAgentRunStreaming(sessionIdFinal);
+  const shouldSteer = effectiveQueue.mode === "steer" || effectiveQueue.mode === "steer-backlog";
   const shouldFollowup =
-    resolvedQueue.mode === "followup" ||
-    resolvedQueue.mode === "collect" ||
-    resolvedQueue.mode === "steer-backlog";
+    effectiveQueue.mode === "followup" ||
+    effectiveQueue.mode === "collect" ||
+    effectiveQueue.mode === "steer-backlog";
   const authProfileId = await resolveSessionAuthProfileOverride({
     cfg,
     provider,
@@ -506,6 +983,7 @@ export async function runPreparedReply(
       skillsSnapshot,
       provider,
       model,
+      disableTools: Boolean(codexCommandPrompt),
       authProfileId,
       authProfileIdSource,
       thinkLevel: resolvedThinkLevel,
@@ -530,7 +1008,7 @@ export async function runPreparedReply(
     commandBody: prefixedCommandBody,
     followupRun,
     queueKey,
-    resolvedQueue,
+    resolvedQueue: effectiveQueue,
     shouldSteer,
     shouldFollowup,
     isActive,

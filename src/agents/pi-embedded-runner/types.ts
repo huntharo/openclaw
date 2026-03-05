@@ -3,6 +3,7 @@ import type { MessagingToolSend } from "../pi-embedded-messaging.js";
 
 export type EmbeddedPiAgentMeta = {
   sessionId: string;
+  runId?: string;
   provider: string;
   model: string;
   compactionCount?: number;

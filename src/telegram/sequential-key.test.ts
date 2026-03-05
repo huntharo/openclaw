@@ -86,6 +86,41 @@ describe("getTelegramSequentialKey", () => {
       { message: mockMessage({ chat: mockChat({ id: 123 }), text: "please do not do that" }) },
       "telegram:123",
     ],
+    [
+      {
+        update: {
+          callback_query: {
+            data: "codex_input:req-1:2",
+            message: mockMessage({
+              chat: mockChat({ id: -1001, type: "supergroup", is_forum: true }),
+              message_thread_id: 42,
+            }),
+          },
+        },
+      },
+      "telegram:-1001:topic:42:control",
+    ],
+    [
+      {
+        message: {
+          message_id: 1,
+          date: 0,
+          chat: mockChat({ id: -1002, type: "supergroup", is_forum: true }),
+          message_thread_id: 99,
+          text: "1",
+          reply_to_message: {
+            message_id: 77,
+            date: 0,
+            chat: mockChat({ id: -1002, type: "supergroup", is_forum: true }),
+            text: "🧭 Agent input requested (req-1)",
+            reply_markup: {
+              inline_keyboard: [[{ text: "Approve", callback_data: "codex_input:1" }]],
+            },
+          } as unknown as Message,
+        } as Message,
+      },
+      "telegram:-1002:topic:99:control",
+    ],
   ])("resolves key %#", (input, expected) => {
     expect(getTelegramSequentialKey(input)).toBe(expected);
   });

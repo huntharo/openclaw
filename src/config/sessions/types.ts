@@ -148,6 +148,18 @@ export type SessionEntry = {
   memoryFlushCompactionCount?: number;
   cliSessionIds?: Record<string, string>;
   claudeCliSessionId?: string;
+  /** Codex App Server thread binding for this session lane/project. */
+  codexThreadId?: string;
+  /** Last Codex App Server run id for this lane. */
+  codexRunId?: string;
+  /** Workspace identity for current codexThreadId binding. */
+  codexProjectKey?: string;
+  /** Pending server-initiated user input request id (if any). */
+  pendingUserInputRequestId?: string;
+  /** Numbered options presented for the pending user input request. */
+  pendingUserInputOptions?: string[];
+  /** Pending user-input request expiry (unix ms). */
+  pendingUserInputExpiresAt?: number;
   label?: string;
   displayName?: string;
   channel?: string;

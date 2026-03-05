@@ -117,6 +117,27 @@ export type CliBackendConfig = {
   };
 };
 
+export type CodexAppServerConfig = {
+  /** Enable Codex App Server transport for provider "codex-app-server". */
+  enabled?: boolean;
+  /** WebSocket endpoint for Codex App Server (ws:// or wss://). */
+  url?: string;
+  /** Transport mode ("stdio" default, "websocket" optional). */
+  transport?: "stdio" | "websocket";
+  /** Command used to launch Codex App Server in stdio mode (default: "codex"). */
+  command?: string;
+  /** Optional extra args appended after "app-server" for stdio mode. */
+  args?: string[];
+  /** Optional bearer token for Authorization header. */
+  authToken?: string;
+  /** Optional static headers included on connect. */
+  headers?: Record<string, string>;
+  /** JSON-RPC request timeout in milliseconds. */
+  requestTimeoutMs?: number;
+  /** User input/approval prompt timeout in milliseconds. */
+  inputTimeoutMs?: number;
+};
+
 export type AgentDefaultsConfig = {
   /** Primary model and fallbacks (provider/model). Accepts string or {primary,fallbacks}. */
   model?: AgentModelConfig;
@@ -167,6 +188,8 @@ export type AgentDefaultsConfig = {
   contextTokens?: number;
   /** Optional CLI backends for text-only fallback (claude-cli, etc.). */
   cliBackends?: Record<string, CliBackendConfig>;
+  /** Codex App Server transport settings for provider "codex-app-server". */
+  codexAppServer?: CodexAppServerConfig;
   /** Opt-in: prune old tool results from the LLM context to reduce token usage. */
   contextPruning?: AgentContextPruningConfig;
   /** Compaction tuning and pre-compaction memory flush behavior. */

@@ -566,6 +566,21 @@ function buildChatCommands(): ChatCommandDefinition[] {
       ],
     }),
     defineChatCommand({
+      key: "codex",
+      nativeName: "codex",
+      description: "Run Codex App Server and summarize with current model.",
+      textAlias: "/codex",
+      category: "session",
+      args: [
+        {
+          name: "task",
+          description: "Task to send to Codex App Server",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+    }),
+    defineChatCommand({
       key: "think",
       nativeName: "think",
       description: "Set thinking level.",

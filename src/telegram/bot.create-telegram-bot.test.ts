@@ -9,6 +9,7 @@ import {
   answerCallbackQuerySpy,
   botCtorSpy,
   commandSpy,
+  editMessageTextSpy,
   getLoadConfigMock,
   getLoadWebMediaMock,
   getOnHandler,
@@ -17,6 +18,8 @@ import {
   makeForumGroupMessageCtx,
   middlewareUseSpy,
   onSpy,
+  queueAgentRunMessageSpy,
+  queueAgentRunMessageBySessionKeySpy,
   replySpy,
   sendAnimationSpy,
   sendChatActionSpy,
@@ -142,6 +145,263 @@ describe("createTelegramBot", () => {
     const payload = replySpy.mock.calls[0][0];
     expect(payload.Body).toContain("cmd:option_a");
     expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-1");
+  });
+
+  it("maps codex input callback buttons to numeric replies and clears inline keyboard", async () => {
+    createTelegramBot({ token: "tok" });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+    expect(callbackHandler).toBeDefined();
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-1",
+        data: "codex_input:req-1:2",
+        from: { id: 9, first_name: "Ada", username: "ada_bot" },
+        message: {
+          chat: { id: 1234, type: "private" },
+          date: 1736380800,
+          message_id: 11,
+          text: "🧭 Agent input requested (req-1)",
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-codex-1");
+    expect(editMessageTextSpy).toHaveBeenCalledWith(1234, 11, "🧭 Agent input requested (req-1)", {
+      reply_markup: { inline_keyboard: [] },
+    });
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    const payload = replySpy.mock.calls[0][0];
+    expect(payload.Body).toContain("2");
+  });
+
+  it("processes codex input callbacks even when inline buttons are allowlist-scoped", async () => {
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: {
+          dmPolicy: "open",
+          allowFrom: [],
+          capabilities: {
+            inlineButtons: "allowlist",
+          },
+        },
+      },
+    });
+    createTelegramBot({ token: "tok" });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+    expect(callbackHandler).toBeDefined();
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-allowlist",
+        data: "codex_input:1",
+        from: { id: 99, first_name: "Unlisted", username: "not_allowed" },
+        message: {
+          chat: { id: 1234, type: "private" },
+          date: 1736380800,
+          message_id: 12,
+          text: "🧭 Agent input requested (req-1)",
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-codex-allowlist");
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    const payload = replySpy.mock.calls[0][0];
+    expect(payload.Body).toContain("1");
+  });
+
+  it("forwards codex input callbacks directly to active pending runs", async () => {
+    const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-telegram-codex-callback-"));
+    const storePath = path.join(storeDir, "sessions.json");
+    fs.writeFileSync(
+      storePath,
+      JSON.stringify({
+        "agent:main:telegram:default:direct:1234": {
+          sessionId: "codex-session-1",
+          pendingUserInputRequestId: "req-1",
+          pendingUserInputOptions: ["Approve", "Deny"],
+          pendingUserInputExpiresAt: Date.now() + 60_000,
+        },
+      }),
+      "utf-8",
+    );
+    loadConfig.mockReturnValue({
+      session: { store: storePath, dmScope: "per-account-channel-peer" },
+      channels: {
+        telegram: { dmPolicy: "open", allowFrom: ["*"] },
+      },
+    });
+    queueAgentRunMessageBySessionKeySpy.mockReturnValue(true);
+
+    createTelegramBot({ token: "tok" });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+    expect(callbackHandler).toBeDefined();
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-forward-1",
+        data: "codex_input:req-1:2",
+        from: { id: 9, first_name: "Ada", username: "ada_bot" },
+        message: {
+          chat: { id: 1234, type: "private" },
+          date: 1736380800,
+          message_id: 13,
+          text: "🧭 Agent input requested (req-1)",
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-codex-forward-1");
+    expect(queueAgentRunMessageBySessionKeySpy).toHaveBeenCalledWith(
+      "agent:main:telegram:default:direct:1234",
+      "2",
+    );
+    expect(queueAgentRunMessageSpy).not.toHaveBeenCalled();
+    expect(replySpy).not.toHaveBeenCalled();
+  });
+
+  it("forwards free-form pending codex input replies directly to active runs", async () => {
+    const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-telegram-codex-message-"));
+    const storePath = path.join(storeDir, "sessions.json");
+    fs.writeFileSync(
+      storePath,
+      JSON.stringify({
+        "agent:main:telegram:default:direct:1234": {
+          sessionId: "codex-session-2",
+          pendingUserInputRequestId: "req-2",
+          pendingUserInputOptions: ["Approve", "Deny"],
+          pendingUserInputExpiresAt: Date.now() + 60_000,
+        },
+      }),
+      "utf-8",
+    );
+    loadConfig.mockReturnValue({
+      session: { store: storePath, dmScope: "per-account-channel-peer" },
+      channels: {
+        telegram: { dmPolicy: "open", allowFrom: ["*"] },
+      },
+    });
+    queueAgentRunMessageBySessionKeySpy.mockReturnValue(true);
+
+    createTelegramBot({ token: "tok" });
+    const messageHandler = onSpy.mock.calls.find((call) => call[0] === "message")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+    expect(messageHandler).toBeDefined();
+
+    await messageHandler({
+      message: {
+        chat: { id: 1234, type: "private" },
+        text: "approved",
+        date: 1736380800,
+        message_id: 14,
+        from: { id: 9, first_name: "Ada", username: "ada_bot" },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(queueAgentRunMessageBySessionKeySpy).toHaveBeenCalledWith(
+      "agent:main:telegram:default:direct:1234",
+      "approved",
+    );
+    expect(queueAgentRunMessageSpy).not.toHaveBeenCalled();
+    expect(replySpy).not.toHaveBeenCalled();
+  });
+
+  it("forwards codex callbacks by session key even when pending metadata is missing", async () => {
+    loadConfig.mockReturnValue({
+      session: { dmScope: "per-account-channel-peer" },
+      channels: {
+        telegram: { dmPolicy: "open", allowFrom: ["*"] },
+      },
+    });
+    queueAgentRunMessageBySessionKeySpy.mockReturnValue(true);
+
+    createTelegramBot({ token: "tok" });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+    expect(callbackHandler).toBeDefined();
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-forward-no-pending",
+        data: "codex_input:1",
+        from: { id: 9, first_name: "Ada", username: "ada_bot" },
+        message: {
+          chat: { id: 1234, type: "private" },
+          date: 1736380800,
+          message_id: 15,
+          text: "🧭 Agent input requested (req-missing)",
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-codex-forward-no-pending");
+    expect(queueAgentRunMessageBySessionKeySpy).toHaveBeenCalledWith(
+      "agent:main:telegram:default:direct:1234",
+      "1",
+    );
+    expect(replySpy).not.toHaveBeenCalled();
+  });
+
+  it("forwards reply-to-prompt free-form approval by session key without pending metadata", async () => {
+    loadConfig.mockReturnValue({
+      session: { dmScope: "per-account-channel-peer" },
+      channels: {
+        telegram: { dmPolicy: "open", allowFrom: ["*"] },
+      },
+    });
+    queueAgentRunMessageBySessionKeySpy.mockReturnValue(true);
+
+    createTelegramBot({ token: "tok" });
+    const messageHandler = onSpy.mock.calls.find((call) => call[0] === "message")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+    expect(messageHandler).toBeDefined();
+
+    await messageHandler({
+      message: {
+        chat: { id: 1234, type: "private" },
+        text: "approve",
+        date: 1736380800,
+        message_id: 16,
+        from: { id: 9, first_name: "Ada", username: "ada_bot" },
+        reply_to_message: {
+          chat: { id: 1234, type: "private" },
+          date: 1736380799,
+          message_id: 15,
+          text: "🧭 Agent input requested (req-missing)",
+          reply_markup: {
+            inline_keyboard: [[{ text: "1. Approve", callback_data: "codex_input:1" }]],
+          },
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(queueAgentRunMessageBySessionKeySpy).toHaveBeenCalledWith(
+      "agent:main:telegram:default:direct:1234",
+      "approve",
+    );
+    expect(replySpy).not.toHaveBeenCalled();
   });
   it("wraps inbound message with Telegram envelope", async () => {
     await withEnvAsync({ TZ: "Europe/Vienna" }, async () => {
