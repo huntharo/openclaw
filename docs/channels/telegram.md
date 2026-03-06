@@ -529,6 +529,17 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
     - OpenClaw pins the spawn confirmation message in-topic after a successful bind.
     - Requires `channels.telegram.threadBindings.spawnAcpSessions=true`.
 
+    **Thread-bound Codex App Server sessions from chat**:
+
+    - `/codex new [--cwd <path>] [prompt]` binds the current Telegram DM or topic to a Codex App Server session lane.
+    - `/codex join <thread-id-or-filter>` reattaches the current Telegram DM or topic to an existing Codex thread.
+    - Once bound, normal follow-up messages in that Telegram conversation route directly to the stored Codex thread.
+    - `/codex steer <instruction>` nudges the bound Codex thread without replacing the existing conversation state.
+    - `/codex status` shows the bound session key, Codex thread id, project path, runtime state, and any pending input request.
+    - `/codex detach` removes the local Telegram binding only. It does not close the remote Codex thread.
+    - Pending Codex approvals and `requestUserInput` prompts are replayed into Telegram with numbered inline buttons when options are available.
+    - On gateway restart, OpenClaw reconciles the stored Telegram binding and Codex session lane so bound conversations continue routing to Codex when the target lane metadata is still valid.
+
     Template context includes:
 
     - `MessageThreadId`
