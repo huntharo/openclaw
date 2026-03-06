@@ -1858,21 +1858,6 @@ function buildTurnStartVariants(params: {
       threadId: params.threadId,
       input,
     }),
-    ...withAliases({
-      threadId: params.threadId,
-      prompt: params.prompt,
-      cwd: params.workspaceDir,
-      model: params.model,
-    }),
-    ...withAliases({
-      threadId: params.threadId,
-      prompt: params.prompt,
-      cwd: params.workspaceDir,
-    }),
-    ...withAliases({
-      threadId: params.threadId,
-      prompt: params.prompt,
-    }),
   ];
 }
 

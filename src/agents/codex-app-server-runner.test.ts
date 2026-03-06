@@ -63,7 +63,7 @@ describe("codex app server rpc methods", () => {
     );
     expect(
       variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "prompt")),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("does not retry with a fresh thread when an explicit binding was provided", () => {
