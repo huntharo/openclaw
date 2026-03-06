@@ -8,6 +8,11 @@ vi.mock("../../agents/auth-profiles/session-override.js", () => ({
 }));
 
 vi.mock("../../agents/codex-app-server-runner.js", () => ({
+  discoverCodexAppServerThreads: vi.fn().mockResolvedValue({
+    available: false,
+    threads: [],
+    error: "unavailable",
+  }),
   discoverCodexAppServerSlashCommands: vi.fn().mockResolvedValue({
     available: false,
     commands: [],
@@ -104,6 +109,7 @@ vi.mock("./typing-mode.js", () => ({
 }));
 
 import {
+  discoverCodexAppServerThreads,
   discoverCodexAppServerSlashCommands,
   runCodexAppServerAgent,
 } from "../../agents/codex-app-server-runner.js";
@@ -930,6 +936,78 @@ describe("runPreparedReply media-only handling", () => {
     expect(reply?.text).toContain("/codex_review");
     expect(reply?.text).toContain("/codex_git_status");
     expect(reply?.text).toContain("Name collisions skipped");
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("lists Codex thread inventory from Codex App Server with /codex list <filter>", async () => {
+    vi.mocked(discoverCodexAppServerThreads).mockResolvedValueOnce({
+      available: true,
+      threads: [
+        {
+          threadId: "019-openclaw-1",
+          projectKey: "/Users/huntharo/github/openclaw",
+          title: "openclaw release prep",
+          updatedAt: 1_777_000_000_000,
+        },
+        {
+          threadId: "019-other-1",
+          projectKey: "/Users/huntharo/github/other",
+          title: "other work",
+          updatedAt: 1_776_000_000_000,
+        },
+      ],
+    });
+    const result = await runPreparedReply(
+      baseParams({
+        workspaceDir: "/tmp/ws-codex-list-threads",
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex list openclaw",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("Known Codex threads (from Codex App Server):");
+    expect(reply?.text).toContain("019-openclaw-1");
+    expect(reply?.text).not.toContain("019-other-1");
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("falls back to locally bound sessions when Codex list discovery is unavailable", async () => {
+    vi.mocked(discoverCodexAppServerThreads).mockResolvedValueOnce({
+      available: false,
+      threads: [],
+      error: "rpc unavailable",
+    });
+    const now = Date.now();
+    const sessionStore = {
+      "session-key": {
+        sessionId: "s-1",
+        updatedAt: now,
+        codexThreadId: "thread-local-1",
+        codexProjectKey: "/Users/huntharo/github/openclaw",
+      },
+    };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry: sessionStore["session-key"],
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex list openclaw",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("thread-local-1");
+    expect(reply?.text).toContain("Codex thread discovery unavailable");
+    expect(reply?.text).toContain("locally known OpenClaw-bound Codex threads");
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
 

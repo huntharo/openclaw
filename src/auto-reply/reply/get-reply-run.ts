@@ -4,7 +4,9 @@ import path from "node:path";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import {
+  discoverCodexAppServerThreads,
   discoverCodexAppServerSlashCommands,
+  type CodexThreadDiscoveryResult,
   type CodexMirrorSlashDiscoveryResult,
   isCodexAppServerProvider,
   runCodexAppServerAgent,
@@ -240,6 +242,37 @@ function formatCodexMirrorSlashDiscovery(result: CodexMirrorSlashDiscoveryResult
           .join("\n")}`
       : "";
   return `Discoverable mirrored commands:\n${rows.join("\n")}${suffix}${collisions}`;
+}
+
+function formatCodexThreadDiscovery(params: {
+  result: CodexThreadDiscoveryResult;
+  filter: string;
+  currentThreadId?: string;
+}): string {
+  const normalizedFilter = params.filter.trim().toLowerCase();
+  const rows = params.result.threads.filter((entry) => {
+    if (!normalizedFilter) {
+      return true;
+    }
+    return (
+      entry.threadId.toLowerCase().includes(normalizedFilter) ||
+      (entry.projectKey ?? "").toLowerCase().includes(normalizedFilter) ||
+      (entry.title ?? "").toLowerCase().includes(normalizedFilter)
+    );
+  });
+  if (rows.length === 0) {
+    return normalizedFilter
+      ? `No Codex threads matched "${params.filter.trim()}".`
+      : "No Codex threads were returned by Codex App Server.";
+  }
+  const lines = rows.slice(0, 40).map((entry, index) => {
+    const marker = entry.threadId === params.currentThreadId ? "*" : " ";
+    const projectPart = entry.projectKey ? ` project=${entry.projectKey}` : "";
+    const titlePart = entry.title ? ` title=${entry.title}` : "";
+    return `${marker}${index + 1}. thread=${entry.threadId}${projectPart}${titlePart}`;
+  });
+  const suffix = rows.length > 40 ? `\n… and ${rows.length - 40} more` : "";
+  return `Known Codex threads (from Codex App Server):\n${lines.join("\n")}${suffix}`;
 }
 
 const ABSOLUTE_PATH_RE = /(?:^|[\s"'`])((?:\/[^/\s"'`]+)+\/?)/g;
@@ -1081,8 +1114,24 @@ export async function runPreparedReply(
       typing.cleanup();
       return { text: formatCodexMirrorSlashDiscovery(discovery) };
     }
+    const discoveredThreads = await discoverCodexAppServerThreads({
+      config: cfg,
+      sessionKey,
+      workspaceDir,
+    });
     typing.cleanup();
-    return { text: formatKnownCodexThreads(parsedCodexCommand.filter) };
+    if (discoveredThreads.available) {
+      return {
+        text: formatCodexThreadDiscovery({
+          result: discoveredThreads,
+          filter: parsedCodexCommand.filter,
+          currentThreadId: sessionEntry?.codexThreadId?.trim(),
+        }),
+      };
+    }
+    return {
+      text: `${formatKnownCodexThreads(parsedCodexCommand.filter)}\n\nCodex thread discovery unavailable${discoveredThreads.error ? `: ${discoveredThreads.error}` : "."}\nShowing locally known OpenClaw-bound Codex threads only.`,
+    };
   }
   if (command.isAuthorizedSender && parsedCodexCommand.type === "detach") {
     await clearCodexSessionState();

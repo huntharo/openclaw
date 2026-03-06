@@ -675,6 +675,19 @@ export type CodexMirrorSlashDiscoveryResult = {
   error?: string;
 };
 
+export type CodexThreadDiscoveryEntry = {
+  threadId: string;
+  title?: string;
+  projectKey?: string;
+  updatedAt?: number;
+};
+
+export type CodexThreadDiscoveryResult = {
+  available: boolean;
+  threads: CodexThreadDiscoveryEntry[];
+  error?: string;
+};
+
 export function isCodexAppServerProvider(provider: string, cfg?: OpenClawConfig): boolean {
   const normalized = normalizeProviderId(provider);
   if (normalized !== "codex-app-server") {
@@ -944,6 +957,38 @@ function resolveSlashDiscoveryAttempts(): Array<{
   ];
 }
 
+function resolveThreadDiscoveryAttempts(): Array<{
+  method: string;
+  variants: Array<Record<string, unknown>>;
+}> {
+  return [
+    {
+      method: "thread/list",
+      variants: [{}, { limit: 200 }, { pageSize: 200 }],
+    },
+    {
+      method: "threads/list",
+      variants: [{}, { limit: 200 }, { pageSize: 200 }],
+    },
+    {
+      method: "conversation/list",
+      variants: [{}, { limit: 200 }, { pageSize: 200 }],
+    },
+    {
+      method: "conversations/list",
+      variants: [{}, { limit: 200 }, { pageSize: 200 }],
+    },
+    {
+      method: "session/list",
+      variants: [{}, { limit: 200 }, { pageSize: 200 }],
+    },
+    {
+      method: "sessions/list",
+      variants: [{}, { limit: 200 }, { pageSize: 200 }],
+    },
+  ];
+}
+
 type ExtractedIds = {
   threadId?: string;
   runId?: string;
@@ -983,6 +1028,204 @@ function pickString(
     }
   }
   return undefined;
+}
+
+function parseTimestampLike(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value <= 0) {
+      return undefined;
+    }
+    if (value >= 1_000_000_000_000) {
+      return Math.floor(value);
+    }
+    if (value >= 1_000_000_000) {
+      return Math.floor(value * 1000);
+    }
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(numeric)) {
+      return parseTimestampLike(numeric);
+    }
+    return undefined;
+  }
+  const parsed = Date.parse(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function resolveThreadProjectKey(record: Record<string, unknown>): string | undefined {
+  const direct =
+    pickString(record, [
+      "cwd",
+      "workspaceDir",
+      "workspace_dir",
+      "workspace",
+      "projectKey",
+      "project_key",
+      "projectPath",
+      "project_path",
+      "directory",
+      "path",
+    ]) ?? "";
+  if (direct.startsWith("/") || /^[A-Za-z]:\\/.test(direct)) {
+    return direct;
+  }
+  const nestedWorkspace = asRecord(record.workspace) ?? asRecord(record.project);
+  if (!nestedWorkspace) {
+    return undefined;
+  }
+  return (
+    pickString(nestedWorkspace, ["cwd", "workspaceDir", "path", "projectPath", "root"]) ?? undefined
+  );
+}
+
+function resolveThreadUpdatedAt(record: Record<string, unknown>): number | undefined {
+  const candidates = [
+    record.updatedAt,
+    record.updated_at,
+    record.lastUpdatedAt,
+    record.last_updated_at,
+    record.lastMessageAt,
+    record.last_message_at,
+    record.modifiedAt,
+    record.modified_at,
+    record.timestamp,
+    record.createdAt,
+    record.created_at,
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseTimestampLike(candidate);
+    if (parsed != null) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function extractThreadDiscoveryCandidates(params: {
+  value: unknown;
+  depth?: number;
+  inThreadContext?: boolean;
+}): CodexThreadDiscoveryEntry[] {
+  const depth = params.depth ?? 0;
+  if (depth > 8 || params.value == null) {
+    return [];
+  }
+  if (Array.isArray(params.value)) {
+    return params.value.flatMap((entry) =>
+      extractThreadDiscoveryCandidates({
+        value: entry,
+        depth: depth + 1,
+        inThreadContext: params.inThreadContext,
+      }),
+    );
+  }
+  const record = asRecord(params.value);
+  if (!record) {
+    return [];
+  }
+  const out: CodexThreadDiscoveryEntry[] = [];
+  const keyHints = Object.keys(record).map((key) => key.toLowerCase());
+  const hasThreadHint = keyHints.some((key) =>
+    /(^|[_-])(thread|threads|conversation|conversations|session|sessions)([_-]|$)/.test(key),
+  );
+  const inThreadContext = params.inThreadContext === true || hasThreadHint;
+  const explicitThreadId =
+    pickString(record, ["threadId", "thread_id", "conversationId", "conversation_id"]) ?? "";
+  const fallbackId = inThreadContext ? (pickString(record, ["id"]) ?? "") : "";
+  const runLikeId = pickString(record, ["runId", "run_id", "turnId", "turn_id"]) ?? "";
+  const selectedThreadId =
+    explicitThreadId || (fallbackId && fallbackId !== runLikeId ? fallbackId : "");
+  if (selectedThreadId) {
+    const title =
+      pickString(record, ["title", "name", "summary", "label", "displayName"]) ?? undefined;
+    const projectKey = resolveThreadProjectKey(record);
+    const updatedAt = resolveThreadUpdatedAt(record);
+    out.push({
+      threadId: selectedThreadId,
+      title,
+      projectKey,
+      updatedAt,
+    });
+  }
+  for (const [key, entry] of Object.entries(record)) {
+    if (!entry || (typeof entry !== "object" && !Array.isArray(entry))) {
+      continue;
+    }
+    const keyLower = key.toLowerCase();
+    if (/(^|[_-])(turn|turns|run|runs)([_-]|$)/.test(keyLower)) {
+      continue;
+    }
+    out.push(
+      ...extractThreadDiscoveryCandidates({
+        value: entry,
+        depth: depth + 1,
+        inThreadContext:
+          inThreadContext ||
+          /(^|[_-])(thread|threads|conversation|conversations|session|sessions|list|items|results|data)([_-]|$)/.test(
+            keyLower,
+          ),
+      }),
+    );
+  }
+  return out;
+}
+
+function dedupeThreadDiscoveryCandidates(
+  candidates: CodexThreadDiscoveryEntry[],
+): CodexThreadDiscoveryEntry[] {
+  const byThreadId = new Map<string, CodexThreadDiscoveryEntry>();
+  for (const candidate of candidates) {
+    const threadId = candidate.threadId.trim();
+    if (!threadId) {
+      continue;
+    }
+    const normalized: CodexThreadDiscoveryEntry = {
+      threadId,
+      title: candidate.title?.trim() || undefined,
+      projectKey: candidate.projectKey?.trim() || undefined,
+      updatedAt: candidate.updatedAt,
+    };
+    const existing = byThreadId.get(threadId);
+    if (!existing) {
+      byThreadId.set(threadId, normalized);
+      continue;
+    }
+    const existingUpdatedAt = existing.updatedAt ?? 0;
+    const nextUpdatedAt = normalized.updatedAt ?? 0;
+    if (nextUpdatedAt > existingUpdatedAt) {
+      byThreadId.set(threadId, {
+        ...existing,
+        ...normalized,
+      });
+      continue;
+    }
+    byThreadId.set(threadId, {
+      ...existing,
+      title: existing.title ?? normalized.title,
+      projectKey: existing.projectKey ?? normalized.projectKey,
+      updatedAt: existing.updatedAt ?? normalized.updatedAt,
+    });
+  }
+  return [...byThreadId.values()].toSorted((a, b) => {
+    const tsA = a.updatedAt ?? 0;
+    const tsB = b.updatedAt ?? 0;
+    if (tsA !== tsB) {
+      return tsB - tsA;
+    }
+    return a.threadId.localeCompare(b.threadId);
+  });
 }
 
 function extractIds(value: unknown): ExtractedIds {
@@ -1711,6 +1954,72 @@ export async function discoverCodexAppServerSlashCommands(params?: {
   }
 }
 
+export async function discoverCodexAppServerThreads(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+}): Promise<CodexThreadDiscoveryResult> {
+  const settings = resolveCodexAppServerSettings(params?.config);
+  if (!settings.enabled) {
+    return {
+      available: false,
+      threads: [],
+      error: "codex app server is disabled",
+    };
+  }
+  const client = createJsonRpcClient(settings);
+  let discoveryAvailable = false;
+  let lastError: string | undefined;
+  const candidates: CodexThreadDiscoveryEntry[] = [];
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params?.sessionKey,
+      workspaceDir: params?.workspaceDir,
+    });
+    const attempts = resolveThreadDiscoveryAttempts();
+    for (const attempt of attempts) {
+      for (const variant of attempt.variants) {
+        try {
+          const result = await client.request(attempt.method, variant, settings.requestTimeoutMs);
+          discoveryAvailable = true;
+          candidates.push(
+            ...extractThreadDiscoveryCandidates({
+              value: result,
+              inThreadContext: true,
+            }),
+          );
+          break;
+        } catch (err) {
+          lastError = String(err);
+        }
+      }
+    }
+    if (!discoveryAvailable) {
+      return {
+        available: false,
+        threads: [],
+        error: lastError ?? "thread discovery unavailable",
+      };
+    }
+    return {
+      available: true,
+      threads: dedupeThreadDiscoveryCandidates(candidates),
+      ...(lastError ? { error: lastError } : {}),
+    };
+  } catch (err) {
+    return {
+      available: false,
+      threads: [],
+      error: String(err),
+    };
+  } finally {
+    await client.close();
+  }
+}
+
 export const __testing = {
   getTurnStartRpcMethods,
   buildTurnStartVariants,
@@ -1719,6 +2028,8 @@ export const __testing = {
   normalizeMirrorSlashName,
   extractMirrorSlashCandidates,
   dedupeMirrorSlashCandidates,
+  extractThreadDiscoveryCandidates,
+  dedupeThreadDiscoveryCandidates,
 };
 
 function createJsonRpcClient(settings: CodexAppServerSettings): JsonRpcClient {

@@ -135,3 +135,58 @@ describe("codex slash discovery helpers", () => {
     );
   });
 });
+
+describe("codex thread discovery helpers", () => {
+  it("extracts thread inventory from nested discovery payloads", () => {
+    const extracted = __testing.extractThreadDiscoveryCandidates({
+      value: {
+        conversations: [
+          {
+            id: "thread-1",
+            cwd: "/Users/huntharo/github/openclaw",
+            updatedAt: "2026-03-05T22:19:00.000Z",
+          },
+          {
+            threadId: "thread-2",
+            projectKey: "/Users/huntharo/github/other",
+            title: "other",
+          },
+        ],
+      },
+      inThreadContext: true,
+    });
+    expect(extracted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          threadId: "thread-1",
+          projectKey: "/Users/huntharo/github/openclaw",
+        }),
+        expect.objectContaining({
+          threadId: "thread-2",
+          projectKey: "/Users/huntharo/github/other",
+        }),
+      ]),
+    );
+  });
+
+  it("dedupes discovered thread entries by id and prefers richer metadata", () => {
+    const deduped = __testing.dedupeThreadDiscoveryCandidates([
+      { threadId: "thread-1", updatedAt: 1_000 },
+      { threadId: "thread-1", projectKey: "/tmp/workspace", updatedAt: 2_000 },
+      { threadId: "thread-2", title: "hello" },
+    ]);
+    expect(deduped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          threadId: "thread-1",
+          projectKey: "/tmp/workspace",
+          updatedAt: 2_000,
+        }),
+        expect.objectContaining({
+          threadId: "thread-2",
+          title: "hello",
+        }),
+      ]),
+    );
+  });
+});
