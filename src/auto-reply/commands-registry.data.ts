@@ -352,6 +352,34 @@ function buildChatCommands(): ChatCommandDefinition[] {
       argsMenu: "auto",
     }),
     defineChatCommand({
+      key: "codex",
+      nativeName: "codex",
+      description: "Manage Codex App Server threads and bindings.",
+      textAlias: "/codex",
+      category: "management",
+      args: [
+        {
+          name: "action",
+          description: "Action to run",
+          type: "string",
+          preferAutocomplete: true,
+          choices: ["new", "spawn", "join", "steer", "status", "detach", "list", "help"],
+        },
+        {
+          name: "target",
+          description: "Thread id or filter text",
+          type: "string",
+        },
+        {
+          name: "value",
+          description: "Additional input",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+      argsMenu: "auto",
+    }),
+    defineChatCommand({
       key: "focus",
       nativeName: "focus",
       description:

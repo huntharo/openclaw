@@ -198,6 +198,22 @@ describe("commands registry", () => {
     ]);
   });
 
+  it("keeps Codex native action choices aligned with implemented handlers", () => {
+    const codex = listChatCommands().find((command) => command.key === "codex");
+    expect(codex).toBeTruthy();
+    const actionArg = codex?.args?.find((arg) => arg.name === "action");
+    expect(actionArg?.choices).toEqual([
+      "new",
+      "spawn",
+      "join",
+      "steer",
+      "status",
+      "detach",
+      "list",
+      "help",
+    ]);
+  });
+
   it("detects known text commands", () => {
     const detection = getCommandDetection();
     expect(detection.exact.has("/commands")).toBe(true);

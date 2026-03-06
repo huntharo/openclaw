@@ -1,4 +1,4 @@
-import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
+import { abortAgentRun } from "../../agents/run-control.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
@@ -71,7 +71,7 @@ async function applyAbortTarget(params: {
 }) {
   const { abortTarget } = params;
   if (abortTarget.sessionId) {
-    abortEmbeddedPiRun(abortTarget.sessionId);
+    abortAgentRun(abortTarget.sessionId);
   }
 
   const persisted = await persistAbortTargetEntry({

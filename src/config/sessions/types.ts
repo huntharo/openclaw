@@ -148,6 +148,20 @@ export type SessionEntry = {
   memoryFlushCompactionCount?: number;
   cliSessionIds?: Record<string, string>;
   claudeCliSessionId?: string;
+  /** Codex App Server thread binding for this session lane or project. */
+  codexThreadId?: string;
+  /** Last Codex App Server run id for this lane. */
+  codexRunId?: string;
+  /** Workspace identity for the current Codex thread binding. */
+  codexProjectKey?: string;
+  /** When true, non-command turns in this session route directly to Codex App Server. */
+  codexAutoRoute?: boolean;
+  /** Pending server-initiated user input request id, if any. */
+  pendingUserInputRequestId?: string;
+  /** Options shown for the pending user input request. */
+  pendingUserInputOptions?: string[];
+  /** Expiry timestamp for the pending user input request. */
+  pendingUserInputExpiresAt?: number;
   label?: string;
   displayName?: string;
   channel?: string;
