@@ -1015,6 +1015,73 @@ describe("runPreparedReply media-only handling", () => {
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
   });
 
+  it("suppresses duplicate Codex progress relays for auto-routed turns", async () => {
+    vi.mocked(runCodexAppServerAgent).mockImplementationOnce(async (args) => {
+      await args.onPartialReply?.({ text: "I'm Codex, your coding agent in this workspace." });
+      await args.onToolResult?.({ text: "I'm Codex, your coding agent in this workspace." });
+      return {
+        payloads: [{ text: "I'm Codex, your coding agent in this workspace." }],
+        meta: {
+          durationMs: 100,
+          agentMeta: {
+            sessionId: "codex-thread-1",
+            runId: "codex-run-1",
+            provider: "codex-app-server",
+            model: "default",
+          },
+        },
+      };
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+      codexThreadId: "thread-abc",
+      codexProjectKey: "/tmp/codex-project",
+      codexAutoRoute: true,
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const delivered: string[] = [];
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "Who are you?",
+        } as never,
+        ctx: {
+          Body: "Who are you?",
+          RawBody: "Who are you?",
+          CommandBody: "Who are you?",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "topic:123",
+          ChatType: "group",
+        },
+        sessionCtx: {
+          Body: "Who are you?",
+          BodyStripped: "Who are you?",
+          Provider: "telegram",
+          ChatType: "group",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "topic:123",
+        },
+        opts: {
+          onToolResult: async (payload) => {
+            if (payload.text) {
+              delivered.push(payload.text);
+            }
+          },
+        },
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("I'm Codex, your coding agent in this workspace.");
+    expect(delivered).toEqual([]);
+  });
+
   it("auto-routes plain text when topic is focused to the current session", async () => {
     sessionBindingResolveByConversation.mockReturnValue({
       bindingId: "binding-1",

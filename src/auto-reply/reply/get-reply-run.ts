@@ -1610,6 +1610,11 @@ export async function runPreparedReply(
           if (!text) {
             return;
           }
+          if (shouldAutoRouteToCodex) {
+            // Bound topic routing sends the final Codex answer directly; avoid duplicate
+            // transient relay messages for the same turn.
+            return;
+          }
           await pulseCodexTyping();
           typing.refreshTypingTtl();
           await codexProgress.push(text);
@@ -1617,6 +1622,10 @@ export async function runPreparedReply(
         onToolResult: async (payload) => {
           const text = payload.text?.trim();
           if (!text) {
+            return;
+          }
+          const isInputPrompt = /agent input requested/i.test(text);
+          if (shouldAutoRouteToCodex && !isInputPrompt) {
             return;
           }
           await pulseCodexTyping();
