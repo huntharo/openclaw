@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
 import {
   discoverCodexAppServerThreads,
   isCodexAppServerProvider,
@@ -7,8 +9,19 @@ import {
   getCodexAppServerAvailabilityError,
   getCodexAppServerRuntimeStatus,
 } from "../../agents/codex-app-server-startup.js";
+import {
+  resolveThreadBindingIntroText,
+  resolveThreadBindingThreadName,
+} from "../../channels/thread-bindings-messages.js";
+import {
+  resolveThreadBindingIdleTimeoutMsForChannel,
+  resolveThreadBindingMaxAgeMsForChannel,
+} from "../../channels/thread-bindings-policy.js";
 import { updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
+import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { resolveAcpCommandBindingContext } from "./commands-acp/context.js";
 import type {
   CommandHandler,
   CommandHandlerResult,
@@ -27,6 +40,14 @@ type SessionMutation = {
   pendingUserInputRequestId?: string;
   pendingUserInputOptions?: string[];
   pendingUserInputExpiresAt?: number;
+};
+
+type CodexTargetSession = {
+  sessionKey: string;
+  sessionEntry?: HandleCommandsParams["sessionEntry"];
+  createdBinding: boolean;
+  boundConversation: boolean;
+  isCurrentSession: boolean;
 };
 
 function stopWithText(text: string): CommandHandlerResult {
@@ -133,28 +154,234 @@ function parseNewArguments(tokens: string[]): { cwd?: string; prompt: string } |
 async function updateCodexSession(
   params: HandleCommandsParams,
   update: SessionMutation,
+  targetSessionKey = params.sessionKey,
 ): Promise<void> {
+  const now = Date.now();
   if (!params.storePath) {
-    if (params.sessionEntry) {
-      Object.assign(params.sessionEntry, update, { updatedAt: Date.now() });
+    if (params.sessionEntry && targetSessionKey === params.sessionKey) {
+      Object.assign(params.sessionEntry, update, { updatedAt: now });
     }
     return;
   }
+  let nextEntry: NonNullable<HandleCommandsParams["sessionEntry"]> | undefined;
   await updateSessionStore(params.storePath, (store) => {
-    const existing = store[params.sessionKey] ??
-      params.sessionEntry ?? {
-        sessionId: params.sessionKey,
-        updatedAt: Date.now(),
+    const existing = store[targetSessionKey] ??
+      (targetSessionKey === params.sessionKey ? params.sessionEntry : undefined) ?? {
+        sessionId: crypto.randomUUID(),
+        updatedAt: now,
       };
-    store[params.sessionKey] = {
+    nextEntry = {
       ...existing,
       ...update,
-      updatedAt: Date.now(),
+      updatedAt: now,
     };
+    store[targetSessionKey] = nextEntry;
   });
-  if (params.sessionEntry) {
-    Object.assign(params.sessionEntry, update, { updatedAt: Date.now() });
+  if (params.sessionStore && nextEntry) {
+    params.sessionStore[targetSessionKey] = nextEntry;
   }
+  if (targetSessionKey === params.sessionKey) {
+    params.sessionEntry = nextEntry;
+  }
+}
+
+function applyCommandTargetSession(params: HandleCommandsParams, sessionKey: string): void {
+  params.sessionKey = sessionKey;
+  const mutableCtx = params.ctx as Record<string, unknown>;
+  mutableCtx.CommandTargetSessionKey = sessionKey;
+  mutableCtx.SessionKey = sessionKey;
+  if (params.rootCtx && params.rootCtx !== params.ctx) {
+    const mutableRoot = params.rootCtx as Record<string, unknown>;
+    mutableRoot.CommandTargetSessionKey = sessionKey;
+    mutableRoot.SessionKey = sessionKey;
+  }
+}
+
+function resolveCodexBindingSessionLabel(params: {
+  sessionKey: string;
+  projectKey?: string;
+}): string {
+  const projectKey = params.projectKey?.trim();
+  if (projectKey) {
+    return `Codex ${projectKey}`;
+  }
+  return resolveAgentIdFromSessionKey(params.sessionKey) === "main"
+    ? "Codex"
+    : `Codex ${resolveAgentIdFromSessionKey(params.sessionKey)}`;
+}
+
+async function ensureCodexBoundSession(params: {
+  commandParams: HandleCommandsParams;
+  projectKey?: string;
+}): Promise<CodexTargetSession | { error: string }> {
+  const bindingContext = resolveAcpCommandBindingContext(params.commandParams);
+  if (bindingContext.channel !== "telegram" && bindingContext.channel !== "discord") {
+    return {
+      sessionKey: params.commandParams.sessionKey,
+      sessionEntry: params.commandParams.sessionEntry,
+      createdBinding: false,
+      boundConversation: false,
+      isCurrentSession: true,
+    };
+  }
+  if (bindingContext.channel === "discord" && !bindingContext.threadId) {
+    return {
+      sessionKey: params.commandParams.sessionKey,
+      sessionEntry: params.commandParams.sessionEntry,
+      createdBinding: false,
+      boundConversation: false,
+      isCurrentSession: true,
+    };
+  }
+  if (!bindingContext.conversationId) {
+    return {
+      error:
+        bindingContext.channel === "telegram"
+          ? "Codex binding requires a Telegram DM or topic context."
+          : "Codex binding requires an active Discord thread.",
+    };
+  }
+
+  const targetSessionKey = buildCodexBoundSessionKey({
+    channel: bindingContext.channel,
+    accountId: bindingContext.accountId,
+    conversationId: bindingContext.conversationId,
+    agentId:
+      params.commandParams.agentId ?? resolveAgentIdFromSessionKey(params.commandParams.sessionKey),
+  });
+  const existingEntry =
+    params.commandParams.sessionStore?.[targetSessionKey] ??
+    (targetSessionKey === params.commandParams.sessionKey
+      ? params.commandParams.sessionEntry
+      : undefined);
+  const wasCurrentSession = targetSessionKey === params.commandParams.sessionKey;
+
+  const bindingService = getSessionBindingService();
+  const existingBinding = bindingService.resolveByConversation({
+    channel: bindingContext.channel,
+    accountId: bindingContext.accountId,
+    conversationId: bindingContext.conversationId,
+    ...(bindingContext.parentConversationId
+      ? { parentConversationId: bindingContext.parentConversationId }
+      : {}),
+  });
+  if (existingBinding?.targetSessionKey?.trim() === targetSessionKey) {
+    bindingService.touch(existingBinding.bindingId);
+    applyCommandTargetSession(params.commandParams, targetSessionKey);
+    params.commandParams.sessionEntry = existingEntry;
+    return {
+      sessionKey: targetSessionKey,
+      sessionEntry: existingEntry,
+      createdBinding: false,
+      boundConversation: true,
+      isCurrentSession: wasCurrentSession,
+    };
+  }
+
+  const capabilities = bindingService.getCapabilities({
+    channel: bindingContext.channel,
+    accountId: bindingContext.accountId,
+  });
+  if (!capabilities.adapterAvailable || !capabilities.bindSupported) {
+    return {
+      error: `Codex conversation bindings are unavailable for ${bindingContext.channel}.`,
+    };
+  }
+  if (!capabilities.placements.includes("current")) {
+    return {
+      error: `Codex conversation bindings do not support the current ${bindingContext.channel} conversation.`,
+    };
+  }
+
+  const senderId = params.commandParams.command.senderId?.trim() || "";
+  const boundBy =
+    typeof existingBinding?.metadata?.boundBy === "string"
+      ? existingBinding.metadata.boundBy.trim()
+      : "";
+  if (existingBinding && boundBy && boundBy !== "system" && senderId && senderId !== boundBy) {
+    const noun = bindingContext.channel === "telegram" ? "conversation" : "thread";
+    return {
+      error: `Only ${boundBy} can rebind this ${noun}.`,
+    };
+  }
+
+  const label = resolveCodexBindingSessionLabel({
+    sessionKey: targetSessionKey,
+    projectKey: params.projectKey,
+  });
+  const binding = await bindingService.bind({
+    targetSessionKey,
+    targetKind: "session",
+    conversation: {
+      channel: bindingContext.channel,
+      accountId: bindingContext.accountId,
+      conversationId: bindingContext.conversationId,
+      ...(bindingContext.parentConversationId
+        ? { parentConversationId: bindingContext.parentConversationId }
+        : {}),
+    },
+    placement: "current",
+    metadata: {
+      threadName: resolveThreadBindingThreadName({
+        agentId: params.commandParams.agentId,
+        label,
+      }),
+      agentId: params.commandParams.agentId,
+      label,
+      boundBy: senderId || "unknown",
+      introText: resolveThreadBindingIntroText({
+        agentId: params.commandParams.agentId,
+        label,
+        idleTimeoutMs: resolveThreadBindingIdleTimeoutMsForChannel({
+          cfg: params.commandParams.cfg,
+          channel: bindingContext.channel,
+          accountId: bindingContext.accountId,
+        }),
+        maxAgeMs: resolveThreadBindingMaxAgeMsForChannel({
+          cfg: params.commandParams.cfg,
+          channel: bindingContext.channel,
+          accountId: bindingContext.accountId,
+        }),
+        sessionCwd: params.projectKey,
+      }),
+      source: "codex",
+    },
+  });
+  applyCommandTargetSession(params.commandParams, targetSessionKey);
+  params.commandParams.sessionEntry = existingEntry;
+  return {
+    sessionKey: targetSessionKey,
+    sessionEntry: existingEntry,
+    createdBinding: binding.targetSessionKey.trim() === targetSessionKey,
+    boundConversation: true,
+    isCurrentSession: wasCurrentSession,
+  };
+}
+
+async function unbindCodexConversation(params: HandleCommandsParams): Promise<void> {
+  const bindingContext = resolveAcpCommandBindingContext(params);
+  if (bindingContext.channel !== "telegram" && bindingContext.channel !== "discord") {
+    return;
+  }
+  if (!bindingContext.conversationId) {
+    return;
+  }
+  const bindingService = getSessionBindingService();
+  const binding = bindingService.resolveByConversation({
+    channel: bindingContext.channel,
+    accountId: bindingContext.accountId,
+    conversationId: bindingContext.conversationId,
+    ...(bindingContext.parentConversationId
+      ? { parentConversationId: bindingContext.parentConversationId }
+      : {}),
+  });
+  if (!binding) {
+    return;
+  }
+  await bindingService.unbind({
+    bindingId: binding.bindingId,
+    reason: "codex-detach",
+  });
 }
 
 function summarizeThread(thread: CodexAppServerThreadSummary): string {
@@ -194,6 +421,7 @@ function resolveStatusText(params: HandleCommandsParams): string {
   if (entry?.pendingUserInputRequestId) {
     lines.push(`Pending input: ${entry.pendingUserInputRequestId}`);
   }
+  lines.push(`Session: ${params.sessionKey}`);
   return lines.join("\n");
 }
 
@@ -238,6 +466,7 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
   }
 
   if (action === "detach") {
+    await unbindCodexConversation(params);
     await updateCodexSession(params, {
       providerOverride: undefined,
       codexAutoRoute: false,
@@ -260,16 +489,27 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     if ("error" in parsed) {
       return stopWithText(`⚠️ ${parsed.error}`);
     }
-    await updateCodexSession(params, {
-      providerOverride: "codex-app-server",
-      codexThreadId: undefined,
-      codexProjectKey: parsed.cwd ?? params.workspaceDir,
-      codexAutoRoute: true,
-      pendingUserInputRequestId: undefined,
-      pendingUserInputOptions: undefined,
-      pendingUserInputExpiresAt: undefined,
+    const targetSession = await ensureCodexBoundSession({
+      commandParams: params,
+      projectKey: parsed.cwd ?? params.workspaceDir,
     });
-    if (!parsed.prompt) {
+    if ("error" in targetSession) {
+      return stopWithText(`⚠️ ${targetSession.error}`);
+    }
+    await updateCodexSession(
+      params,
+      {
+        providerOverride: "codex-app-server",
+        codexThreadId: undefined,
+        codexProjectKey: parsed.cwd ?? params.workspaceDir,
+        codexAutoRoute: true,
+        pendingUserInputRequestId: undefined,
+        pendingUserInputOptions: undefined,
+        pendingUserInputExpiresAt: undefined,
+      },
+      targetSession.sessionKey,
+    );
+    if (!parsed.prompt || !targetSession.isCurrentSession || parsed.cwd) {
       return stopWithText(
         `Codex is now bound to this conversation for ${parsed.cwd ?? params.workspaceDir}. Send the next message to start the thread.`,
       );
@@ -282,10 +522,26 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     if (!instruction) {
       return stopWithText("Usage: /codex steer <instruction>");
     }
-    await updateCodexSession(params, {
-      providerOverride: "codex-app-server",
-      codexAutoRoute: true,
+    const targetSession = await ensureCodexBoundSession({
+      commandParams: params,
+      projectKey: params.sessionEntry?.codexProjectKey ?? params.workspaceDir,
     });
+    if ("error" in targetSession) {
+      return stopWithText(`⚠️ ${targetSession.error}`);
+    }
+    await updateCodexSession(
+      params,
+      {
+        providerOverride: "codex-app-server",
+        codexAutoRoute: true,
+      },
+      targetSession.sessionKey,
+    );
+    if (!targetSession.isCurrentSession) {
+      return stopWithText(
+        "Codex is now bound to this conversation. Send the next message to continue the session.",
+      );
+    }
     return continueWithPrompt(params, instruction);
   }
 
@@ -327,15 +583,26 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     if (!selected) {
       return stopWithText(`No Codex thread matched: ${token}`);
     }
-    await updateCodexSession(params, {
-      providerOverride: "codex-app-server",
-      codexThreadId: selected.threadId,
-      codexProjectKey: selected.projectKey ?? params.workspaceDir,
-      codexAutoRoute: true,
-      pendingUserInputRequestId: undefined,
-      pendingUserInputOptions: undefined,
-      pendingUserInputExpiresAt: undefined,
+    const targetSession = await ensureCodexBoundSession({
+      commandParams: params,
+      projectKey: selected.projectKey ?? params.workspaceDir,
     });
+    if ("error" in targetSession) {
+      return stopWithText(`⚠️ ${targetSession.error}`);
+    }
+    await updateCodexSession(
+      params,
+      {
+        providerOverride: "codex-app-server",
+        codexThreadId: selected.threadId,
+        codexProjectKey: selected.projectKey ?? params.workspaceDir,
+        codexAutoRoute: true,
+        pendingUserInputRequestId: undefined,
+        pendingUserInputOptions: undefined,
+        pendingUserInputExpiresAt: undefined,
+      },
+      targetSession.sessionKey,
+    );
     return stopWithText(`Codex thread bound.\n${summarizeThread(selected)}`);
   }
 
