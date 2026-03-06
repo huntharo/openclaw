@@ -212,8 +212,12 @@ export async function startGatewaySidecars(params: {
       if (result.checked === 0) {
         return;
       }
+      const detailSuffix =
+        result.failureDetails.length > 0
+          ? ` details=${result.failureDetails.slice(0, 3).join(" | ")}`
+          : "";
       params.log.warn(
-        `codex startup binding reconcile: checked=${result.checked} repaired=${result.repaired} removed=${result.removed} failed=${result.failed}`,
+        `codex startup binding reconcile: checked=${result.checked} repaired=${result.repaired} removed=${result.removed} failed=${result.failed}${detailSuffix}`,
       );
     })
     .catch((err) => {

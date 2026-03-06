@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionBindingError } from "../infra/outbound/session-binding-service.js";
 import {
   __testing,
   getCodexAppServerAvailabilityError,
@@ -250,6 +251,7 @@ describe("initializeCodexAppServerRuntime", () => {
       removed: 0,
       failed: 0,
       staleSessionKeys: [],
+      failureDetails: [],
     });
 
     const restored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
@@ -264,6 +266,60 @@ describe("initializeCodexAppServerRuntime", () => {
         codexAutoRoute: true,
       }),
     );
+  });
+
+  it("recreates missing telegram codex bindings from persisted bound sessions", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:abc123def4567890";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-1",
+            updatedAt: Date.now() - 60_000,
+            providerOverride: "codex-app-server",
+            codexAutoRoute: true,
+            channel: "telegram",
+            groupId: "-100200300:topic:77",
+            origin: {
+              accountId: "default",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    const bindBinding = vi.fn(async () => {});
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [],
+      bindBinding,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 1,
+      removed: 0,
+      failed: 0,
+      staleSessionKeys: [],
+      failureDetails: [],
+    });
+    expect(bindBinding).toHaveBeenCalledWith({
+      targetSessionKey: sessionKey,
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "-100200300:topic:77",
+        parentConversationId: "-100200300",
+      },
+    });
   });
 
   it("removes stale codex bindings when the target bound session is missing", async () => {
@@ -299,7 +355,112 @@ describe("initializeCodexAppServerRuntime", () => {
       removed: 1,
       failed: 0,
       staleSessionKeys: ["agent:main:codex:binding:discord:default:abc123def4567890"],
+      failureDetails: [],
     });
     expect(unbindBinding).toHaveBeenCalledWith("discord:1");
+  });
+
+  it("retries binding creation when the adapter is temporarily unavailable", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:abc123def4567890";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-1",
+            updatedAt: Date.now() - 60_000,
+            providerOverride: "codex-app-server",
+            codexAutoRoute: true,
+            channel: "telegram",
+            groupId: "-100200300:topic:77",
+            origin: {
+              accountId: "default",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    let attempts = 0;
+    const bindBinding = vi.fn(
+      async (_params: { targetSessionKey: string; conversation: { conversationId: string } }) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new SessionBindingError(
+            "BINDING_ADAPTER_UNAVAILABLE",
+            "Session binding adapter unavailable for telegram:default",
+          );
+        }
+      },
+    );
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [],
+      bindBinding,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 1,
+      removed: 0,
+      failed: 0,
+      staleSessionKeys: [],
+      failureDetails: [],
+    });
+    expect(bindBinding).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces per-session binding failure details", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:abc123def4567890";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-1",
+            updatedAt: Date.now() - 60_000,
+            providerOverride: "codex-app-server",
+            codexAutoRoute: true,
+            channel: "telegram",
+            groupId: "-100200300:topic:77",
+            origin: {
+              accountId: "default",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    const bindBinding = vi.fn(async () => {
+      const error = new Error("boom");
+      error.name = "SessionBindingError";
+      throw error;
+    });
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [],
+      bindBinding,
+    });
+
+    expect(result.checked).toBe(1);
+    expect(result.repaired).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(result.failureDetails).toEqual([
+      expect.stringContaining(`${sessionKey} (-100200300:topic:77)`),
+    ]);
   });
 });

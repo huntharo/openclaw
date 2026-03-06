@@ -7,7 +7,11 @@ import {
   resolveGatewaySessionStoreTarget,
 } from "../gateway/session-utils.js";
 import type { SessionBindingRecord } from "../infra/outbound/session-binding-service.js";
-import { getSessionBindingService } from "../infra/outbound/session-binding-service.js";
+import {
+  getSessionBindingService,
+  isSessionBindingError,
+  type SessionBindingErrorCode,
+} from "../infra/outbound/session-binding-service.js";
 import { listAllTelegramThreadBindings } from "../telegram/thread-bindings.js";
 import { isCodexBoundSessionKey } from "./codex-app-server-bindings.js";
 import {
@@ -41,6 +45,7 @@ export type CodexBoundSessionReconcileResult = {
   removed: number;
   failed: number;
   staleSessionKeys: string[];
+  failureDetails: string[];
 };
 
 let runtimeStatus: CodexAppServerRuntimeStatus = {
@@ -260,6 +265,86 @@ function needsCodexBoundSessionRepair(entry: Record<string, unknown> | undefined
   );
 }
 
+function resolveCodexStartupChannel(
+  entry: Record<string, unknown> | undefined,
+): string | undefined {
+  const directChannel =
+    typeof entry?.channel === "string" ? entry.channel.trim().toLowerCase() : "";
+  if (directChannel) {
+    return directChannel;
+  }
+  const originProvider =
+    typeof entry?.origin === "object" &&
+    entry.origin &&
+    typeof (entry.origin as { provider?: unknown }).provider === "string"
+      ? (entry.origin as { provider?: string }).provider?.trim().toLowerCase()
+      : "";
+  if (originProvider) {
+    return originProvider;
+  }
+  return undefined;
+}
+
+function resolveTelegramStartupConversationId(
+  entry: Record<string, unknown> | undefined,
+): string | undefined {
+  const groupId = typeof entry?.groupId === "string" ? entry.groupId.trim() : "";
+  if (groupId) {
+    return groupId;
+  }
+  const origin =
+    typeof entry?.origin === "object" && entry.origin
+      ? (entry.origin as Record<string, unknown>)
+      : {};
+  const targetRaw = typeof origin.to === "string" ? origin.to.trim() : "";
+  if (!targetRaw) {
+    return undefined;
+  }
+  const topicThreadId =
+    typeof origin.threadId === "string"
+      ? origin.threadId.trim()
+      : typeof origin.threadId === "number" || typeof origin.threadId === "bigint"
+        ? String(origin.threadId).trim()
+        : "";
+  const chatId = targetRaw
+    .replace(/^telegram:(group:)?/i, "")
+    .replace(/:topic:\d+$/i, "")
+    .trim();
+  if (!chatId) {
+    return undefined;
+  }
+  if (topicThreadId) {
+    return `${chatId}:topic:${topicThreadId}`;
+  }
+  return chatId.startsWith("-") ? undefined : chatId;
+}
+
+function resolveCodexStartupConversation(
+  entry: Record<string, unknown> | undefined,
+): SessionBindingRecord["conversation"] | null {
+  const channel = resolveCodexStartupChannel(entry);
+  if (channel !== "telegram") {
+    return null;
+  }
+  const accountId =
+    typeof entry?.origin === "object" &&
+    entry.origin &&
+    typeof (entry.origin as { accountId?: unknown }).accountId === "string"
+      ? (entry.origin as { accountId?: string }).accountId?.trim() || "default"
+      : "default";
+  const conversationId = resolveTelegramStartupConversationId(entry);
+  if (!conversationId) {
+    return null;
+  }
+  const topicMatch = /^(.+?):topic:\d+$/.exec(conversationId);
+  return {
+    channel: "telegram",
+    accountId,
+    conversationId,
+    ...(topicMatch?.[1] ? { parentConversationId: topicMatch[1] } : {}),
+  };
+}
+
 async function unbindCodexStartupBinding(bindingId: string): Promise<number> {
   const removed = await getSessionBindingService().unbind({
     bindingId,
@@ -268,30 +353,142 @@ async function unbindCodexStartupBinding(bindingId: string): Promise<number> {
   return removed.length;
 }
 
+async function bindCodexStartupBinding(params: {
+  targetSessionKey: string;
+  conversation: SessionBindingRecord["conversation"];
+}): Promise<void> {
+  await getSessionBindingService().bind({
+    targetSessionKey: params.targetSessionKey,
+    targetKind: "session",
+    conversation: params.conversation,
+    metadata: {
+      boundBy: "system",
+      source: "codex",
+    },
+  });
+}
+
+function resolveSessionBindingErrorCode(error: unknown): SessionBindingErrorCode | undefined {
+  return isSessionBindingError(error) ? error.code : undefined;
+}
+
+function formatCodexStartupFailureDetail(params: {
+  sessionKey: string;
+  conversationId?: string;
+  error: unknown;
+}): string {
+  const code = resolveSessionBindingErrorCode(params.error);
+  const message = params.error instanceof Error ? params.error.message : String(params.error);
+  return `${params.sessionKey}${params.conversationId ? ` (${params.conversationId})` : ""}${code ? ` [${code}]` : ""}: ${message}`;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function bindCodexStartupBindingWithRetry(params: {
+  targetSessionKey: string;
+  conversation: SessionBindingRecord["conversation"];
+  bindBinding?: (params: {
+    targetSessionKey: string;
+    conversation: SessionBindingRecord["conversation"];
+  }) => Promise<void>;
+}): Promise<void> {
+  const bind = params.bindBinding ?? bindCodexStartupBinding;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await bind({
+        targetSessionKey: params.targetSessionKey,
+        conversation: params.conversation,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (
+        resolveSessionBindingErrorCode(error) !== "BINDING_ADAPTER_UNAVAILABLE" ||
+        attempt === 4
+      ) {
+        throw error;
+      }
+      await sleep(100 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+async function repairCodexBoundSessionEntry(params: {
+  cfg: OpenClawConfig;
+  store: Record<string, Record<string, unknown>>;
+  sessionKey: string;
+  entry: Record<string, unknown>;
+  now: number;
+}): Promise<boolean> {
+  if (!needsCodexBoundSessionRepair(params.entry)) {
+    return false;
+  }
+  const target = resolveGatewaySessionStoreTarget({
+    cfg: params.cfg,
+    key: params.sessionKey,
+  });
+  await updateSessionStore(target.storePath, (nextStore) => {
+    const liveTarget = resolveGatewaySessionStoreTarget({
+      cfg: params.cfg,
+      key: params.sessionKey,
+      store: nextStore,
+    });
+    const storeKey =
+      [liveTarget.canonicalKey, ...liveTarget.storeKeys].find(
+        (candidate) => nextStore[candidate],
+      ) ?? liveTarget.canonicalKey;
+    const entry = nextStore[storeKey];
+    if (!entry) {
+      return;
+    }
+    entry.providerOverride = "codex-app-server";
+    entry.codexAutoRoute = true;
+    entry.updatedAt = params.now;
+    nextStore[storeKey] = entry;
+  });
+  params.store[params.sessionKey] = {
+    ...params.entry,
+    providerOverride: "codex-app-server",
+    codexAutoRoute: true,
+    updatedAt: params.now,
+  };
+  return true;
+}
+
 export async function reconcileCodexBoundSessionsOnStartup(params: {
   cfg: OpenClawConfig;
   listBindings?: () => SessionBindingRecord[];
   unbindBinding?: (bindingId: string) => Promise<number>;
+  bindBinding?: (params: {
+    targetSessionKey: string;
+    conversation: SessionBindingRecord["conversation"];
+  }) => Promise<void>;
 }): Promise<CodexBoundSessionReconcileResult> {
   const bindings = (params.listBindings ?? listPersistedCodexBindingsOnStartup)().filter(
     (binding) =>
       binding.targetKind === "session" && isCodexBoundSessionKey(binding.targetSessionKey),
   );
-  if (bindings.length === 0) {
-    return {
-      checked: 0,
-      repaired: 0,
-      removed: 0,
-      failed: 0,
-      staleSessionKeys: [],
-    };
-  }
-
   const { store } = loadCombinedSessionStoreForGateway(params.cfg);
-  let repaired = 0;
+  const boundSessionEntries = Object.entries(store).filter(
+    ([sessionKey, entry]) =>
+      isCodexBoundSessionKey(sessionKey) &&
+      typeof entry === "object" &&
+      entry !== null &&
+      resolveCodexStartupConversation(entry as Record<string, unknown>),
+  );
+  const bindingsBySessionKey = new Map(
+    bindings.map((binding) => [binding.targetSessionKey.trim(), binding]),
+  );
+  let checked = bindings.length;
   let removed = 0;
   let failed = 0;
   const staleSessionKeys = new Set<string>();
+  const repairedSessionKeys = new Set<string>();
+  const failureDetails: string[] = [];
   const now = Date.now();
 
   for (const binding of bindings) {
@@ -309,51 +506,84 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
       }
       continue;
     }
-    if (!needsCodexBoundSessionRepair(existing)) {
+    try {
+      if (
+        await repairCodexBoundSessionEntry({
+          cfg: params.cfg,
+          store,
+          sessionKey,
+          entry: existing,
+          now,
+        })
+      ) {
+        repairedSessionKeys.add(sessionKey);
+      }
+    } catch (error) {
+      failed += 1;
+      failureDetails.push(
+        formatCodexStartupFailureDetail({
+          sessionKey,
+          conversationId: binding.conversation.conversationId,
+          error,
+        }),
+      );
+    }
+  }
+
+  for (const [sessionKey, entry] of boundSessionEntries) {
+    if (bindingsBySessionKey.has(sessionKey)) {
       continue;
     }
+    const conversation = resolveCodexStartupConversation(entry as Record<string, unknown>);
+    if (!conversation) {
+      continue;
+    }
+    checked += 1;
     try {
-      const target = resolveGatewaySessionStoreTarget({
-        cfg: params.cfg,
-        key: sessionKey,
+      await bindCodexStartupBindingWithRetry({
+        targetSessionKey: sessionKey,
+        conversation,
+        bindBinding: params.bindBinding,
       });
-      await updateSessionStore(target.storePath, (nextStore) => {
-        const liveTarget = resolveGatewaySessionStoreTarget({
+      bindingsBySessionKey.set(sessionKey, {
+        bindingId: `${conversation.accountId}:${conversation.conversationId}`,
+        targetSessionKey: sessionKey,
+        targetKind: "session",
+        conversation,
+        status: "active",
+        boundAt: now,
+      });
+      repairedSessionKeys.add(sessionKey);
+      if (
+        await repairCodexBoundSessionEntry({
           cfg: params.cfg,
-          key: sessionKey,
-          store: nextStore,
-        });
-        const storeKey =
-          [liveTarget.canonicalKey, ...liveTarget.storeKeys].find(
-            (candidate) => nextStore[candidate],
-          ) ?? liveTarget.canonicalKey;
-        const entry = nextStore[storeKey];
-        if (!entry) {
-          return;
-        }
-        entry.providerOverride = "codex-app-server";
-        entry.codexAutoRoute = true;
-        entry.updatedAt = now;
-        nextStore[storeKey] = entry;
-      });
-      store[sessionKey] = {
-        ...existing,
-        providerOverride: "codex-app-server",
-        codexAutoRoute: true,
-        updatedAt: now,
-      };
-      repaired += 1;
-    } catch {
+          store,
+          sessionKey,
+          entry: entry as Record<string, unknown>,
+          now,
+        })
+      ) {
+        repairedSessionKeys.add(sessionKey);
+      }
+    } catch (error) {
       failed += 1;
+      failureDetails.push(
+        formatCodexStartupFailureDetail({
+          sessionKey,
+          conversationId: conversation.conversationId,
+          error,
+        }),
+      );
     }
   }
 
   return {
-    checked: bindings.length,
-    repaired,
+    checked,
+    repaired: repairedSessionKeys.size,
     removed,
     failed,
     staleSessionKeys: [...staleSessionKeys],
+    failureDetails,
   };
 }
 

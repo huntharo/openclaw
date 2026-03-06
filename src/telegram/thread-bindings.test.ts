@@ -11,6 +11,21 @@ import {
   setTelegramThreadBindingMaxAgeBySessionKey,
 } from "./thread-bindings.js";
 
+async function waitForCondition(
+  condition: () => boolean,
+  timeoutMs = 2_000,
+  stepMs = 10,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  expect(condition()).toBe(true);
+}
+
 describe("telegram thread bindings", () => {
   let stateDirOverride: string | undefined;
 
@@ -162,5 +177,80 @@ describe("telegram thread bindings", () => {
       "thread-bindings-no-persist.json",
     );
     expect(fs.existsSync(statePath)).toBe(false);
+  });
+
+  it("persists codex binding source and restores legacy session bindings", async () => {
+    stateDirOverride = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-telegram-bindings-"));
+    process.env.OPENCLAW_STATE_DIR = stateDirOverride;
+
+    const manager = createTelegramThreadBindingManager({
+      accountId: "default",
+      persist: true,
+      enableSweeper: false,
+    });
+    await getSessionBindingService().bind({
+      targetSessionKey: "agent:main:codex:binding:telegram:default:abc123def4567890",
+      targetKind: "session",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "-100200300:topic:77",
+      },
+      metadata: {
+        source: "codex",
+      },
+    });
+    const statePath = path.join(
+      resolveStateDir(process.env, os.homedir),
+      "telegram",
+      "thread-bindings-default.json",
+    );
+    await waitForCondition(() => fs.existsSync(statePath));
+    const persisted = JSON.parse(fs.readFileSync(statePath, "utf-8")) as {
+      bindings: Array<{ targetKind?: string; source?: string }>;
+    };
+    expect(persisted.bindings[0]).toEqual(
+      expect.objectContaining({
+        targetKind: "session",
+        source: "codex",
+      }),
+    );
+    manager.stop();
+    __testing.resetTelegramThreadBindingsForTests();
+
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify(
+        {
+          version: 1,
+          bindings: [
+            {
+              accountId: "default",
+              conversationId: "-100200300:topic:77",
+              targetKind: "acp",
+              targetSessionKey: "agent:main:codex:binding:telegram:default:abc123def4567890",
+              source: "codex",
+              boundAt: Date.now() - 1_000,
+              lastActivityAt: Date.now() - 500,
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const restored = createTelegramThreadBindingManager({
+      accountId: "default",
+      persist: true,
+      enableSweeper: false,
+    });
+    expect(restored.getByConversationId("-100200300:topic:77")).toEqual(
+      expect.objectContaining({
+        targetKind: "session",
+        source: "codex",
+      }),
+    );
   });
 });

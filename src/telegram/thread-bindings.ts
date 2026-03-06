@@ -19,13 +19,15 @@ const DEFAULT_THREAD_BINDING_MAX_AGE_MS = 0;
 const THREAD_BINDINGS_SWEEP_INTERVAL_MS = 60_000;
 const STORE_VERSION = 1;
 
-type TelegramBindingTargetKind = "subagent" | "acp";
+type TelegramBindingTargetKind = "subagent" | "session";
+type TelegramBindingSource = "acp" | "codex";
 
 export type TelegramThreadBindingRecord = {
   accountId: string;
   conversationId: string;
   targetKind: TelegramBindingTargetKind;
   targetSessionKey: string;
+  source?: TelegramBindingSource;
   agentId?: string;
   label?: string;
   boundBy?: string;
@@ -89,11 +91,15 @@ function resolveBindingKey(params: { accountId: string; conversationId: string }
 }
 
 function toSessionBindingTargetKind(raw: TelegramBindingTargetKind): BindingTargetKind {
-  return raw === "subagent" ? "subagent" : "session";
+  return raw;
 }
 
 function toTelegramTargetKind(raw: BindingTargetKind): TelegramBindingTargetKind {
-  return raw === "subagent" ? "subagent" : "acp";
+  return raw;
+}
+
+function normalizeBindingSource(raw: unknown): TelegramBindingSource | undefined {
+  return raw === "acp" || raw === "codex" ? raw : undefined;
 }
 
 function resolveEffectiveBindingExpiresAt(params: {
@@ -146,6 +152,7 @@ function toSessionBindingRecord(
       defaultMaxAgeMs: defaults.maxAgeMs,
     }),
     metadata: {
+      source: record.source,
       agentId: record.agentId,
       label: record.label,
       boundBy: record.boundBy,
@@ -185,6 +192,9 @@ function fromSessionBindingInput(params: {
     conversationId: params.input.conversationId,
     targetKind: toTelegramTargetKind(params.input.targetKind),
     targetSessionKey: params.input.targetSessionKey,
+    source:
+      normalizeBindingSource(metadata.source) ??
+      (params.input.targetKind === "session" ? existing?.source : undefined),
     agentId:
       typeof metadata.agentId === "string" && metadata.agentId.trim()
         ? metadata.agentId.trim()
@@ -249,7 +259,7 @@ function loadBindingsFromDisk(accountId: string): TelegramThreadBindingRecord[] 
       const conversationId = normalizeConversationId(entry?.conversationId);
       const targetSessionKey =
         typeof entry?.targetSessionKey === "string" ? entry.targetSessionKey.trim() : "";
-      const targetKind = entry?.targetKind === "subagent" ? "subagent" : "acp";
+      const targetKind = entry?.targetKind === "subagent" ? "subagent" : "session";
       if (!conversationId || !targetSessionKey) {
         continue;
       }
@@ -266,6 +276,7 @@ function loadBindingsFromDisk(accountId: string): TelegramThreadBindingRecord[] 
         conversationId,
         targetSessionKey,
         targetKind,
+        source: normalizeBindingSource(entry?.source),
         boundAt,
         lastActivityAt,
       };
