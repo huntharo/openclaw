@@ -7,6 +7,7 @@ import {
   isCodexAppServerProvider,
   runCodexAppServerAgent,
 } from "../../agents/codex-app-server-runner.js";
+import { getCodexAppServerAvailabilityError } from "../../agents/codex-app-server-startup.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { isCliProvider, normalizeProviderId } from "../../agents/model-selection.js";
 import {
@@ -364,7 +365,8 @@ export async function runAgentTurnWithFallback(params: {
 
           if (normalizeProviderId(provider) === "codex-app-server") {
             throw new Error(
-              'Provider "codex-app-server" is disabled. Set agents.defaults.codexAppServer.enabled=true.',
+              getCodexAppServerAvailabilityError(params.followupRun.run.config) ??
+                'Provider "codex-app-server" is not available.',
             );
           }
 

@@ -3,6 +3,10 @@ import {
   isCodexAppServerProvider,
   type CodexAppServerThreadSummary,
 } from "../../agents/codex-app-server-runner.js";
+import {
+  getCodexAppServerAvailabilityError,
+  getCodexAppServerRuntimeStatus,
+} from "../../agents/codex-app-server-startup.js";
 import { updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import type {
@@ -169,13 +173,17 @@ function summarizeThread(thread: CodexAppServerThreadSummary): string {
 
 function resolveStatusText(params: HandleCommandsParams): string {
   const entry = params.sessionEntry;
+  const runtimeStatus = getCodexAppServerRuntimeStatus();
   if (
     !entry?.codexThreadId &&
     !isCodexAppServerProvider(entry?.providerOverride ?? "", params.cfg)
   ) {
-    return "Codex is not bound in this conversation.";
+    return ["Codex is not bound in this conversation.", `Runtime: ${runtimeStatus.state}`].join(
+      "\n",
+    );
   }
   const lines = ["Codex binding active."];
+  lines.push(`Runtime: ${runtimeStatus.state}`);
   if (entry?.codexThreadId) {
     lines.push(`Thread: ${entry.codexThreadId}`);
   }
@@ -240,6 +248,11 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     return stopWithText(
       "Codex detached from this conversation. The remote thread was left intact.",
     );
+  }
+
+  const availabilityError = getCodexAppServerAvailabilityError(params.cfg);
+  if (availabilityError) {
+    return stopWithText(`⚠️ ${availabilityError}`);
   }
 
   if (action === "new" || action === "spawn") {

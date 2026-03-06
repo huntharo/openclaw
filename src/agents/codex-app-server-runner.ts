@@ -5,6 +5,10 @@ import type { OpenClawConfig } from "../config/config.js";
 import { rawDataToString } from "../infra/ws.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
+  resolveCodexAppServerSettings,
+  type CodexAppServerSettings,
+} from "./codex-app-server-config.js";
+import {
   clearActiveCodexAppServerRun,
   setActiveCodexAppServerRun,
   type CodexAppServerQueueHandle,
@@ -13,9 +17,6 @@ import { normalizeProviderId } from "./model-selection.js";
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner/types.js";
 
 const log = createSubsystemLogger("agent/codex-app-server");
-
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-const DEFAULT_INPUT_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_PROTOCOL_VERSION = "1.0";
 
 type JsonRpcId = string | number;
@@ -49,17 +50,6 @@ type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
-};
-
-type CodexAppServerSettings = {
-  enabled: boolean;
-  transport: "stdio" | "websocket";
-  command: string;
-  args: string[];
-  url?: string;
-  headers?: Record<string, string>;
-  requestTimeoutMs: number;
-  inputTimeoutMs: number;
 };
 
 export type ParsedCodexUserInput =
@@ -140,29 +130,6 @@ export function isCodexAppServerProvider(provider: string, cfg?: OpenClawConfig)
     return false;
   }
   return cfg?.agents?.defaults?.codexAppServer?.enabled !== false;
-}
-
-function resolveCodexAppServerSettings(cfg?: OpenClawConfig): CodexAppServerSettings {
-  const configured = cfg?.agents?.defaults?.codexAppServer;
-  const transport = configured?.transport === "websocket" ? "websocket" : "stdio";
-  const command = configured?.command?.trim() || "codex";
-  const args = configured?.args?.filter((value) => value.trim()) ?? [];
-  const authHeaders = {
-    ...configured?.headers,
-    ...(configured?.authToken?.trim()
-      ? { Authorization: `Bearer ${configured.authToken.trim()}` }
-      : {}),
-  };
-  return {
-    enabled: configured?.enabled !== false,
-    transport,
-    command,
-    args,
-    url: configured?.url?.trim() || undefined,
-    headers: Object.keys(authHeaders).length > 0 ? authHeaders : undefined,
-    requestTimeoutMs: configured?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
-    inputTimeoutMs: configured?.inputTimeoutMs ?? DEFAULT_INPUT_TIMEOUT_MS,
-  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

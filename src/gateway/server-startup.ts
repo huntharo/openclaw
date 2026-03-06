@@ -1,5 +1,6 @@
 import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { ACP_SESSION_IDENTITY_RENDERER_VERSION } from "../acp/runtime/session-identifiers.js";
+import { initializeCodexAppServerRuntime } from "../agents/codex-app-server-startup.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { loadModelCatalog } from "../agents/model-catalog.js";
 import {
@@ -43,6 +44,7 @@ export async function startGatewaySidecars(params: {
     warn: (msg: string) => void;
     error: (msg: string) => void;
   };
+  logAgents: { info: (msg: string) => void; warn: (msg: string) => void };
   logChannels: { info: (msg: string) => void; error: (msg: string) => void };
   logBrowser: { error: (msg: string) => void };
 }) {
@@ -176,6 +178,13 @@ export async function startGatewaySidecars(params: {
         params.log.warn(`acp startup identity reconcile failed: ${String(err)}`);
       });
   }
+
+  void initializeCodexAppServerRuntime({
+    cfg: params.cfg,
+    log: params.logAgents,
+  }).catch((err) => {
+    params.logAgents.warn(`codex app server runtime setup failed: ${String(err)}`);
+  });
 
   void startGatewayMemoryBackend({ cfg: params.cfg, log: params.log }).catch((err) => {
     params.log.warn(`qmd memory startup initialization failed: ${String(err)}`);

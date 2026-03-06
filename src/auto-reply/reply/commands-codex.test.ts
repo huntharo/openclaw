@@ -7,10 +7,19 @@ import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const discoverCodexAppServerThreadsMock = vi.hoisted(() => vi.fn());
+const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
+const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
+  vi.fn<() => string | null>(() => null),
+);
 
 vi.mock("../../agents/codex-app-server-runner.js", () => ({
   discoverCodexAppServerThreads: (...args: unknown[]) => discoverCodexAppServerThreadsMock(...args),
   isCodexAppServerProvider: (provider: string) => provider === "codex-app-server",
+}));
+
+vi.mock("../../agents/codex-app-server-startup.js", () => ({
+  getCodexAppServerAvailabilityError: () => getCodexAppServerAvailabilityErrorMock(),
+  getCodexAppServerRuntimeStatus: () => getCodexAppServerRuntimeStatusMock(),
 }));
 
 const { handleCodexCommand } = await import("./commands-codex.js");
@@ -23,6 +32,8 @@ describe("handleCodexCommand", () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-command-"));
     storePath = path.join(tempDir, "sessions.json");
     discoverCodexAppServerThreadsMock.mockReset().mockResolvedValue([]);
+    getCodexAppServerAvailabilityErrorMock.mockReset().mockReturnValue(null);
+    getCodexAppServerRuntimeStatusMock.mockReset().mockReturnValue({ state: "unknown" });
   });
 
   afterEach(async () => {
@@ -126,5 +137,26 @@ describe("handleCodexCommand", () => {
       }),
     );
     expect(result?.reply?.text).toContain("thread-789");
+  });
+
+  it("includes runtime state in /codex status output", async () => {
+    getCodexAppServerRuntimeStatusMock.mockReturnValue({ state: "ready" });
+    const params = buildParams("/codex status");
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Runtime: ready");
+  });
+
+  it("fails fast when the Codex runtime startup gate is unavailable", async () => {
+    getCodexAppServerAvailabilityErrorMock.mockReturnValue(
+      "Codex App Server runtime is unavailable: spawn ENOENT",
+    );
+    const params = buildParams("/codex list");
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).not.toHaveBeenCalled();
+    expect(result?.reply?.text).toContain("spawn ENOENT");
   });
 });
