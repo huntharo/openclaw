@@ -80,6 +80,7 @@ const CODEX_USAGE_TEXT = [
 ].join("\n");
 const CODEX_LIST_SLASH_FILTERS = new Set(["slash", "slashes", "command", "commands", "mcp"]);
 const CODEX_MIRROR_DISCOVERY_TTL_MS = 60_000;
+const CODEX_THREAD_ID_UUID_GROUP_LENGTHS = [8, 4, 4, 4, 12] as const;
 
 type CodexMirrorDiscoveryCacheEntry = {
   key: string;
@@ -185,6 +186,18 @@ function parseCodexCommand(normalizedBody: string | undefined): ParsedCodexComma
     }
   }
   return { type: "legacy-invalid", text: tail };
+}
+
+function isMalformedUuidLikeCodexThreadId(raw: string): boolean {
+  const value = raw.trim();
+  const groups = value.split("-");
+  if (groups.length !== CODEX_THREAD_ID_UUID_GROUP_LENGTHS.length) {
+    return false;
+  }
+  if (!groups.every((group) => /^[0-9a-f]+$/i.test(group))) {
+    return false;
+  }
+  return groups.some((group, index) => group.length !== CODEX_THREAD_ID_UUID_GROUP_LENGTHS[index]);
 }
 
 function buildCodexMirrorDiscoveryCacheKey(params: {
@@ -1244,6 +1257,14 @@ export async function runPreparedReply(
     const query = raw.trim();
     if (!query) {
       return { ok: false as const, error: "Missing thread id/query." };
+    }
+    if (isMalformedUuidLikeCodexThreadId(query)) {
+      return {
+        ok: false as const,
+        error:
+          `Invalid Codex thread id "${query}". Expected UUID format ` +
+          "`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.",
+      };
     }
     const rows = collectKnownCodexThreads();
     const exact = rows.find((entry) => entry.threadId === query);

@@ -795,6 +795,33 @@ describe("runPreparedReply media-only handling", () => {
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed uuid-like thread ids for /codex bind", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex bind 019cc00d-6cf4-7c11-afcd-2673db349a2",
+        } as never,
+      }),
+    );
+
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("Invalid Codex thread id");
+    expect(sessionEntry.codexThreadId).toBeUndefined();
+    expect(sessionEntry.codexAutoRoute).toBeUndefined();
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
   it("uses session-binding service for telegram /codex bind like /focus routing", async () => {
     sessionBindingGetCapabilities.mockReturnValue({
       adapterAvailable: true,
