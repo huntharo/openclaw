@@ -617,9 +617,11 @@ export async function reconcileCodexPendingInputsOnStartup(params: {
         }
         entry.pendingUserInputRequestId = undefined;
         entry.pendingUserInputOptions = undefined;
+        entry.pendingUserInputActions = undefined;
         entry.pendingUserInputExpiresAt = undefined;
         entry.pendingUserInputPromptText = undefined;
         entry.pendingUserInputMethod = undefined;
+        entry.pendingUserInputAwaitingSteer = undefined;
         entry.updatedAt = now;
         nextStore[storeKey] = entry;
         cleared += 1;

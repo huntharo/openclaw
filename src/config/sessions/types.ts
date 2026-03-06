@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { Skill } from "@mariozechner/pi-coding-agent";
+import type { CodexPendingUserInputAction } from "../../agents/codex-app-server-pending-input.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { ChannelId } from "../../channels/plugins/types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.js";
@@ -160,12 +161,16 @@ export type SessionEntry = {
   pendingUserInputRequestId?: string;
   /** Options shown for the pending user input request. */
   pendingUserInputOptions?: string[];
+  /** Structured actions shown for the pending Codex request. */
+  pendingUserInputActions?: CodexPendingUserInputAction[];
   /** Expiry timestamp for the pending user input request. */
   pendingUserInputExpiresAt?: number;
   /** Last rendered prompt text for a pending Codex server request. */
   pendingUserInputPromptText?: string;
   /** Server method name for the pending Codex request. */
   pendingUserInputMethod?: string;
+  /** True after the operator chooses to steer Codex with a free-form reply. */
+  pendingUserInputAwaitingSteer?: boolean;
   label?: string;
   displayName?: string;
   channel?: string;

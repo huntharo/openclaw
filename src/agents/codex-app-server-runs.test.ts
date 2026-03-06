@@ -6,6 +6,7 @@ import {
   queueCodexAppServerMessage,
   queueCodexAppServerMessageBySessionKey,
   setActiveCodexAppServerRun,
+  submitCodexAppServerPendingInputBySessionKey,
 } from "./codex-app-server-runs.js";
 
 describe("codex app server run registry", () => {
@@ -13,6 +14,7 @@ describe("codex app server run registry", () => {
     const queueMessage = vi.fn().mockResolvedValue(true);
     const handle = {
       queueMessage,
+      submitPendingInput: vi.fn().mockResolvedValue(true),
       interrupt: vi.fn().mockResolvedValue(undefined),
       isStreaming: () => true,
       isAwaitingInput: () => false,
@@ -32,6 +34,7 @@ describe("codex app server run registry", () => {
     const queueMessage = vi.fn().mockResolvedValue(true);
     const handle = {
       queueMessage,
+      submitPendingInput: vi.fn().mockResolvedValue(true),
       interrupt: vi.fn().mockResolvedValue(undefined),
       isStreaming: () => false,
       isAwaitingInput: () => true,
@@ -49,6 +52,7 @@ describe("codex app server run registry", () => {
     const queueMessage = vi.fn().mockResolvedValue(true);
     const handle = {
       queueMessage,
+      submitPendingInput: vi.fn().mockResolvedValue(true),
       interrupt: vi.fn().mockResolvedValue(undefined),
       isStreaming: () => true,
       isAwaitingInput: () => false,
@@ -64,5 +68,26 @@ describe("codex app server run registry", () => {
     expect(queueCodexAppServerMessageBySessionKey("agent:main:telegram:group:1:topic:9", "3")).toBe(
       false,
     );
+  });
+
+  it("submits typed pending input by session key while awaiting input", async () => {
+    const submitPendingInput = vi.fn().mockResolvedValue(true);
+    const handle = {
+      queueMessage: vi.fn().mockResolvedValue(true),
+      submitPendingInput,
+      interrupt: vi.fn().mockResolvedValue(undefined),
+      isStreaming: () => false,
+      isAwaitingInput: () => true,
+    };
+    setActiveCodexAppServerRun("s4", handle, "agent:main:telegram:group:1:topic:10");
+    expect(
+      submitCodexAppServerPendingInputBySessionKey("agent:main:telegram:group:1:topic:10", {
+        actionIndex: 1,
+      }),
+    ).toBe(true);
+    await vi.waitFor(() => {
+      expect(submitPendingInput).toHaveBeenCalledWith({ actionIndex: 1 });
+    });
+    clearActiveCodexAppServerRun("s4", handle, "agent:main:telegram:group:1:topic:10");
   });
 });

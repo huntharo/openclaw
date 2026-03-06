@@ -6,6 +6,7 @@ import {
 
 type CodexAppServerQueueHandle = {
   queueMessage: (text: string) => Promise<boolean>;
+  submitPendingInput: (submission: { actionIndex: number }) => Promise<boolean>;
   interrupt: () => Promise<void>;
   isStreaming: () => boolean;
   isAwaitingInput: () => boolean;
@@ -37,6 +38,18 @@ export function queueCodexAppServerMessageBySessionKey(sessionKey: string, text:
   }
   logMessageQueued({ sessionId: sessionKey, source: "codex-app-server" });
   void handle.queueMessage(text);
+  return true;
+}
+
+export function submitCodexAppServerPendingInputBySessionKey(
+  sessionKey: string,
+  submission: { actionIndex: number },
+): boolean {
+  const handle = ACTIVE_CODEX_RUNS_BY_SESSION_KEY.get(sessionKey);
+  if (!handle || !handle.isAwaitingInput()) {
+    return false;
+  }
+  void handle.submitPendingInput(submission);
   return true;
 }
 

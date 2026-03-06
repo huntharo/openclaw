@@ -1,6 +1,12 @@
 import type { Message, ReactionTypeEmoji } from "@grammyjs/types";
 import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import {
+  matchesCodexPendingInputRequestToken,
+  parseCodexPendingInputCallbackData,
+  buildCodexPendingUserInputActions,
+} from "../agents/codex-app-server-pending-input.js";
+import { submitAgentRunPendingInputBySessionKey } from "../agents/run-control.js";
+import {
   createInboundDebouncer,
   resolveInboundDebounceMs,
 } from "../auto-reply/inbound-debounce.js";
@@ -16,10 +22,13 @@ import { shouldDebounceTextInbound } from "../channels/inbound-debounce-policy.j
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { loadConfig } from "../config/config.js";
 import { writeConfigFile } from "../config/io.js";
+<<<<<<< HEAD
+import { loadSessionStore, resolveStorePath, updateSessionStore } from "../config/sessions.js";
 import {
   loadSessionStore,
   resolveSessionStoreEntry,
   resolveStorePath,
+  updateSessionStore,
 } from "../config/sessions.js";
 import type { DmPolicy } from "../config/types.base.js";
 import type {
@@ -28,6 +37,7 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import { danger, logVerbose, warn } from "../globals.js";
+import { getSessionBindingService } from "../infra/outbound/session-binding-service.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { MediaFetchError } from "../media/fetch.js";
 import { readChannelAllowFromStore } from "../pairing/pairing-store.js";
@@ -1088,6 +1098,19 @@ export const registerTelegramHandlers = ({
         }
         return await bot.api.deleteMessage(callbackMessage.chat.id, callbackMessage.message_id);
       };
+      const clearCallbackButtons = async () => {
+        const editReplyMarkupFn = (ctx as { editMessageReplyMarkup?: unknown })
+          .editMessageReplyMarkup;
+        const params = { reply_markup: { inline_keyboard: [] } };
+        if (typeof editReplyMarkupFn === "function") {
+          return await ctx.editMessageReplyMarkup(params);
+        }
+        return await bot.api.editMessageReplyMarkup(
+          callbackMessage.chat.id,
+          callbackMessage.message_id,
+          params,
+        );
+      };
       const replyToCallbackChat = async (
         text: string,
         params?: Parameters<typeof bot.api.sendMessage>[2],
@@ -1320,6 +1343,142 @@ export const registerTelegramHandlers = ({
           return;
         }
 
+        return;
+      }
+
+      const codexCallback = parseCodexPendingInputCallbackData(data);
+      const legacyCodexOrdinalMatch = data.match(/^\s*([1-9]\d*)\s*$/);
+      if (codexCallback || legacyCodexOrdinalMatch) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex input is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex input is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        const storePath = resolveStorePath();
+        const sessionStore = loadSessionStore(storePath);
+        const pendingEntry = sessionStore[targetSessionKey];
+        const requestId = pendingEntry?.pendingUserInputRequestId?.trim();
+        const pendingActions =
+          pendingEntry?.pendingUserInputActions?.filter(Boolean) ??
+          buildCodexPendingUserInputActions({
+            method: pendingEntry?.pendingUserInputMethod,
+            options: pendingEntry?.pendingUserInputOptions,
+          });
+        const actionIndex = codexCallback
+          ? codexCallback.actionIndex
+          : Number.parseInt(legacyCodexOrdinalMatch?.[1] ?? "", 10) - 1;
+        const replyParams =
+          callbackMessage.message_thread_id == null
+            ? undefined
+            : { message_thread_id: callbackMessage.message_thread_id };
+        const requestTokenMatches = codexCallback
+          ? requestId == null ||
+            matchesCodexPendingInputRequestToken(requestId, codexCallback.requestToken)
+          : true;
+        const fallbackAction =
+          codexCallback?.kind === "approvalAccept"
+            ? ({ kind: "approval", decision: "accept", label: "Approve Once" } as const)
+            : codexCallback?.kind === "approvalAcceptForSession"
+              ? ({
+                  kind: "approval",
+                  decision: "acceptForSession",
+                  label: "Approve for Session",
+                } as const)
+              : codexCallback?.kind === "approvalDecline"
+                ? ({ kind: "approval", decision: "decline", label: "Decline" } as const)
+                : codexCallback?.kind === "approvalCancel"
+                  ? ({ kind: "approval", decision: "cancel", label: "Cancel" } as const)
+                  : codexCallback?.kind === "steer"
+                    ? ({ kind: "steer", label: "Tell Codex What To Do" } as const)
+                    : undefined;
+        const action = requestTokenMatches
+          ? (pendingActions?.[actionIndex] ?? fallbackAction)
+          : undefined;
+        if (!requestTokenMatches || !action) {
+          await clearCallbackButtons().catch(() => undefined);
+          await updateSessionStore(storePath, (store) => {
+            const entry = store[targetSessionKey];
+            if (!entry) {
+              return;
+            }
+            entry.pendingUserInputAwaitingSteer = undefined;
+            entry.updatedAt = Date.now();
+            store[targetSessionKey] = entry;
+          }).catch(() => undefined);
+          await replyToCallbackChat("This Codex input is no longer active.");
+          return;
+        }
+        if (action.kind === "steer") {
+          await clearCallbackButtons().catch(() => undefined);
+          await updateSessionStore(storePath, (store) => {
+            const entry = store[targetSessionKey];
+            if (!entry) {
+              return;
+            }
+            entry.pendingUserInputAwaitingSteer = true;
+            entry.updatedAt = Date.now();
+            store[targetSessionKey] = entry;
+          }).catch(() => undefined);
+          await replyToCallbackChat(
+            "Waiting for what to do differently. Reply with the instruction you want sent to Codex instead.",
+            replyParams,
+          );
+          return;
+        }
+
+        const submitted = submitAgentRunPendingInputBySessionKey(targetSessionKey, { actionIndex });
+        if (!submitted) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat(
+            "Codex is not currently waiting on this input. Rejoin the thread or reply again once the prompt is active.",
+            replyParams,
+          );
+          return;
+        }
+
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          const entry = store[targetSessionKey];
+          if (!entry) {
+            return;
+          }
+          entry.pendingUserInputAwaitingSteer = false;
+          entry.updatedAt = Date.now();
+          store[targetSessionKey] = entry;
+        }).catch(() => undefined);
+        const ackText =
+          action.kind === "approval"
+            ? action.decision === "accept"
+              ? "Approved once."
+              : action.decision === "acceptForSession"
+                ? action.sessionPrefix
+                  ? `Approved for this session when the command matches: ${action.sessionPrefix}`
+                  : "Approved for this session."
+                : action.decision === "decline"
+                  ? "Declined."
+                  : "Cancelled."
+            : `Selected: ${action.label}`;
+        await replyToCallbackChat(ackText, replyParams);
         return;
       }
 

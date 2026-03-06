@@ -415,6 +415,11 @@ describe("handleCodexCommand", () => {
         providerOverride: "codex-app-server",
         pendingUserInputRequestId: "req-123",
         pendingUserInputOptions: ["Approve", "Decline"],
+        pendingUserInputActions: [
+          { kind: "approval", decision: "accept", label: "Approve Once" },
+          { kind: "approval", decision: "decline", label: "Decline" },
+          { kind: "steer", label: "Tell Codex What To Do" },
+        ],
         pendingUserInputExpiresAt: Date.now() + 60_000,
         pendingUserInputPromptText: "Approve deploy?",
         pendingUserInputMethod: "server/requestApproval",
@@ -431,9 +436,10 @@ describe("handleCodexCommand", () => {
           telegram: {
             buttons: [
               [
-                { text: "1. Approve", callback_data: "1" },
-                { text: "2. Decline", callback_data: "2" },
+                { text: "Approve Once", callback_data: expect.stringMatching(/^cdxui:/) },
+                { text: "Decline", callback_data: expect.stringMatching(/^cdxui:/) },
               ],
+              [{ text: "Tell Codex What To Do", callback_data: expect.stringMatching(/^cdxui:/) }],
             ],
           },
         },
@@ -527,6 +533,11 @@ describe("handleCodexCommand", () => {
       codexAutoRoute: true,
       pendingUserInputRequestId: "req-123",
       pendingUserInputOptions: ["Approve", "Decline"],
+      pendingUserInputActions: [
+        { kind: "approval", decision: "accept", label: "Approve Once" },
+        { kind: "approval", decision: "decline", label: "Decline" },
+        { kind: "steer", label: "Tell Codex What To Do" },
+      ],
       pendingUserInputExpiresAt: Date.now() + 60_000,
       pendingUserInputPromptText: "Approve deploy?",
       pendingUserInputMethod: "server/requestApproval",
@@ -541,9 +552,10 @@ describe("handleCodexCommand", () => {
         ?.buttons,
     ).toEqual([
       [
-        { text: "1. Approve", callback_data: "1" },
-        { text: "2. Decline", callback_data: "2" },
+        { text: "Approve Once", callback_data: expect.stringMatching(/^cdxui:/) },
+        { text: "Decline", callback_data: expect.stringMatching(/^cdxui:/) },
       ],
+      [{ text: "Tell Codex What To Do", callback_data: expect.stringMatching(/^cdxui:/) }],
     ]);
   });
 

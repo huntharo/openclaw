@@ -4,6 +4,7 @@ import {
   isCodexAppServerRunStreaming,
   queueCodexAppServerMessage,
   queueCodexAppServerMessageBySessionKey,
+  submitCodexAppServerPendingInputBySessionKey,
 } from "./codex-app-server-runs.js";
 import {
   abortEmbeddedPiRun,
@@ -21,6 +22,13 @@ export function queueAgentRunMessage(sessionId: string, text: string): boolean {
 
 export function queueAgentRunMessageBySessionKey(sessionKey: string, text: string): boolean {
   return queueCodexAppServerMessageBySessionKey(sessionKey, text);
+}
+
+export function submitAgentRunPendingInputBySessionKey(
+  sessionKey: string,
+  submission: { actionIndex: number },
+): boolean {
+  return submitCodexAppServerPendingInputBySessionKey(sessionKey, submission);
 }
 
 export function abortAgentRun(sessionId: string): boolean {

@@ -287,9 +287,11 @@ export async function runAgentTurnWithFallback(params: {
                       if (entry) {
                         entry.pendingUserInputRequestId = pending?.requestId;
                         entry.pendingUserInputOptions = pending?.options;
+                        entry.pendingUserInputActions = pending?.actions;
                         entry.pendingUserInputExpiresAt = pending?.expiresAt;
                         entry.pendingUserInputPromptText = pending?.promptText;
                         entry.pendingUserInputMethod = pending?.method;
+                        entry.pendingUserInputAwaitingSteer = false;
                         entry.updatedAt = Date.now();
                         params.activeSessionStore[pendingSessionKey] = entry;
                       }
@@ -305,9 +307,11 @@ export async function runAgentTurnWithFallback(params: {
                         }
                         entry.pendingUserInputRequestId = pending?.requestId;
                         entry.pendingUserInputOptions = pending?.options;
+                        entry.pendingUserInputActions = pending?.actions;
                         entry.pendingUserInputExpiresAt = pending?.expiresAt;
                         entry.pendingUserInputPromptText = pending?.promptText;
                         entry.pendingUserInputMethod = pending?.method;
+                        entry.pendingUserInputAwaitingSteer = false;
                         entry.updatedAt = Date.now();
                         store[pendingSessionKey] = entry;
                       });

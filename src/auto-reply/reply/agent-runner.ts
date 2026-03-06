@@ -484,9 +484,11 @@ export async function runReplyAgent(params: {
         activeSessionEntry.codexAutoRoute = true;
         activeSessionEntry.pendingUserInputRequestId = undefined;
         activeSessionEntry.pendingUserInputOptions = undefined;
+        activeSessionEntry.pendingUserInputActions = undefined;
         activeSessionEntry.pendingUserInputExpiresAt = undefined;
         activeSessionEntry.pendingUserInputPromptText = undefined;
         activeSessionEntry.pendingUserInputMethod = undefined;
+        activeSessionEntry.pendingUserInputAwaitingSteer = undefined;
         activeSessionEntry.updatedAt = Date.now();
       }
       if (sessionKey && activeSessionEntry && activeSessionStore) {
@@ -503,9 +505,11 @@ export async function runReplyAgent(params: {
             codexAutoRoute: true,
             pendingUserInputRequestId: undefined,
             pendingUserInputOptions: undefined,
+            pendingUserInputActions: undefined,
             pendingUserInputExpiresAt: undefined,
             pendingUserInputPromptText: undefined,
             pendingUserInputMethod: undefined,
+            pendingUserInputAwaitingSteer: undefined,
           }),
         });
       }

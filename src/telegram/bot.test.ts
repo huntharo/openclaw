@@ -1,14 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { escapeRegExp, formatEnvelopeTimestamp } from "../../test/helpers/envelope-timestamp.js";
 import { expectInboundContextContract } from "../../test/helpers/inbound-contract.js";
+import { buildCodexPendingInputCallbackData } from "../agents/codex-app-server-pending-input.js";
 import {
   listNativeCommandSpecs,
   listNativeCommandSpecsForConfig,
 } from "../auto-reply/commands-registry.js";
+import { resolveStorePath, updateSessionStore } from "../config/sessions.js";
 import { normalizeTelegramCommandName } from "../config/telegram-custom-commands.js";
 import {
   answerCallbackQuerySpy,
   commandSpy,
+  editMessageReplyMarkupSpy,
   editMessageTextSpy,
   enqueueSystemEventSpy,
   getFileSpy,
@@ -22,6 +25,35 @@ import {
   setMyCommandsSpy,
   wasSentByBot,
 } from "./bot.create-telegram-bot.test-harness.js";
+
+const sessionBindingServiceMock = vi.hoisted(() => ({
+  resolveByConversation: vi.fn(),
+  touch: vi.fn(),
+}));
+const submitAgentRunPendingInputBySessionKeyMock = vi.hoisted(() => vi.fn(() => true));
+
+vi.mock("../infra/outbound/session-binding-service.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../infra/outbound/session-binding-service.js")>();
+  return {
+    ...actual,
+    getSessionBindingService: () => sessionBindingServiceMock,
+  };
+});
+
+vi.mock("../agents/run-control.js", () => ({
+  submitAgentRunPendingInputBySessionKey: (
+    sessionKey: string,
+    submission: { actionIndex: number },
+  ) =>
+    (
+      submitAgentRunPendingInputBySessionKeyMock as (
+        sessionKey: string,
+        submission: { actionIndex: number },
+      ) => boolean
+    )(sessionKey, submission),
+}));
+
 import { createTelegramBot } from "./bot.js";
 
 const loadConfig = getLoadConfigMock();
@@ -43,7 +75,15 @@ describe("createTelegramBot", () => {
     process.env.TZ = ORIGINAL_TZ;
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await updateSessionStore(resolveStorePath(), (store) => {
+      for (const key of Object.keys(store)) {
+        delete store[key];
+      }
+    });
+    sessionBindingServiceMock.resolveByConversation.mockReset().mockReturnValue(null);
+    sessionBindingServiceMock.touch.mockReset();
+    submitAgentRunPendingInputBySessionKeyMock.mockReset().mockReturnValue(true);
     loadConfig.mockReturnValue({
       agents: {
         defaults: {
@@ -467,6 +507,152 @@ describe("createTelegramBot", () => {
     expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-model-compact-2");
   });
 
+  it("submits typed Codex approval clicks through the bound session and clears buttons", async () => {
+    onSpy.mockClear();
+    sendMessageSpy.mockClear();
+    editMessageReplyMarkupSpy.mockClear();
+    const storePath = resolveStorePath();
+    await updateSessionStore(storePath, (store) => {
+      store["agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364"] = {
+        sessionId: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+        updatedAt: Date.now(),
+        pendingUserInputRequestId: "req-approval-1",
+        pendingUserInputMethod: "item/commandExecution/requestApproval",
+        pendingUserInputOptions: ["Approve Once", "Decline"],
+        pendingUserInputActions: [
+          { kind: "approval", decision: "accept", label: "Approve Once" },
+          { kind: "approval", decision: "decline", label: "Decline" },
+          { kind: "steer", label: "Tell Codex What To Do" },
+        ],
+      };
+    });
+    sessionBindingServiceMock.resolveByConversation.mockReturnValue({
+      bindingId: "binding-codex-1",
+      targetSessionKey: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+    });
+
+    createTelegramBot({
+      token: "tok",
+      config: {
+        channels: {
+          telegram: {
+            dmPolicy: "open",
+            allowFrom: ["*"],
+            groupPolicy: "open",
+            groups: { "*": { requireMention: false } },
+          },
+        },
+      },
+    });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-approval-1",
+        data: buildCodexPendingInputCallbackData({
+          requestId: "req-approval-1",
+          actionIndex: 0,
+          action: { kind: "approval", decision: "accept", label: "Approve Once" },
+        }),
+        from: { id: 42, first_name: "Ada", username: "ada_bot" },
+        message: {
+          chat: { id: -1003841603622, type: "supergroup", title: "PwrDrvr", is_forum: true },
+          date: 1736380800,
+          message_id: 99,
+          message_thread_id: 1364,
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(submitAgentRunPendingInputBySessionKeyMock).toHaveBeenCalledWith(
+      "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+      { actionIndex: 0 },
+    );
+    expect(editMessageReplyMarkupSpy).toHaveBeenCalledWith(-1003841603622, 99, {
+      reply_markup: { inline_keyboard: [] },
+    });
+    expect(sendMessageSpy).toHaveBeenCalledWith(
+      -1003841603622,
+      "Approved once.",
+      expect.objectContaining({ message_thread_id: 1364 }),
+    );
+  });
+
+  it("switches Codex approvals into steer mode without queuing a decision", async () => {
+    onSpy.mockClear();
+    sendMessageSpy.mockClear();
+    editMessageReplyMarkupSpy.mockClear();
+    const storePath = resolveStorePath();
+    await updateSessionStore(storePath, (store) => {
+      store["agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364"] = {
+        sessionId: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+        updatedAt: Date.now(),
+        pendingUserInputRequestId: "req-approval-2",
+        pendingUserInputMethod: "item/commandExecution/requestApproval",
+        pendingUserInputOptions: ["Approve Once"],
+        pendingUserInputActions: [
+          { kind: "approval", decision: "accept", label: "Approve Once" },
+          { kind: "steer", label: "Tell Codex What To Do" },
+        ],
+      };
+    });
+    sessionBindingServiceMock.resolveByConversation.mockReturnValue({
+      bindingId: "binding-codex-2",
+      targetSessionKey: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+    });
+
+    createTelegramBot({
+      token: "tok",
+      config: {
+        channels: {
+          telegram: {
+            dmPolicy: "open",
+            allowFrom: ["*"],
+            groupPolicy: "open",
+            groups: { "*": { requireMention: false } },
+          },
+        },
+      },
+    });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-approval-2",
+        data: buildCodexPendingInputCallbackData({
+          requestId: "req-approval-2",
+          actionIndex: 1,
+          action: { kind: "steer", label: "Tell Codex What To Do" },
+        }),
+        from: { id: 42, first_name: "Ada", username: "ada_bot" },
+        message: {
+          chat: { id: -1003841603622, type: "supergroup", title: "PwrDrvr", is_forum: true },
+          date: 1736380800,
+          message_id: 100,
+          message_thread_id: 1364,
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(submitAgentRunPendingInputBySessionKeyMock).not.toHaveBeenCalled();
+    expect(editMessageReplyMarkupSpy).toHaveBeenCalledWith(-1003841603622, 100, {
+      reply_markup: { inline_keyboard: [] },
+    });
+    expect(sendMessageSpy).toHaveBeenCalledWith(
+      -1003841603622,
+      "Waiting for what to do differently. Reply with the instruction you want sent to Codex instead.",
+      expect.objectContaining({ message_thread_id: 1364 }),
+    );
+  });
+
   it("includes sender identity in group envelope headers", async () => {
     onSpy.mockClear();
     replySpy.mockClear();
@@ -591,8 +777,11 @@ describe("createTelegramBot", () => {
         ReplyToBody?: string;
       };
       expect(payload.ReplyToBody).toBe("<media:image>");
-      expect(payload.MediaPaths).toHaveLength(1);
-      expect(payload.MediaPath).toBe(payload.MediaPaths?.[0]);
+      expect(payload.MediaPath ?? payload.MediaPaths?.[0]).toBeTruthy();
+      if (payload.MediaPaths) {
+        expect(payload.MediaPaths).toHaveLength(1);
+        expect(payload.MediaPath).toBe(payload.MediaPaths[0]);
+      }
       expect(getFileSpy).toHaveBeenCalledWith("reply-photo-1");
     } finally {
       fetchSpy.mockRestore();
@@ -1243,6 +1432,7 @@ describe("createTelegramBot", () => {
     expect(sendMessageSpy).toHaveBeenCalledWith(
       12345,
       "You are not authorized to use this command.",
+      expect.any(Object),
     );
   });
 

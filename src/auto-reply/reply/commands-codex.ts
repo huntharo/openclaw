@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
 import {
+  buildCodexPendingInputButtons,
+  buildCodexPendingUserInputActions,
+  describeCodexPendingInputAction,
+  type CodexPendingUserInputAction,
+} from "../../agents/codex-app-server-pending-input.js";
+import {
   discoverCodexAppServerThreads,
   isCodexAppServerProvider,
   readCodexAppServerThreadContext,
@@ -42,9 +48,11 @@ type SessionMutation = {
   codexAutoRoute?: boolean;
   pendingUserInputRequestId?: string;
   pendingUserInputOptions?: string[];
+  pendingUserInputActions?: CodexPendingUserInputAction[];
   pendingUserInputExpiresAt?: number;
   pendingUserInputPromptText?: string;
   pendingUserInputMethod?: string;
+  pendingUserInputAwaitingSteer?: boolean;
 };
 
 type CodexTargetSession = {
@@ -94,28 +102,6 @@ function resolveHelpText(): string {
   ].join("\n");
 }
 
-function buildCodexTelegramButtons(
-  options: string[] | undefined,
-): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
-  const trimmed = options?.map((option) => option.trim()).filter(Boolean) ?? [];
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-  for (let index = 0; index < trimmed.length; index += 2) {
-    rows.push(
-      trimmed.slice(index, index + 2).map((option, offset) => {
-        const ordinal = index + offset + 1;
-        return {
-          text: `${ordinal}. ${option}`,
-          callback_data: String(ordinal),
-        };
-      }),
-    );
-  }
-  return rows;
-}
-
 function buildPendingInputReplay(entry: HandleCommandsParams["sessionEntry"]): string | undefined {
   const requestId = entry?.pendingUserInputRequestId?.trim();
   if (!requestId) {
@@ -126,12 +112,34 @@ function buildPendingInputReplay(entry: HandleCommandsParams["sessionEntry"]): s
   if (promptText) {
     lines.push(promptText);
   }
-  const options = entry?.pendingUserInputOptions?.filter(Boolean) ?? [];
-  if (options.length > 0) {
-    lines.push("", "Options:");
-    options.forEach((option, index) => {
-      lines.push(`${index + 1}. ${option}`);
+  const actions = entry?.pendingUserInputActions?.filter(Boolean) ?? [];
+  const resolvedActions =
+    actions.length > 0
+      ? actions
+      : buildCodexPendingUserInputActions({
+          method: entry?.pendingUserInputMethod,
+          options: entry?.pendingUserInputOptions,
+        });
+  if (resolvedActions.length > 0) {
+    const numberedActions = resolvedActions.filter((action) => action.kind !== "steer");
+    lines.push("", "Choices:");
+    numberedActions.forEach((action, index) => {
+      lines.push(`${index + 1}. ${describeCodexPendingInputAction(action)}`);
     });
+    if (resolvedActions.some((action) => action.kind === "steer")) {
+      lines.push("", "Or reply with free text to tell Codex what to do instead.");
+    }
+  } else {
+    const options = entry?.pendingUserInputOptions?.filter(Boolean) ?? [];
+    if (options.length > 0) {
+      lines.push("", "Options:");
+      options.forEach((option, index) => {
+        lines.push(`${index + 1}. ${option}`);
+      });
+    }
+  }
+  if (entry?.pendingUserInputAwaitingSteer) {
+    lines.push("", "Waiting for you to tell Codex what to do instead.");
   }
   if (typeof entry?.pendingUserInputExpiresAt === "number") {
     const seconds = Math.max(0, Math.round((entry.pendingUserInputExpiresAt - Date.now()) / 1000));
@@ -147,7 +155,19 @@ function buildPendingInputChannelData(
   if (params.command.surface !== "telegram") {
     return undefined;
   }
-  const buttons = buildCodexTelegramButtons(entry?.pendingUserInputOptions);
+  const requestId = entry?.pendingUserInputRequestId?.trim();
+  if (!requestId) {
+    return undefined;
+  }
+  const buttons = buildCodexPendingInputButtons({
+    requestId,
+    actions:
+      entry?.pendingUserInputActions ??
+      buildCodexPendingUserInputActions({
+        method: entry?.pendingUserInputMethod,
+        options: entry?.pendingUserInputOptions,
+      }),
+  });
   if (!buttons) {
     return undefined;
   }
@@ -607,6 +627,9 @@ function resolveStatusText(params: HandleCommandsParams): string {
   if (entry?.pendingUserInputPromptText) {
     lines.push(entry.pendingUserInputPromptText);
   }
+  if (entry?.pendingUserInputAwaitingSteer) {
+    lines.push("Awaiting steer reply: yes");
+  }
   lines.push(`Session: ${params.sessionKey}`);
   return lines.join("\n");
 }
@@ -665,9 +688,11 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
       codexAutoRoute: false,
       pendingUserInputRequestId: undefined,
       pendingUserInputOptions: undefined,
+      pendingUserInputActions: undefined,
       pendingUserInputExpiresAt: undefined,
       pendingUserInputPromptText: undefined,
       pendingUserInputMethod: undefined,
+      pendingUserInputAwaitingSteer: undefined,
     });
     return stopWithText(
       "Codex detached from this conversation. The remote thread was left intact.",
@@ -700,9 +725,11 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
         codexAutoRoute: true,
         pendingUserInputRequestId: undefined,
         pendingUserInputOptions: undefined,
+        pendingUserInputActions: undefined,
         pendingUserInputExpiresAt: undefined,
         pendingUserInputPromptText: undefined,
         pendingUserInputMethod: undefined,
+        pendingUserInputAwaitingSteer: undefined,
       },
       targetSession.sessionKey,
     );
@@ -804,6 +831,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
         pendingUserInputOptions: shouldPreservePendingReplay
           ? existingPendingEntry?.pendingUserInputOptions
           : undefined,
+        pendingUserInputActions: shouldPreservePendingReplay
+          ? existingPendingEntry?.pendingUserInputActions
+          : undefined,
         pendingUserInputExpiresAt: shouldPreservePendingReplay
           ? existingPendingEntry?.pendingUserInputExpiresAt
           : undefined,
@@ -812,6 +842,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
           : undefined,
         pendingUserInputMethod: shouldPreservePendingReplay
           ? existingPendingEntry?.pendingUserInputMethod
+          : undefined,
+        pendingUserInputAwaitingSteer: shouldPreservePendingReplay
+          ? existingPendingEntry?.pendingUserInputAwaitingSteer
           : undefined,
       },
       targetSession.sessionKey,

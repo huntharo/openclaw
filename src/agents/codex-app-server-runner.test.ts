@@ -101,14 +101,22 @@ describe("applyThreadFilter", () => {
   });
 });
 
-describe("buildCodexTelegramOptionButtons", () => {
-  it("renders numbered Telegram buttons for pending input options", () => {
-    expect(__testing.buildCodexTelegramOptionButtons(["Approve", "Decline", "Cancel"])).toEqual([
-      [
-        { text: "1. Approve", callback_data: "1" },
-        { text: "2. Decline", callback_data: "2" },
-      ],
-      [{ text: "3. Cancel", callback_data: "3" }],
+describe("buildCodexPendingUserInputActions", () => {
+  it("renders typed approval actions and a steer affordance", () => {
+    expect(
+      __testing.buildCodexPendingUserInputActions({
+        method: "item/commandExecution/requestApproval",
+        requestParams: {
+          availableDecisions: [
+            { decision: "accept", label: "Approve Once" },
+            { decision: "decline", label: "Decline" },
+          ],
+        },
+      }),
+    ).toEqual([
+      { kind: "approval", decision: "accept", label: "Approve Once" },
+      { kind: "approval", decision: "decline", label: "Decline" },
+      { kind: "steer", label: "Tell Codex What To Do" },
     ]);
   });
 });
@@ -412,12 +420,20 @@ describe("extractThreadReplayFromReadResult", () => {
 });
 
 describe("mapPendingInputResponse", () => {
-  it("maps approval text to the expected Codex decision", () => {
-    expect(__testing.resolveApprovalDecisionFromText("Approve for this session", true)).toBe(
-      "acceptForSession",
-    );
-    expect(__testing.resolveApprovalDecisionFromText("Decline", true)).toBe("decline");
-    expect(__testing.resolveApprovalDecisionFromText("Cancel", true)).toBe("cancel");
+  it("maps approval actions to the expected Codex decision", () => {
+    expect(
+      __testing.mapPendingInputResponse({
+        methodLower: "server/requestapproval",
+        requestParams: {},
+        response: { index: 1 },
+        options: ["Approve Once", "Approve for Session"],
+        actions: [
+          { kind: "approval", decision: "accept", label: "Approve Once" },
+          { kind: "approval", decision: "acceptForSession", label: "Approve for Session" },
+        ],
+        timedOut: false,
+      }),
+    ).toEqual({ decision: "acceptForSession" });
   });
 
   it("maps timed-out approvals to cancel", () => {
@@ -427,6 +443,10 @@ describe("mapPendingInputResponse", () => {
         requestParams: {},
         response: { text: "Approve" },
         options: ["Approve", "Decline"],
+        actions: [
+          { kind: "approval", decision: "accept", label: "Approve" },
+          { kind: "approval", decision: "decline", label: "Decline" },
+        ],
         timedOut: true,
       }),
     ).toEqual({ decision: "cancel" });
@@ -446,6 +466,10 @@ describe("mapPendingInputResponse", () => {
         },
         response: { index: 1 },
         options: ["Approve", "Decline"],
+        actions: [
+          { kind: "option", label: "Approve", value: "Approve" },
+          { kind: "option", label: "Decline", value: "Decline" },
+        ],
         timedOut: false,
       }),
     ).toEqual({

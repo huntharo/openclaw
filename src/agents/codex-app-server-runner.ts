@@ -9,6 +9,12 @@ import {
   type CodexAppServerSettings,
 } from "./codex-app-server-config.js";
 import {
+  buildCodexPendingInputButtons,
+  buildCodexPendingUserInputActions,
+  describeCodexPendingInputAction,
+  type CodexPendingUserInputAction,
+} from "./codex-app-server-pending-input.js";
+import {
   clearActiveCodexAppServerRun,
   setActiveCodexAppServerRun,
   type CodexAppServerQueueHandle,
@@ -59,6 +65,7 @@ export type ParsedCodexUserInput =
 export type PendingCodexUserInputState = {
   requestId: string;
   options: string[];
+  actions?: CodexPendingUserInputAction[];
   expiresAt: number;
   promptText?: string;
   method?: string;
@@ -378,15 +385,53 @@ function buildPromptText(params: {
   method: string;
   requestId: string;
   options: string[];
+  actions: CodexPendingUserInputAction[];
   question?: string;
   expiresAt: number;
   requestParams: unknown;
 }): string {
-  const lines = [`🧭 Codex input requested (${params.requestId})`];
+  const lines = [
+    /requestapproval/i.test(params.method)
+      ? `🧭 Codex approval requested (${params.requestId})`
+      : `🧭 Codex input requested (${params.requestId})`,
+  ];
   if (params.question) {
     lines.push(params.question);
   }
-  if (params.options.length > 0) {
+  const requestRecord = asRecord(params.requestParams);
+  const command =
+    (requestRecord ? pickString(requestRecord, ["command", "cmd"]) : undefined) ??
+    (asRecord(requestRecord?.command)
+      ? pickString(asRecord(requestRecord?.command)!, ["command", "text", "value"])
+      : undefined);
+  if (command) {
+    lines.push("", "Command:", command);
+  }
+  const cwd =
+    (requestRecord ? pickString(requestRecord, ["cwd", "workdir"]) : undefined) ??
+    (asRecord(requestRecord?.command)
+      ? pickString(asRecord(requestRecord?.command)!, ["cwd", "workdir"])
+      : undefined);
+  if (cwd) {
+    lines.push("", `Cwd: ${cwd}`);
+  }
+  const approvalSessionAction = params.actions.find(
+    (action) => action.kind === "approval" && action.decision === "acceptForSession",
+  );
+  if (approvalSessionAction?.kind === "approval" && approvalSessionAction.sessionPrefix) {
+    lines.push("", `Session Prefix: ${approvalSessionAction.sessionPrefix}`);
+  }
+  if (params.actions.length > 0) {
+    const numberedActions = params.actions.filter((action) => action.kind !== "steer");
+    lines.push("", "Choices:");
+    numberedActions.forEach((action, index) => {
+      lines.push(`${index + 1}. ${describeCodexPendingInputAction(action)}`);
+    });
+    lines.push("", 'Reply with "1", "2", "option 1", etc., or use a button.');
+    if (/requestapproval/i.test(params.method)) {
+      lines.push("You can also reply with free text to tell Codex what to do instead.");
+    }
+  } else if (params.options.length > 0) {
     lines.push("", "Options:");
     params.options.forEach((option, index) => {
       lines.push(`${index + 1}. ${option}`);
@@ -402,68 +447,39 @@ function buildPromptText(params: {
     lines.push("", requestText);
   }
   if (/requestapproval/i.test(params.method)) {
-    lines.push("", "This response will be sent to Codex as an approval decision.");
+    lines.push("", "Approval buttons send exact decisions back to Codex.");
   }
   return lines.join("\n");
 }
 
-function buildCodexTelegramOptionButtons(
+function pickPendingSelectionText(
+  value: unknown,
   options: string[],
-): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
-  const trimmed = options
-    .map((option) => option.trim())
-    .filter(Boolean)
-    .slice(0, 8);
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-  for (let index = 0; index < trimmed.length; index += 2) {
-    const row = trimmed.slice(index, index + 2).map((option, offset) => {
-      const ordinal = index + offset + 1;
-      return {
-        text: `${ordinal}. ${option}`,
-        callback_data: String(ordinal),
-      };
-    });
-    rows.push(row);
-  }
-  return rows;
-}
-
-function pickPendingSelectionText(value: unknown, options: string[]): string {
+  actions: CodexPendingUserInputAction[],
+): string {
   const record = asRecord(value);
   if (!record) {
     return "";
   }
   const index = typeof record.index === "number" ? record.index : undefined;
   if (index != null && Number.isInteger(index)) {
+    const action = actions[index];
+    if (action?.kind === "approval") {
+      return action.decision;
+    }
+    if (action?.kind === "option") {
+      return action.value;
+    }
     return options[index] ?? "";
   }
   return pickString(record, ["option", "text", "value", "label"]) ?? "";
 }
 
-function resolveApprovalDecisionFromText(text: string, supportsSession: boolean): string {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) {
-    return "cancel";
-  }
-  if (supportsSession && normalized.includes("session")) {
-    return "acceptForSession";
-  }
-  if (/cancel|abort|stop/.test(normalized)) {
-    return "cancel";
-  }
-  if (/deny|decline|reject|block|no/.test(normalized)) {
-    return "decline";
-  }
-  if (/approve|allow|accept|yes/.test(normalized)) {
-    return "accept";
-  }
-  return "decline";
-}
-
-function buildToolRequestUserInputResponse(requestParams: unknown, response: unknown): unknown {
+function buildToolRequestUserInputResponse(
+  requestParams: unknown,
+  response: unknown,
+  actions: CodexPendingUserInputAction[],
+): unknown {
   const record = asRecord(requestParams);
   const questions = Array.isArray(record?.questions) ? record.questions : [];
   if (questions.length === 0) {
@@ -471,7 +487,7 @@ function buildToolRequestUserInputResponse(requestParams: unknown, response: unk
   }
   const firstQuestion = asRecord(questions[0]);
   const firstQuestionId = pickString(firstQuestion ?? {}, ["id"]) ?? "q1";
-  const selected = pickPendingSelectionText(response, extractOptionValues(firstQuestion));
+  const selected = pickPendingSelectionText(response, extractOptionValues(firstQuestion), actions);
   return {
     answers: {
       [firstQuestionId]: {
@@ -486,18 +502,23 @@ function mapPendingInputResponse(params: {
   requestParams: unknown;
   response: unknown;
   options: string[];
+  actions: CodexPendingUserInputAction[];
   timedOut: boolean;
 }): unknown {
-  const { methodLower, requestParams, response, options, timedOut } = params;
+  const { methodLower, requestParams, response, options, actions, timedOut } = params;
   if (methodLower.includes("item/tool/requestuserinput")) {
-    return buildToolRequestUserInputResponse(requestParams, timedOut ? { text: "" } : response);
+    return buildToolRequestUserInputResponse(
+      requestParams,
+      timedOut ? { text: "" } : response,
+      actions,
+    );
   }
   if (methodLower.includes("requestapproval")) {
     if (timedOut) {
       return { decision: "cancel" };
     }
-    const selected = pickPendingSelectionText(response, options);
-    return { decision: resolveApprovalDecisionFromText(selected, true) };
+    const selected = pickPendingSelectionText(response, options, actions);
+    return { decision: selected || "decline" };
   }
   if (timedOut) {
     return { cancelled: true, reason: "timeout" };
@@ -1259,6 +1280,7 @@ export async function runCodexAppServerAgent(
     requestId: string;
     methodLower: string;
     options: string[];
+    actions: CodexPendingUserInputAction[];
     expiresAt: number;
     resolve: (value: unknown) => void;
   } | null = null;
@@ -1281,14 +1303,26 @@ export async function runCodexAppServerAgent(
         return false;
       }
       if (pendingInput) {
-        const parsed = parseCodexUserInput(trimmed, pendingInput.options.length);
+        const actionSelectionCount =
+          pendingInput.actions.filter((action) => action.kind !== "steer").length ||
+          pendingInput.options.length;
+        const parsed = parseCodexUserInput(trimmed, actionSelectionCount);
         if (parsed.kind === "option") {
-          pendingInput.resolve({
-            index: parsed.index,
-            option: pendingInput.options[parsed.index] ?? "",
-          });
+          const action = pendingInput.actions[parsed.index];
+          if (action?.kind === "steer") {
+            pendingInput.resolve({ steerText: "" });
+          } else {
+            pendingInput.resolve({
+              index: parsed.index,
+              option: pendingInput.options[parsed.index] ?? "",
+            });
+          }
         } else {
-          pendingInput.resolve({ text: parsed.text });
+          if (pendingInput.methodLower.includes("requestapproval")) {
+            pendingInput.resolve({ steerText: parsed.text });
+          } else {
+            pendingInput.resolve({ text: parsed.text });
+          }
         }
         return true;
       }
@@ -1304,6 +1338,20 @@ export async function runCodexAppServerAgent(
         methods: ["turn/steer", "thread/steer"],
         payloads: steerPayloads,
         timeoutMs: settings.requestTimeoutMs,
+      });
+      return true;
+    },
+    submitPendingInput: async ({ actionIndex }) => {
+      if (!pendingInput) {
+        return false;
+      }
+      const action = pendingInput.actions[actionIndex];
+      if (!action || action.kind === "steer") {
+        return false;
+      }
+      pendingInput.resolve({
+        index: actionIndex,
+        option: pendingInput.options[actionIndex] ?? "",
       });
       return true;
     },
@@ -1374,6 +1422,11 @@ export async function runCodexAppServerAgent(
     threadId ||= ids.threadId ?? "";
     turnId ||= ids.runId ?? "";
     const options = extractOptionValues(requestParams);
+    const actions = buildCodexPendingUserInputActions({
+      method,
+      requestParams,
+      options,
+    });
     const question = dedupeJoinedText(collectText(requestParams));
     const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
     const expiresAt = Date.now() + settings.inputTimeoutMs;
@@ -1381,6 +1434,7 @@ export async function runCodexAppServerAgent(
       method,
       requestId,
       options,
+      actions,
       question,
       expiresAt,
       requestParams,
@@ -1390,11 +1444,15 @@ export async function runCodexAppServerAgent(
     await params.onPendingUserInput?.({
       requestId,
       options,
+      actions,
       expiresAt,
       promptText,
       method,
     });
-    const telegramButtons = buildCodexTelegramOptionButtons(options);
+    const telegramButtons = buildCodexPendingInputButtons({
+      requestId,
+      actions,
+    });
     await params.onToolResult?.({
       text: promptText,
       channelData: {
@@ -1402,6 +1460,7 @@ export async function runCodexAppServerAgent(
           interactiveRequest: true,
           method,
           requestId,
+          actions,
         },
         ...(telegramButtons
           ? {
@@ -1419,6 +1478,7 @@ export async function runCodexAppServerAgent(
         requestId,
         methodLower,
         options,
+        actions,
         expiresAt,
         resolve,
       };
@@ -1435,13 +1495,32 @@ export async function runCodexAppServerAgent(
     awaitingInput = false;
     pendingInput = null;
     await params.onPendingUserInput?.(null);
-    return mapPendingInputResponse({
+    const mappedResponse = mapPendingInputResponse({
       methodLower,
       requestParams,
       response,
       options,
+      actions,
       timedOut,
     });
+    const responseRecord = asRecord(response);
+    const steerText =
+      methodLower.includes("requestapproval") && typeof responseRecord?.steerText === "string"
+        ? responseRecord.steerText.trim()
+        : "";
+    if (steerText && threadId) {
+      const steerPayloads = [
+        { threadId, turnId: turnId || undefined, text: steerText },
+        { thread_id: threadId, turn_id: turnId || undefined, text: steerText },
+      ];
+      await requestWithFallbacks({
+        client,
+        methods: ["turn/steer", "thread/steer"],
+        payloads: steerPayloads,
+        timeoutMs: settings.requestTimeoutMs,
+      });
+    }
+    return mappedResponse;
   });
 
   setActiveCodexAppServerRun(params.sessionId, queueHandle, params.sessionKey);
@@ -1529,12 +1608,11 @@ export async function runCodexAppServerAgent(
 
 export const __testing = {
   applyThreadFilter,
-  buildCodexTelegramOptionButtons,
+  buildCodexPendingUserInputActions,
   collectStreamingText,
   extractAssistantNotificationText,
   extractThreadReplayFromReadResult,
   isMethodUnavailableError,
   mergeAssistantReplyAndEmit,
   mapPendingInputResponse,
-  resolveApprovalDecisionFromText,
 };
