@@ -1802,6 +1802,7 @@ async function requestWithVariants(params: {
   methods: string[];
   variants: Array<Record<string, unknown>>;
   timeoutMs: number;
+  stopOnError?: (err: unknown) => boolean;
 }): Promise<unknown> {
   const errors: string[] = [];
   for (const method of params.methods) {
@@ -1809,6 +1810,9 @@ async function requestWithVariants(params: {
       try {
         return await params.client.request(method, variant, params.timeoutMs);
       } catch (err) {
+        if (params.stopOnError?.(err)) {
+          throw err;
+        }
         errors.push(`${method}: ${String(err)}`);
       }
     }
@@ -1827,97 +1831,48 @@ function buildTurnStartVariants(params: {
   model?: string;
 }): Array<Record<string, unknown>> {
   const input = buildTextInputItems(params.prompt);
+  const withAliases = (payload: Record<string, unknown>) => [
+    payload,
+    {
+      ...payload,
+      thread_id: params.threadId,
+    },
+    {
+      ...payload,
+      conversationId: params.threadId,
+    },
+  ];
   return [
-    {
+    ...withAliases({
       threadId: params.threadId,
       input,
       cwd: params.workspaceDir,
       model: params.model,
-    },
-    {
-      thread_id: params.threadId,
-      input,
-      cwd: params.workspaceDir,
-      model: params.model,
-    },
-    {
-      conversationId: params.threadId,
-      input,
-      cwd: params.workspaceDir,
-      model: params.model,
-    },
-    {
+    }),
+    ...withAliases({
       threadId: params.threadId,
       input,
       cwd: params.workspaceDir,
-    },
-    {
-      thread_id: params.threadId,
-      input,
-      cwd: params.workspaceDir,
-    },
-    {
-      conversationId: params.threadId,
-      input,
-      cwd: params.workspaceDir,
-    },
-    {
+    }),
+    ...withAliases({
       threadId: params.threadId,
       input,
-    },
-    {
-      thread_id: params.threadId,
-      input,
-    },
-    {
-      conversationId: params.threadId,
-      input,
-    },
-    {
+    }),
+    ...withAliases({
       threadId: params.threadId,
       prompt: params.prompt,
       cwd: params.workspaceDir,
       model: params.model,
-    },
-    {
-      thread_id: params.threadId,
-      prompt: params.prompt,
-      cwd: params.workspaceDir,
-      model: params.model,
-    },
-    {
-      conversationId: params.threadId,
-      prompt: params.prompt,
-      cwd: params.workspaceDir,
-      model: params.model,
-    },
-    {
+    }),
+    ...withAliases({
       threadId: params.threadId,
       prompt: params.prompt,
       cwd: params.workspaceDir,
-    },
-    {
-      thread_id: params.threadId,
-      prompt: params.prompt,
-      cwd: params.workspaceDir,
-    },
-    {
-      conversationId: params.threadId,
-      prompt: params.prompt,
-      cwd: params.workspaceDir,
-    },
-    {
+    }),
+    ...withAliases({
       threadId: params.threadId,
       prompt: params.prompt,
-    },
-    {
-      thread_id: params.threadId,
-      prompt: params.prompt,
-    },
-    {
-      conversationId: params.threadId,
-      prompt: params.prompt,
-    },
+    }),
   ];
 }
 
@@ -2552,6 +2507,7 @@ export async function runCodexAppServerAgent(
           model: params.model,
         }),
         timeoutMs: Math.max(settings.requestTimeoutMs, params.timeoutMs),
+        stopOnError: (err) => isConversationNotFoundError(err),
       });
     };
 

@@ -51,14 +51,7 @@ describe("codex app server rpc methods", () => {
       model: "gpt-5-codex",
     });
     expect(variants.length).toBeGreaterThan(0);
-    expect(
-      variants.some(
-        (variant) =>
-          variant.threadId === "thread-123" ||
-          variant.thread_id === "thread-123" ||
-          variant.conversationId === "thread-123",
-      ),
-    ).toBe(true);
+    expect(variants.every((variant) => variant.threadId === "thread-123")).toBe(true);
     expect(
       variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "thread_id")),
     ).toBe(true);
