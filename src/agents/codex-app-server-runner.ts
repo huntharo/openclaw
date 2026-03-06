@@ -1310,4 +1310,6 @@ export const __testing = {
   applyThreadFilter,
   buildCodexTelegramOptionButtons,
   isMethodUnavailableError,
+  mapPendingInputResponse,
+  resolveApprovalDecisionFromText,
 };

@@ -112,3 +112,50 @@ describe("buildCodexTelegramOptionButtons", () => {
     ]);
   });
 });
+
+describe("mapPendingInputResponse", () => {
+  it("maps approval text to the expected Codex decision", () => {
+    expect(__testing.resolveApprovalDecisionFromText("Approve for this session", true)).toBe(
+      "acceptForSession",
+    );
+    expect(__testing.resolveApprovalDecisionFromText("Decline", true)).toBe("decline");
+    expect(__testing.resolveApprovalDecisionFromText("Cancel", true)).toBe("cancel");
+  });
+
+  it("maps timed-out approvals to cancel", () => {
+    expect(
+      __testing.mapPendingInputResponse({
+        methodLower: "server/requestapproval",
+        requestParams: {},
+        response: { text: "Approve" },
+        options: ["Approve", "Decline"],
+        timedOut: true,
+      }),
+    ).toEqual({ decision: "cancel" });
+  });
+
+  it("maps tool request user input selections into answer payloads", () => {
+    expect(
+      __testing.mapPendingInputResponse({
+        methodLower: "item/tool/requestuserinput",
+        requestParams: {
+          questions: [
+            {
+              id: "approval",
+              options: [{ label: "Approve" }, { label: "Decline" }],
+            },
+          ],
+        },
+        response: { index: 1 },
+        options: ["Approve", "Decline"],
+        timedOut: false,
+      }),
+    ).toEqual({
+      answers: {
+        approval: {
+          answers: ["Decline"],
+        },
+      },
+    });
+  });
+});
