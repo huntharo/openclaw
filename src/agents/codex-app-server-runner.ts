@@ -1835,13 +1835,88 @@ function buildTurnStartVariants(params: {
       model: params.model,
     },
     {
+      thread_id: params.threadId,
+      input,
+      cwd: params.workspaceDir,
+      model: params.model,
+    },
+    {
+      conversationId: params.threadId,
+      input,
+      cwd: params.workspaceDir,
+      model: params.model,
+    },
+    {
       threadId: params.threadId,
+      input,
+      cwd: params.workspaceDir,
+    },
+    {
+      thread_id: params.threadId,
+      input,
+      cwd: params.workspaceDir,
+    },
+    {
+      conversationId: params.threadId,
       input,
       cwd: params.workspaceDir,
     },
     {
       threadId: params.threadId,
       input,
+    },
+    {
+      thread_id: params.threadId,
+      input,
+    },
+    {
+      conversationId: params.threadId,
+      input,
+    },
+    {
+      threadId: params.threadId,
+      prompt: params.prompt,
+      cwd: params.workspaceDir,
+      model: params.model,
+    },
+    {
+      thread_id: params.threadId,
+      prompt: params.prompt,
+      cwd: params.workspaceDir,
+      model: params.model,
+    },
+    {
+      conversationId: params.threadId,
+      prompt: params.prompt,
+      cwd: params.workspaceDir,
+      model: params.model,
+    },
+    {
+      threadId: params.threadId,
+      prompt: params.prompt,
+      cwd: params.workspaceDir,
+    },
+    {
+      thread_id: params.threadId,
+      prompt: params.prompt,
+      cwd: params.workspaceDir,
+    },
+    {
+      conversationId: params.threadId,
+      prompt: params.prompt,
+      cwd: params.workspaceDir,
+    },
+    {
+      threadId: params.threadId,
+      prompt: params.prompt,
+    },
+    {
+      thread_id: params.threadId,
+      prompt: params.prompt,
+    },
+    {
+      conversationId: params.threadId,
+      prompt: params.prompt,
     },
   ];
 }

@@ -43,7 +43,7 @@ describe("codex app server rpc methods", () => {
     expect(methods).not.toContain("sendUserMessage");
   });
 
-  it("builds turn/start payloads that always provide threadId", () => {
+  it("builds turn/start payloads that support thread id field variants", () => {
     const variants = __testing.buildTurnStartVariants({
       threadId: "thread-123",
       prompt: "hello",
@@ -51,11 +51,26 @@ describe("codex app server rpc methods", () => {
       model: "gpt-5-codex",
     });
     expect(variants.length).toBeGreaterThan(0);
-    for (const variant of variants) {
-      expect(variant.threadId).toBe("thread-123");
-      expect(variant).not.toHaveProperty("thread_id");
-      expect(variant).not.toHaveProperty("conversationId");
-    }
+    expect(
+      variants.some(
+        (variant) =>
+          variant.threadId === "thread-123" ||
+          variant.thread_id === "thread-123" ||
+          variant.conversationId === "thread-123",
+      ),
+    ).toBe(true);
+    expect(
+      variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "thread_id")),
+    ).toBe(true);
+    expect(
+      variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "conversationId")),
+    ).toBe(true);
+    expect(variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "input"))).toBe(
+      true,
+    );
+    expect(
+      variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "prompt")),
+    ).toBe(true);
   });
 
   it("does not retry with a fresh thread when an explicit binding was provided", () => {
