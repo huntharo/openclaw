@@ -558,4 +558,51 @@ describe("handleCodexCommand", () => {
     expect(discoverCodexAppServerThreadsMock).not.toHaveBeenCalled();
     expect(result?.reply?.text).toContain("spawn ENOENT");
   });
+
+  it("resolves /codex status through an existing bound conversation session", async () => {
+    const boundSessionKey = buildCodexBoundSessionKey({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "-1003841603622:topic:674",
+      agentId: "main",
+    });
+    await updateSessionStore(storePath, (store) => {
+      store[boundSessionKey] = {
+        sessionId: boundSessionKey,
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "019c68d3-d622-75c0-a542-198753af0b2c",
+        codexProjectKey: "/Users/huntharo/github/jeerreview",
+        codexAutoRoute: true,
+      };
+    });
+    sessionBindingServiceMock.resolveByConversation.mockReturnValue({
+      bindingId: "binding-topic-674",
+      targetSessionKey: boundSessionKey,
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "-1003841603622:topic:674",
+      },
+    });
+    getCodexAppServerRuntimeStatusMock.mockReturnValue({ state: "ready" });
+    const params = buildParams(
+      "/codex status",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "telegram:-1003841603622",
+        To: "telegram:-1003841603622",
+        MessageThreadId: 674,
+      },
+    );
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Codex binding active.");
+    expect(result?.reply?.text).toContain("019c68d3-d622-75c0-a542-198753af0b2c");
+    expect(result?.reply?.text).toContain("/Users/huntharo/github/jeerreview");
+    expect(sessionBindingServiceMock.touch).toHaveBeenCalledWith("binding-topic-674");
+  });
 });

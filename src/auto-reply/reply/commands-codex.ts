@@ -282,6 +282,42 @@ function applyCommandTargetSession(params: HandleCommandsParams, sessionKey: str
   }
 }
 
+function applyExistingCodexConversationBinding(params: HandleCommandsParams): void {
+  const bindingContext = resolveAcpCommandBindingContext(params);
+  if (!bindingContext.conversationId) {
+    return;
+  }
+  if (bindingContext.channel !== "telegram" && bindingContext.channel !== "discord") {
+    return;
+  }
+  const binding = getSessionBindingService().resolveByConversation({
+    channel: bindingContext.channel,
+    accountId: bindingContext.accountId,
+    conversationId: bindingContext.conversationId,
+    ...(bindingContext.parentConversationId
+      ? { parentConversationId: bindingContext.parentConversationId }
+      : {}),
+  });
+  const targetSessionKey = binding?.targetSessionKey?.trim();
+  if (!targetSessionKey || !targetSessionKey.startsWith("agent:")) {
+    return;
+  }
+  const boundEntry = resolveStoredSessionEntry(params, targetSessionKey);
+  const providerOverride =
+    typeof boundEntry?.providerOverride === "string" ? boundEntry.providerOverride : "";
+  if (
+    !boundEntry?.codexThreadId?.trim() &&
+    !isCodexAppServerProvider(providerOverride, params.cfg)
+  ) {
+    return;
+  }
+  applyCommandTargetSession(params, targetSessionKey);
+  params.sessionEntry = boundEntry;
+  if (binding?.bindingId) {
+    getSessionBindingService().touch(binding.bindingId);
+  }
+}
+
 function resolveCodexBindingSessionLabel(params: {
   sessionKey: string;
   projectKey?: string;
@@ -606,6 +642,7 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
   }
   const tokens = rest.split(/\s+/).filter(Boolean);
   const action = resolveAction(tokens);
+  applyExistingCodexConversationBinding(params);
 
   if (action === "help") {
     return stopWithText(resolveHelpText());
