@@ -70,6 +70,23 @@ describe("codex app server rpc methods", () => {
       }),
     ).toBe(true);
   });
+
+  it("throws on thread affinity mismatch for explicit bindings", () => {
+    expect(() =>
+      __testing.assertBoundThreadAffinity({
+        requestedThreadId: "thread-requested",
+        observedThreadId: "thread-other",
+        source: "turn/start",
+      }),
+    ).toThrow("thread mismatch for requested binding thread-requested");
+    expect(() =>
+      __testing.assertBoundThreadAffinity({
+        requestedThreadId: "thread-requested",
+        observedThreadId: "thread-requested",
+        source: "turn/start",
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("approval prompt context", () => {

@@ -1569,6 +1569,21 @@ function shouldRetryWithFreshThreadAfterNotFound(params: {
   return !params.hadExistingThreadBinding;
 }
 
+function assertBoundThreadAffinity(params: {
+  requestedThreadId?: string;
+  observedThreadId?: string;
+  source: string;
+}) {
+  const requested = params.requestedThreadId?.trim();
+  const observed = params.observedThreadId?.trim();
+  if (!requested || !observed || requested === observed) {
+    return;
+  }
+  throw new Error(
+    `thread mismatch for requested binding ${requested}: ${params.source} returned ${observed}`,
+  );
+}
+
 type PendingInput = {
   requestId: string;
   method: string;
@@ -2034,6 +2049,7 @@ export const __testing = {
   buildPromptText,
   extractApprovalPromptContext,
   shouldRetryWithFreshThreadAfterNotFound,
+  assertBoundThreadAffinity,
   normalizeMirrorSlashName,
   extractMirrorSlashCandidates,
   dedupeMirrorSlashCandidates,
@@ -2086,7 +2102,8 @@ export async function runCodexAppServerAgent(
   let active = true;
   let awaitingInput = false;
   let interrupted = false;
-  let threadId = params.existingThreadId?.trim() || undefined;
+  const requestedThreadId = params.existingThreadId?.trim() || undefined;
+  let threadId = requestedThreadId;
   const hadExistingThreadBinding = Boolean(threadId);
   let turnId: string | undefined;
   let textBuffer = "";
@@ -2489,6 +2506,11 @@ export async function runCodexAppServerAgent(
       }
     }
     applyIds(turnStartResult);
+    assertBoundThreadAffinity({
+      requestedThreadId,
+      observedThreadId: threadId,
+      source: "turn/start",
+    });
     const turnStartRecord = asRecord(turnStartResult);
     const turnStartTurn = asRecord(turnStartRecord?.turn);
     turnId = turnId ?? pickString(turnStartTurn ?? {}, ["id"]);
