@@ -396,4 +396,39 @@ describe("runPreparedReply media-only handling", () => {
     // Queue body (used by steer mode) must keep the full original text.
     expect(call?.followupRun.prompt).toContain("low steer this conversation");
   });
+
+  it("sends raw user text to codex app server turns without OpenClaw prompt wrapping", async () => {
+    await runPreparedReply(
+      baseParams({
+        provider: "codex-app-server",
+        ctx: {
+          Body: "who are you?",
+          RawBody: "who are you?",
+          CommandBody: "who are you?",
+          ThreadHistoryBody: "Earlier message in this thread",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          ChatType: "group",
+          UntrustedContext: ['Conversation info (untrusted metadata): {"topic_id":"1364"}'],
+        },
+        sessionCtx: {
+          Body: "who are you?",
+          BodyForAgent: "who are you?",
+          BodyStripped: "who are you?",
+          ThreadHistoryBody: "Earlier message in this thread",
+          Provider: "telegram",
+          ChatType: "group",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          UntrustedContext: ['Conversation info (untrusted metadata): {"topic_id":"1364"}'],
+        },
+      }),
+    );
+
+    const call = vi.mocked(runReplyAgent).mock.calls[0]?.[0];
+    expect(call).toBeTruthy();
+    expect(call?.commandBody).toBe("who are you?");
+    expect(call?.followupRun.prompt).toBe("who are you?");
+    expect(call?.followupRun.run.extraSystemPrompt).toBeUndefined();
+  });
 });

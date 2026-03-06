@@ -328,6 +328,7 @@ export async function runPreparedReply(
   });
   const isGroupSession = sessionEntry?.chatType === "group" || sessionEntry?.chatType === "channel";
   const isMainSession = !isGroupSession && sessionKey === normalizeMainKey(sessionCfg?.mainKey);
+  const usesCodexAppServer = provider === "codex-app-server";
   // Extract first-token think hint from the user body BEFORE prepending system events.
   // If done after, the System: prefix becomes parts[0] and silently shadows any
   // low|medium|high shorthand the user typed.
@@ -352,7 +353,9 @@ export async function runPreparedReply(
   const prependEvents = (body: string) => (eventsBlock ? `${eventsBlock}\n\n${body}` : body);
   const bodyWithEvents = prependEvents(effectiveBaseBody);
   prefixedBodyBase = prependEvents(prefixedBodyBase);
-  prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, sessionCtx.UntrustedContext);
+  if (!usesCodexAppServer) {
+    prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, sessionCtx.UntrustedContext);
+  }
   const threadStarterBody = ctx.ThreadStarterBody?.trim();
   const threadHistoryBody = ctx.ThreadHistoryBody?.trim();
   const threadContextNote = threadHistoryBody
@@ -379,9 +382,13 @@ export async function runPreparedReply(
   const mediaReplyHint = mediaNote
     ? "To send an image back, prefer the message tool (media/path/filePath). If you must inline, use MEDIA:https://example.com/image.jpg (spaces ok, quote if needed) or a safe relative path like MEDIA:./image.jpg. Avoid absolute paths (MEDIA:/...) and ~ paths — they are blocked for security. Keep caption in the text body."
     : undefined;
+  const rawCodexBody = (sessionCtx.BodyForAgent ?? "").trim() || effectiveBaseBody.trim();
   let prefixedCommandBody = mediaNote
     ? [mediaNote, mediaReplyHint, prefixedBody ?? ""].filter(Boolean).join("\n").trim()
     : prefixedBody;
+  if (usesCodexAppServer) {
+    prefixedCommandBody = rawCodexBody;
+  }
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();
   }
@@ -428,9 +435,12 @@ export async function runPreparedReply(
   // Use bodyWithEvents (events prepended, but no session hints / untrusted context) so
   // deferred turns receive system events while keeping the same scope as effectiveBaseBody did.
   const queueBodyBase = [threadContextNote, bodyWithEvents].filter(Boolean).join("\n\n");
-  const queuedBody = mediaNote
+  let queuedBody = mediaNote
     ? [mediaNote, mediaReplyHint, queueBodyBase].filter(Boolean).join("\n").trim()
     : queueBodyBase;
+  if (usesCodexAppServer) {
+    queuedBody = rawCodexBody;
+  }
   const resolvedQueue = resolveQueueSettings({
     cfg,
     channel: sessionCtx.Provider,
@@ -517,7 +527,9 @@ export async function runPreparedReply(
       timeoutMs,
       blockReplyBreak: resolvedBlockStreamingBreak,
       ownerNumbers: command.ownerList.length > 0 ? command.ownerList : undefined,
-      extraSystemPrompt: extraSystemPromptParts.join("\n\n") || undefined,
+      extraSystemPrompt: usesCodexAppServer
+        ? undefined
+        : extraSystemPromptParts.join("\n\n") || undefined,
       ...(isReasoningTagProvider(provider) ? { enforceFinalTag: true } : {}),
     },
   };
