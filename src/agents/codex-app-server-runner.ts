@@ -822,6 +822,45 @@ function buildThreadDiscoveryFilter(filter?: string, workspaceDir?: string): unk
   ];
 }
 
+function normalizeSearchTokens(filter: string): string[] {
+  return filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function matchesAllTokens(value: string | undefined, tokens: string[]): boolean {
+  if (tokens.length === 0) {
+    return true;
+  }
+  const haystack = value?.trim().toLowerCase() ?? "";
+  if (!haystack) {
+    return false;
+  }
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function applyThreadFilter(
+  threads: CodexAppServerThreadSummary[],
+  filter?: string,
+): CodexAppServerThreadSummary[] {
+  const tokens = normalizeSearchTokens(filter ?? "");
+  if (tokens.length === 0) {
+    return threads;
+  }
+
+  const projectMatches = threads.filter((thread) => matchesAllTokens(thread.projectKey, tokens));
+  if (projectMatches.length > 0) {
+    return projectMatches;
+  }
+
+  const titleOrIdMatches = threads.filter(
+    (thread) => matchesAllTokens(thread.title, tokens) || matchesAllTokens(thread.threadId, tokens),
+  );
+  if (titleOrIdMatches.length > 0) {
+    return titleOrIdMatches;
+  }
+
+  return threads.filter((thread) => matchesAllTokens(thread.summary, tokens));
+}
+
 function extractThreadsFromValue(value: unknown): CodexAppServerThreadSummary[] {
   const items = extractThreadRecords(value);
   const summaries = new Map<string, CodexAppServerThreadSummary>();
@@ -973,18 +1012,11 @@ export async function discoverCodexAppServerThreads(params?: {
     const result = await requestWithFallbacks({
       client,
       methods: ["thread/list", "thread/loaded/list"],
-      payloads: buildThreadDiscoveryFilter(params?.filter, params?.workspaceDir),
+      payloads: buildThreadDiscoveryFilter(undefined, params?.workspaceDir),
       timeoutMs: settings.requestTimeoutMs,
     });
     let threads = extractThreadsFromValue(result);
-    const filter = params?.filter?.trim().toLowerCase();
-    if (filter) {
-      threads = threads.filter((thread) => {
-        const haystack =
-          `${thread.threadId} ${thread.title ?? ""} ${thread.summary ?? ""} ${thread.projectKey ?? ""}`.toLowerCase();
-        return haystack.includes(filter);
-      });
-    }
+    threads = applyThreadFilter(threads, params?.filter);
     if (params?.workspaceDir) {
       threads = threads.filter(
         (thread) => !thread.projectKey || thread.projectKey.trim() === params.workspaceDir,
@@ -1261,5 +1293,6 @@ export async function runCodexAppServerAgent(
 }
 
 export const __testing = {
+  applyThreadFilter,
   isMethodUnavailableError,
 };

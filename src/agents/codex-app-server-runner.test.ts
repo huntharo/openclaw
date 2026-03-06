@@ -59,3 +59,44 @@ describe("isMethodUnavailableError", () => {
     ).toBe(false);
   });
 });
+
+describe("applyThreadFilter", () => {
+  it("prefers project path matches over summary text matches", () => {
+    const threads = [
+      {
+        threadId: "thread-1",
+        projectKey: "/Users/huntharo/github/jeerreview",
+      },
+      {
+        threadId: "thread-2",
+        title: "Planning work",
+        projectKey: "/Users/huntharo/.openclaw/workspace-pwrdrvr",
+        summary: "Discussed jeerreview migration details",
+      },
+      {
+        threadId: "thread-3",
+        title: "Plan TASKS doc refresh",
+        projectKey: "/Users/huntharo/github/jeerreview",
+      },
+    ];
+
+    expect(__testing.applyThreadFilter(threads, "jeerreview")).toEqual([threads[0], threads[2]]);
+  });
+
+  it("prefers title matches before falling back to summary matches", () => {
+    const threads = [
+      {
+        threadId: "thread-1",
+        title: "Fix Telegram approval flow",
+        projectKey: "/Users/huntharo/github/openclaw",
+      },
+      {
+        threadId: "thread-2",
+        summary: "Work on Telegram approval buttons",
+        projectKey: "/Users/huntharo/.openclaw/workspace-pwrdrvr",
+      },
+    ];
+
+    expect(__testing.applyThreadFilter(threads, "approval")).toEqual([threads[0]]);
+  });
+});
