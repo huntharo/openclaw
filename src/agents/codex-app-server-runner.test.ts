@@ -90,3 +90,48 @@ describe("approval prompt context", () => {
     expect(prompt).toContain("This response will be sent to Codex as an approval decision.");
   });
 });
+
+describe("codex slash discovery helpers", () => {
+  it("normalizes mirrored slash names safely", () => {
+    expect(__testing.normalizeMirrorSlashName("/Review")).toBe("review");
+    expect(__testing.normalizeMirrorSlashName(" mcp:git.status ")).toBe("mcp-git-status");
+    expect(__testing.normalizeMirrorSlashName("___")).toBe("");
+  });
+
+  it("extracts slash candidates from nested codex/mcp discovery payloads", () => {
+    const extracted = __testing.extractMirrorSlashCandidates({
+      value: {
+        commands: [{ name: "review" }, { command: "/explain plan" }],
+        mcp: {
+          items: [{ slash: "git_status" }],
+        },
+      },
+      source: "codex",
+      commandContext: true,
+    });
+    expect(extracted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "review" }),
+        expect.objectContaining({ name: "explain" }),
+        expect.objectContaining({ name: "git_status" }),
+      ]),
+    );
+  });
+
+  it("dedupes mirrored command names and reports collisions", () => {
+    const deduped = __testing.dedupeMirrorSlashCandidates([
+      { name: "review", source: "mcp", raw: "review" },
+      { name: "review", source: "codex", raw: "/review" },
+      { name: "status", source: "codex", raw: "status" },
+    ]);
+    expect(deduped.commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "review", source: "codex" }),
+        expect.objectContaining({ name: "status", source: "codex" }),
+      ]),
+    );
+    expect(deduped.collisions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "review" })]),
+    );
+  });
+});

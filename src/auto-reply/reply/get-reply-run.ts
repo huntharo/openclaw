@@ -4,6 +4,8 @@ import path from "node:path";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import {
+  discoverCodexAppServerSlashCommands,
+  type CodexMirrorSlashDiscoveryResult,
   isCodexAppServerProvider,
   runCodexAppServerAgent,
 } from "../../agents/codex-app-server-runner.js";
@@ -58,21 +60,186 @@ type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
 const log = createSubsystemLogger("agent/codex-app-server/entry");
 const CODEX_INPUT_CALLBACK_PREFIX = "codex_input";
+const CODEX_USAGE_TEXT = [
+  "Usage: /codex <subcommand>",
+  "Subcommands:",
+  "- /codex oneshot <coding task>",
+  "- /codex new [task]",
+  "- /codex join <query|thread-id>",
+  "- /codex resume <thread-id|alias>",
+  "- /codex list [filter]",
+  "- /codex bind <thread-id> [--thread here]",
+  "- /codex detach",
+  "- /codex status",
+  "- /codex_<slash> [args] (mirrors discovered Codex/MCP slash commands)",
+].join("\n");
+const CODEX_LIST_SLASH_FILTERS = new Set(["slash", "slashes", "command", "commands", "mcp"]);
+const CODEX_MIRROR_DISCOVERY_TTL_MS = 60_000;
+
+type CodexMirrorDiscoveryCacheEntry = {
+  key: string;
+  expiresAt: number;
+  result: CodexMirrorSlashDiscoveryResult;
+};
+
+let codexMirrorDiscoveryCache: CodexMirrorDiscoveryCacheEntry | null = null;
 
 function isAgentNewCommand(normalizedBody: string | undefined): boolean {
   return (normalizedBody ?? "").trim().toLowerCase() === "/agent new";
 }
 
-function parseCodexCommandPrompt(normalizedBody: string | undefined): string | null {
+type ParsedCodexCommand =
+  | { type: "none" }
+  | { type: "legacy-invalid"; text: string }
+  | { type: "root" }
+  | { type: "oneshot"; prompt: string }
+  | { type: "new"; task: string }
+  | { type: "join"; query: string }
+  | { type: "resume"; target: string }
+  | { type: "list"; filter: string }
+  | { type: "bind"; threadId: string; bindHere: boolean }
+  | { type: "detach" }
+  | { type: "status" }
+  | { type: "mirrored"; slashName: string; args: string };
+
+function parseCodexCommand(normalizedBody: string | undefined): ParsedCodexCommand {
   const body = (normalizedBody ?? "").trim();
   if (!body) {
-    return null;
+    return { type: "none" };
+  }
+  const mirroredMatch = body.match(/^\/codex_([a-z0-9_-]+)(?:@[^\s]+)?(?:\s+([\s\S]+))?$/i);
+  if (mirroredMatch) {
+    return {
+      type: "mirrored",
+      slashName: mirroredMatch[1].trim().toLowerCase(),
+      args: (mirroredMatch[2] ?? "").trim(),
+    };
   }
   const match = body.match(/^\/codex(?:@[^\s]+)?(?:\s+([\s\S]+))?$/i);
   if (!match) {
-    return null;
+    return { type: "none" };
   }
-  return (match[1] ?? "").trim();
+  const tail = (match[1] ?? "").trim();
+  if (!tail) {
+    return { type: "root" };
+  }
+  const [rawSubcommand, ...rest] = tail.split(/\s+/);
+  const subcommand = rawSubcommand?.toLowerCase() ?? "";
+  const argText = rest.join(" ").trim();
+  if (!subcommand) {
+    return { type: "root" };
+  }
+  if (subcommand === "oneshot") {
+    return argText ? { type: "oneshot", prompt: argText } : { type: "root" };
+  }
+  if (subcommand === "new") {
+    return { type: "new", task: argText };
+  }
+  if (subcommand === "join") {
+    return argText ? { type: "join", query: argText } : { type: "root" };
+  }
+  if (subcommand === "resume") {
+    return argText ? { type: "resume", target: argText } : { type: "root" };
+  }
+  if (subcommand === "list") {
+    return { type: "list", filter: argText };
+  }
+  if (subcommand === "bind") {
+    const bindHere = /(?:^|\s)--thread\s+here(?:\s|$)/i.test(argText);
+    const threadId = argText.replace(/(?:^|\s)--thread\s+here(?:\s|$)/gi, " ").trim();
+    return threadId ? { type: "bind", threadId, bindHere } : { type: "root" };
+  }
+  if (subcommand === "detach") {
+    return { type: "detach" };
+  }
+  if (subcommand === "status") {
+    return { type: "status" };
+  }
+  const aliasMatch = tail.match(
+    /^(?:please\s+)?(join|open|resume|bind|detach|status)\b(?:\s+(.*))?$/i,
+  );
+  if (aliasMatch) {
+    const action = aliasMatch[1].toLowerCase();
+    const aliasArgs = (aliasMatch[2] ?? "").trim();
+    if (action === "join" || action === "open") {
+      return aliasArgs ? { type: "join", query: aliasArgs } : { type: "root" };
+    }
+    if (action === "resume") {
+      return aliasArgs ? { type: "resume", target: aliasArgs } : { type: "root" };
+    }
+    if (action === "bind") {
+      const bindHere = /(?:^|\s)--thread\s+here(?:\s|$)/i.test(aliasArgs);
+      const threadId = aliasArgs.replace(/(?:^|\s)--thread\s+here(?:\s|$)/gi, " ").trim();
+      return threadId ? { type: "bind", threadId, bindHere } : { type: "root" };
+    }
+    if (action === "detach") {
+      return { type: "detach" };
+    }
+    if (action === "status") {
+      return { type: "status" };
+    }
+  }
+  return { type: "legacy-invalid", text: tail };
+}
+
+function buildCodexMirrorDiscoveryCacheKey(params: {
+  workspaceDir: string;
+  sessionKey?: string;
+}): string {
+  return `${params.workspaceDir}::${params.sessionKey ?? ""}`;
+}
+
+async function resolveCodexMirrorSlashDiscovery(params: {
+  cfg: OpenClawConfig;
+  workspaceDir: string;
+  sessionKey?: string;
+  forceRefresh?: boolean;
+}): Promise<CodexMirrorSlashDiscoveryResult> {
+  const cacheKey = buildCodexMirrorDiscoveryCacheKey({
+    workspaceDir: params.workspaceDir,
+    sessionKey: params.sessionKey,
+  });
+  const now = Date.now();
+  if (
+    !params.forceRefresh &&
+    codexMirrorDiscoveryCache &&
+    codexMirrorDiscoveryCache.key === cacheKey &&
+    codexMirrorDiscoveryCache.expiresAt > now
+  ) {
+    return codexMirrorDiscoveryCache.result;
+  }
+  const result = await discoverCodexAppServerSlashCommands({
+    config: params.cfg,
+    workspaceDir: params.workspaceDir,
+    sessionKey: params.sessionKey,
+  });
+  codexMirrorDiscoveryCache = {
+    key: cacheKey,
+    expiresAt: now + CODEX_MIRROR_DISCOVERY_TTL_MS,
+    result,
+  };
+  return result;
+}
+
+function formatCodexMirrorSlashDiscovery(result: CodexMirrorSlashDiscoveryResult): string {
+  if (!result.available) {
+    return `Codex slash discovery unavailable${result.error ? `: ${result.error}` : "."}`;
+  }
+  if (result.commands.length === 0) {
+    return "No discoverable Codex/MCP slash commands are currently available.";
+  }
+  const rows = result.commands
+    .slice(0, 60)
+    .map((entry) => `- /codex_${entry.name} (${entry.source})`);
+  const suffix = result.commands.length > 60 ? `\n… and ${result.commands.length - 60} more` : "";
+  const collisions =
+    result.collisions.length > 0
+      ? `\n\nName collisions skipped:\n${result.collisions
+          .slice(0, 10)
+          .map((entry) => `- ${entry.name}: ${entry.raws.join(", ")}`)
+          .join("\n")}`
+      : "";
+  return `Discoverable mirrored commands:\n${rows.join("\n")}${suffix}${collisions}`;
 }
 
 const ABSOLUTE_PATH_RE = /(?:^|[\s"'`])((?:\/[^/\s"'`]+)+\/?)/g;
@@ -496,7 +663,15 @@ export async function runPreparedReply(
     groupSystemPrompt,
   ].filter(Boolean);
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
-  const codexCommandPrompt = parseCodexCommandPrompt(command.commandBodyNormalized);
+  const parsedCodexCommand = parseCodexCommand(command.commandBodyNormalized);
+  const codexCommandPrompt =
+    parsedCodexCommand.type === "oneshot"
+      ? parsedCodexCommand.prompt
+      : parsedCodexCommand.type === "mirrored"
+        ? `/${parsedCodexCommand.slashName}${parsedCodexCommand.args ? ` ${parsedCodexCommand.args}` : ""}`
+        : parsedCodexCommand.type === "new" && parsedCodexCommand.task
+          ? parsedCodexCommand.task
+          : null;
   const normalizedCommandBody = (command.commandBodyNormalized ?? "").trim();
   log.debug("prepared reply command context", {
     commandSource: ctx.CommandSource ?? "unknown",
@@ -511,16 +686,15 @@ export async function runPreparedReply(
       surface: command.surface || "unknown",
       channel: command.channel || "unknown",
       isAuthorizedSender: command.isAuthorizedSender,
-      parsed:
-        codexCommandPrompt === null
-          ? "no-match"
-          : codexCommandPrompt
-            ? "with-prompt"
-            : "missing-prompt",
+      parsed: parsedCodexCommand.type,
       commandBodyNormalized: command.commandBodyNormalized,
     });
   }
-  if (codexCommandPrompt !== null && !command.isAuthorizedSender) {
+  if (
+    parsedCodexCommand.type !== "none" &&
+    parsedCodexCommand.type !== "legacy-invalid" &&
+    !command.isAuthorizedSender
+  ) {
     typing.cleanup();
     log.warn("rejected /codex command from unauthorized sender", {
       commandSource: ctx.CommandSource ?? "unknown",
@@ -531,11 +705,41 @@ export async function runPreparedReply(
       text: "Only authorized senders can use /codex.",
     };
   }
-  if (codexCommandPrompt !== null && !codexCommandPrompt) {
+  if (command.isAuthorizedSender && parsedCodexCommand.type === "mirrored") {
+    const discovery = await resolveCodexMirrorSlashDiscovery({
+      cfg,
+      workspaceDir,
+      sessionKey,
+    });
+    if (discovery.available && discovery.commands.length > 0) {
+      const knownNames = new Set(discovery.commands.map((entry) => entry.name));
+      if (!knownNames.has(parsedCodexCommand.slashName)) {
+        typing.cleanup();
+        const sample = discovery.commands
+          .slice(0, 15)
+          .map((entry) => `/codex_${entry.name}`)
+          .join(", ");
+        return {
+          text: [
+            `Unknown mirrored command: /codex_${parsedCodexCommand.slashName}`,
+            sample ? `Known mirrored commands: ${sample}` : "",
+            "Run `/codex list commands` to refresh discoverable slash commands.",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        };
+      }
+    }
+  }
+  if (
+    parsedCodexCommand.type === "root" ||
+    parsedCodexCommand.type === "legacy-invalid" ||
+    (parsedCodexCommand.type === "oneshot" && !parsedCodexCommand.prompt)
+  ) {
     typing.cleanup();
-    log.info("replied with /codex usage due to missing prompt");
+    log.info("replied with /codex usage due to missing/invalid subcommand");
     return {
-      text: "Usage: /codex <coding task>. I will run Codex App Server, then summarize it with the current model.",
+      text: CODEX_USAGE_TEXT,
     };
   }
   // Use CommandBody/RawBody for bare reset detection (clean message without structural context).
@@ -688,26 +892,261 @@ export async function runPreparedReply(
       defaultModel,
     });
   }
-  if (
-    command.isAuthorizedSender &&
-    isAgentNewCommand(command.commandBodyNormalized) &&
-    sessionEntry &&
-    sessionStore &&
-    sessionKey
-  ) {
-    sessionEntry.codexThreadId = undefined;
-    sessionEntry.codexRunId = undefined;
-    sessionEntry.codexProjectKey = undefined;
-    sessionEntry.pendingUserInputRequestId = undefined;
-    sessionEntry.pendingUserInputOptions = undefined;
-    sessionEntry.pendingUserInputExpiresAt = undefined;
+  const persistCodexSessionUpdate = async (patch: Partial<SessionEntry>) => {
+    if (!sessionEntry || !sessionStore || !sessionKey) {
+      return false;
+    }
+    Object.assign(sessionEntry, patch);
     sessionEntry.updatedAt = Date.now();
     sessionStore[sessionKey] = sessionEntry;
     if (storePath) {
       await updateSessionStore(storePath, (store) => {
-        store[sessionKey] = sessionEntry;
+        const current = store[sessionKey] ?? sessionEntry;
+        store[sessionKey] = {
+          ...current,
+          ...patch,
+          updatedAt: Date.now(),
+        };
       });
     }
+    return true;
+  };
+  const clearCodexSessionState = async () =>
+    persistCodexSessionUpdate({
+      codexThreadId: undefined,
+      codexRunId: undefined,
+      codexProjectKey: undefined,
+      pendingUserInputRequestId: undefined,
+      pendingUserInputOptions: undefined,
+      pendingUserInputExpiresAt: undefined,
+    });
+  type KnownCodexThread = {
+    sessionKey: string;
+    sessionId: string;
+    threadId: string;
+    runId: string;
+    projectKey: string;
+    pendingRequestId: string;
+    pendingOptions: string[];
+    pendingExpiresAt?: number;
+    updatedAt: number;
+  };
+  const collectKnownCodexThreads = () => {
+    if (!sessionStore) {
+      return [] as KnownCodexThread[];
+    }
+    return Object.entries(sessionStore)
+      .map(([key, entry]) => ({
+        sessionKey: key,
+        sessionId: entry?.sessionId?.trim() ?? "",
+        threadId: entry?.codexThreadId?.trim() ?? "",
+        runId: entry?.codexRunId?.trim() ?? "",
+        projectKey: entry?.codexProjectKey?.trim() ?? "",
+        pendingRequestId: entry?.pendingUserInputRequestId?.trim() ?? "",
+        pendingOptions: [...(entry?.pendingUserInputOptions ?? [])].filter(
+          (option): option is string => typeof option === "string" && option.trim().length > 0,
+        ),
+        pendingExpiresAt: entry?.pendingUserInputExpiresAt,
+        updatedAt: entry?.updatedAt ?? 0,
+      }))
+      .filter((entry) => entry.threadId.length > 0)
+      .toSorted((a, b) => b.updatedAt - a.updatedAt);
+  };
+  const formatKnownCodexThreads = (filter: string) => {
+    const normalizedFilter = filter.trim().toLowerCase();
+    const rows = collectKnownCodexThreads().filter((entry) => {
+      if (!normalizedFilter) {
+        return true;
+      }
+      return (
+        entry.threadId.toLowerCase().includes(normalizedFilter) ||
+        entry.projectKey.toLowerCase().includes(normalizedFilter) ||
+        entry.sessionKey.toLowerCase().includes(normalizedFilter)
+      );
+    });
+    if (rows.length === 0) {
+      return normalizedFilter
+        ? `No known Codex threads matched "${filter.trim()}".`
+        : "No known Codex threads yet for this session store.";
+    }
+    const lines = rows.slice(0, 20).map((entry, index) => {
+      const marker = entry.sessionKey === sessionKey ? "*" : " ";
+      const projectPart = entry.projectKey ? ` project=${entry.projectKey}` : "";
+      const runPart = entry.runId ? ` run=${entry.runId}` : "";
+      const pendingPart = entry.pendingRequestId ? ` pending=${entry.pendingRequestId}` : "";
+      return `${marker}${index + 1}. thread=${entry.threadId}${projectPart}${runPart}${pendingPart} session=${entry.sessionKey}`;
+    });
+    const suffix = rows.length > 20 ? `\n… and ${rows.length - 20} more` : "";
+    return `Known Codex threads:\n${lines.join("\n")}${suffix}`;
+  };
+  const buildPendingInputReplayReply = (entry: KnownCodexThread): ReplyPayload | undefined => {
+    if (!entry.pendingRequestId) {
+      return undefined;
+    }
+    if (entry.pendingExpiresAt != null && entry.pendingExpiresAt <= Date.now()) {
+      return undefined;
+    }
+    const options =
+      entry.pendingOptions.length > 0 ? entry.pendingOptions : ["Approve", "Deny", "Cancel"];
+    const promptText = [
+      `🧭 Agent input requested (${entry.pendingRequestId})`,
+      "Pending approval is still waiting for input.",
+      "",
+      "Options:",
+      ...options.map((option, idx) => `${idx + 1}. ${option}`),
+      "",
+      'Reply with "1", "2", "option 1", etc., or send free text.',
+    ].join("\n");
+    const buttons =
+      command.channel === "telegram"
+        ? buildCodexInputButtons({
+            text: promptText,
+            requestId: entry.pendingRequestId,
+            options,
+          })
+        : undefined;
+    return {
+      text: promptText,
+      ...(buttons ? { channelData: { telegram: { buttons } } } : {}),
+    };
+  };
+  const resolveCodexThreadTarget = (raw: string) => {
+    const query = raw.trim();
+    if (!query) {
+      return { ok: false as const, error: "Missing thread id/query." };
+    }
+    const rows = collectKnownCodexThreads();
+    const exact = rows.find((entry) => entry.threadId === query);
+    if (exact) {
+      return { ok: true as const, match: exact };
+    }
+    const normalizedQuery = query.toLowerCase();
+    const matches = rows.filter(
+      (entry) =>
+        entry.threadId.toLowerCase().includes(normalizedQuery) ||
+        entry.projectKey.toLowerCase().includes(normalizedQuery) ||
+        entry.sessionKey.toLowerCase().includes(normalizedQuery),
+    );
+    if (matches.length === 1) {
+      return {
+        ok: true as const,
+        match: matches[0],
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false as const,
+        error: `Query matched multiple threads. Use exact thread id.\n${formatKnownCodexThreads(query)}`,
+      };
+    }
+    // Accept explicit ids even if unseen in local store.
+    return {
+      ok: true as const,
+      match: {
+        sessionKey: "",
+        sessionId: "",
+        threadId: query,
+        runId: "",
+        projectKey: "",
+        pendingRequestId: "",
+        pendingOptions: [],
+        pendingExpiresAt: undefined,
+        updatedAt: 0,
+      } satisfies KnownCodexThread,
+    };
+  };
+  if (command.isAuthorizedSender && parsedCodexCommand.type === "status") {
+    typing.cleanup();
+    return {
+      text: [
+        `Codex binding status for session ${sessionKey}:`,
+        `thread: ${sessionEntry?.codexThreadId?.trim() || "unbound"}`,
+        `run: ${sessionEntry?.codexRunId?.trim() || "n/a"}`,
+        `project: ${sessionEntry?.codexProjectKey?.trim() || "n/a"}`,
+        sessionEntry?.pendingUserInputRequestId
+          ? `pending approval: ${sessionEntry.pendingUserInputRequestId}`
+          : "pending approval: none",
+      ].join("\n"),
+    };
+  }
+  if (command.isAuthorizedSender && parsedCodexCommand.type === "list") {
+    const filter = parsedCodexCommand.filter.trim().toLowerCase();
+    if (CODEX_LIST_SLASH_FILTERS.has(filter)) {
+      const discovery = await resolveCodexMirrorSlashDiscovery({
+        cfg,
+        workspaceDir,
+        sessionKey,
+        forceRefresh: true,
+      });
+      typing.cleanup();
+      return { text: formatCodexMirrorSlashDiscovery(discovery) };
+    }
+    typing.cleanup();
+    return { text: formatKnownCodexThreads(parsedCodexCommand.filter) };
+  }
+  if (command.isAuthorizedSender && parsedCodexCommand.type === "detach") {
+    await clearCodexSessionState();
+    typing.cleanup();
+    return {
+      text: "✅ Detached this session from its Codex thread binding. Remote Codex thread remains active.",
+    };
+  }
+  if (
+    command.isAuthorizedSender &&
+    (parsedCodexCommand.type === "join" ||
+      parsedCodexCommand.type === "resume" ||
+      parsedCodexCommand.type === "bind")
+  ) {
+    const lookup =
+      parsedCodexCommand.type === "join"
+        ? resolveCodexThreadTarget(parsedCodexCommand.query)
+        : parsedCodexCommand.type === "resume"
+          ? resolveCodexThreadTarget(parsedCodexCommand.target)
+          : resolveCodexThreadTarget(parsedCodexCommand.threadId);
+    if (!lookup.ok) {
+      typing.cleanup();
+      return { text: `⚠️ ${lookup.error}` };
+    }
+    const match = lookup.match;
+    const shouldCarryPending =
+      Boolean(match.pendingRequestId) &&
+      (match.pendingExpiresAt == null || match.pendingExpiresAt > Date.now());
+    await persistCodexSessionUpdate({
+      sessionId: match.sessionId || sessionEntry?.sessionId,
+      codexThreadId: match.threadId,
+      codexProjectKey: match.projectKey || sessionEntry?.codexProjectKey,
+      codexRunId: match.runId || undefined,
+      pendingUserInputRequestId: shouldCarryPending ? match.pendingRequestId : undefined,
+      pendingUserInputOptions: shouldCarryPending ? match.pendingOptions : undefined,
+      pendingUserInputExpiresAt: shouldCarryPending ? match.pendingExpiresAt : undefined,
+    });
+    typing.cleanup();
+    const bindHint =
+      parsedCodexCommand.type === "bind" && parsedCodexCommand.bindHere
+        ? " (bound to current thread context)"
+        : "";
+    const replay = shouldCarryPending ? buildPendingInputReplayReply(match) : undefined;
+    const replayText = replay?.text ? `\n\n${replay.text}` : "";
+    return {
+      text: `✅ Attached this session to Codex thread ${match.threadId}${bindHint}.${replayText}`,
+      ...(replay?.channelData ? { channelData: replay.channelData } : {}),
+    };
+  }
+  if (command.isAuthorizedSender && parsedCodexCommand.type === "new") {
+    await clearCodexSessionState();
+    if (!parsedCodexCommand.task) {
+      typing.cleanup();
+      return {
+        text: "✅ Started a fresh Codex session binding for this thread. Next run `/codex oneshot <task>` to begin. Setup actions (worktree/branch/env) are ask-then-apply.",
+      };
+    }
+  }
+  if (
+    command.isAuthorizedSender &&
+    isAgentNewCommand(command.commandBodyNormalized) &&
+    sessionEntry
+  ) {
+    await clearCodexSessionState();
     typing.cleanup();
     return {
       text: "✅ Reset Codex App Server thread binding for this session. Next message starts a new thread.",

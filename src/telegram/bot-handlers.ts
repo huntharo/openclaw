@@ -25,11 +25,12 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import { danger, logVerbose, warn } from "../globals.js";
+import { getSessionBindingService } from "../infra/outbound/session-binding-service.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { MediaFetchError } from "../media/fetch.js";
 import { readChannelAllowFromStore } from "../pairing/pairing-store.js";
 import { resolveAgentRoute } from "../routing/resolve-route.js";
-import { resolveThreadSessionKeys } from "../routing/session-key.js";
+import { resolveAgentIdFromSessionKey, resolveThreadSessionKeys } from "../routing/session-key.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import {
   isSenderAllowed,
@@ -107,6 +108,7 @@ function resolveInboundMediaFileId(msg: Message): string | undefined {
 
 const CODEX_INPUT_CALLBACK_RE = /^codex_input:(?:([^:]+):)?([1-9]\d*)$/i;
 const CODEX_PENDING_INPUT_PROMPT_RE = /agent input requested/i;
+const CODEX_PENDING_INPUT_REQUEST_ID_RE = /agent input requested\s*\(([^)]+)\)/i;
 
 export const registerTelegramHandlers = ({
   cfg,
@@ -292,7 +294,7 @@ export const registerTelegramHandlers = ({
       resolvedThreadId,
       chatId: params.chatId,
     });
-    const route = resolveAgentRoute({
+    let route = resolveAgentRoute({
       cfg,
       channel: "telegram",
       accountId,
@@ -308,7 +310,31 @@ export const registerTelegramHandlers = ({
       dmThreadId != null
         ? resolveThreadSessionKeys({ baseSessionKey, threadId: `${params.chatId}:${dmThreadId}` })
         : null;
-    const sessionKey = threadKeys?.sessionKey ?? baseSessionKey;
+    let sessionKey = threadKeys?.sessionKey ?? baseSessionKey;
+    const replyThreadId = params.isGroup ? resolvedThreadId : dmThreadId;
+    const bindingConversationId =
+      replyThreadId != null
+        ? `${params.chatId}:topic:${replyThreadId}`
+        : !params.isGroup
+          ? String(params.chatId)
+          : undefined;
+    if (bindingConversationId) {
+      const binding = getSessionBindingService().resolveByConversation({
+        channel: "telegram",
+        accountId,
+        conversationId: bindingConversationId,
+      });
+      const boundSessionKey = binding?.targetSessionKey?.trim();
+      if (binding && boundSessionKey) {
+        sessionKey = boundSessionKey;
+        route = {
+          ...route,
+          sessionKey: boundSessionKey,
+          agentId: resolveAgentIdFromSessionKey(boundSessionKey),
+        };
+        getSessionBindingService().touch(binding.bindingId);
+      }
+    }
     const storePath = resolveStorePath(cfg.session?.store, { agentId: route.agentId });
     const store = loadSessionStore(storePath);
     const entry = store[sessionKey];
@@ -346,6 +372,12 @@ export const registerTelegramHandlers = ({
     };
   };
 
+  const extractCodexPromptRequestId = (text: string): string | undefined => {
+    const match = text.match(CODEX_PENDING_INPUT_REQUEST_ID_RE);
+    const value = match?.[1]?.trim();
+    return value || undefined;
+  };
+
   const forwardPendingCodexInput = (params: {
     chatId: number;
     isGroup: boolean;
@@ -353,6 +385,7 @@ export const registerTelegramHandlers = ({
     messageThreadId?: number;
     resolvedThreadId?: number;
     text: string;
+    requestId?: string;
     source: "callback" | "message";
     allowWithoutPending?: boolean;
   }): boolean => {
@@ -372,7 +405,33 @@ export const registerTelegramHandlers = ({
     const pendingExpiresAt = sessionEntry?.pendingUserInputExpiresAt;
     const sessionId = sessionEntry?.sessionId?.trim();
     const allowWithoutPending = params.allowWithoutPending === true;
+    const requestId = params.requestId?.trim();
+    if (requestId && !pendingRequestId) {
+      logger.info(
+        {
+          chatId: params.chatId,
+          sessionKey: sessionState.sessionKey,
+          source: params.source,
+          requestId,
+        },
+        "telegram codex pending input skipped (no pending request for request id)",
+      );
+      return false;
+    }
     if (!pendingRequestId && !allowWithoutPending) {
+      return false;
+    }
+    if (requestId && pendingRequestId && requestId !== pendingRequestId) {
+      logger.info(
+        {
+          chatId: params.chatId,
+          sessionKey: sessionState.sessionKey,
+          source: params.source,
+          requestId,
+          pendingRequestId,
+        },
+        "telegram codex pending input skipped (request id mismatch)",
+      );
       return false;
     }
     if (!allowWithoutPending && pendingExpiresAt != null && pendingExpiresAt <= Date.now()) {
@@ -1118,6 +1177,7 @@ export const registerTelegramHandlers = ({
         repliedToMessage?.message_id != null &&
         repliedToHasButtons &&
         CODEX_PENDING_INPUT_PROMPT_RE.test(repliedToText);
+      const repliedRequestId = extractCodexPromptRequestId(repliedToText);
       const forwardedPendingInput = forwardPendingCodexInput({
         chatId,
         isGroup: msg.chat.type === "group" || msg.chat.type === "supergroup",
@@ -1125,10 +1185,26 @@ export const registerTelegramHandlers = ({
         messageThreadId: msg.message_thread_id,
         resolvedThreadId,
         text: (msg.text ?? msg.caption ?? "").trim(),
+        requestId: repliedRequestId,
         source: "message",
         allowWithoutPending: isReplyToCodexPrompt,
       });
       if (forwardedPendingInput) {
+        return;
+      }
+      if (isReplyToCodexPrompt && repliedRequestId) {
+        await withTelegramApiErrorLogging({
+          operation: "sendMessage",
+          runtime,
+          fn: () =>
+            bot.api.sendMessage(
+              chatId,
+              `⚠️ Approval request ${repliedRequestId} is no longer active. Ask Codex to request approval again.`,
+              msg.message_thread_id != null
+                ? { message_thread_id: msg.message_thread_id }
+                : undefined,
+            ),
+        }).catch(() => {});
         return;
       }
     }
@@ -1259,9 +1335,16 @@ export const registerTelegramHandlers = ({
       const senderUsername = callback.from?.username ?? "";
       const codexInputCallback = data.match(CODEX_INPUT_CALLBACK_RE);
       if (codexInputCallback) {
+        const requestId = codexInputCallback[1]?.trim();
         const optionNumber = codexInputCallback[2];
         logger.info(
-          { chatId, messageId: callbackMessage.message_id, optionNumber, callbackId: callback.id },
+          {
+            chatId,
+            messageId: callbackMessage.message_id,
+            optionNumber,
+            requestId: requestId ?? null,
+            callbackId: callback.id,
+          },
           "telegram codex input callback received",
         );
         logVerbose(
@@ -1290,6 +1373,7 @@ export const registerTelegramHandlers = ({
           messageThreadId,
           resolvedThreadId,
           text: optionNumber,
+          requestId,
           source: "callback",
           allowWithoutPending: true,
         });
@@ -1306,6 +1390,29 @@ export const registerTelegramHandlers = ({
           logVerbose(
             `telegram codex input callback forwarded directly to active run: chat=${chatId} option=${optionNumber}`,
           );
+          return;
+        }
+        if (requestId) {
+          logger.info(
+            {
+              chatId,
+              messageId: callbackMessage.message_id,
+              optionNumber,
+              requestId,
+              callbackId: callback.id,
+            },
+            "telegram codex input callback ignored (stale or unresolved request id)",
+          );
+          await withTelegramApiErrorLogging({
+            operation: "sendMessage",
+            runtime,
+            fn: () =>
+              bot.api.sendMessage(
+                chatId,
+                `⚠️ This approval request is no longer active (request ${requestId}).`,
+                messageThreadId != null ? { message_thread_id: messageThreadId } : undefined,
+              ),
+          }).catch(() => {});
           return;
         }
         const syntheticMessage = buildSyntheticTextMessage({

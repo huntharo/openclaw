@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionEntry } from "../../config/sessions.js";
+import type { ReplyPayload } from "../types.js";
 import { runPreparedReply } from "./get-reply-run.js";
 
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({
@@ -6,6 +8,12 @@ vi.mock("../../agents/auth-profiles/session-override.js", () => ({
 }));
 
 vi.mock("../../agents/codex-app-server-runner.js", () => ({
+  discoverCodexAppServerSlashCommands: vi.fn().mockResolvedValue({
+    available: false,
+    commands: [],
+    collisions: [],
+    error: "unavailable",
+  }),
   isCodexAppServerProvider: vi.fn().mockReturnValue(false),
   runCodexAppServerAgent: vi.fn().mockResolvedValue({
     payloads: [{ text: "codex output summary" }],
@@ -95,7 +103,10 @@ vi.mock("./typing-mode.js", () => ({
   resolveTypingMode: vi.fn().mockReturnValue("off"),
 }));
 
-import { runCodexAppServerAgent } from "../../agents/codex-app-server-runner.js";
+import {
+  discoverCodexAppServerSlashCommands,
+  runCodexAppServerAgent,
+} from "../../agents/codex-app-server-runner.js";
 import { runReplyAgent } from "./agent-runner.js";
 import { routeReply } from "./route-reply.js";
 import { drainFormattedSystemEvents } from "./session-updates.js";
@@ -177,6 +188,12 @@ function baseParams(
     abortedLastRun: false,
     ...overrides,
   };
+}
+
+function asSingleReply(
+  result: ReplyPayload | ReplyPayload[] | undefined,
+): ReplyPayload | undefined {
+  return Array.isArray(result) ? result[0] : result;
 }
 
 describe("runPreparedReply media-only handling", () => {
@@ -455,7 +472,7 @@ describe("runPreparedReply media-only handling", () => {
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
   });
 
-  it("runs /codex on demand, then summarizes with the selected model", async () => {
+  it("runs /codex oneshot on demand, then summarizes with the selected model", async () => {
     const sessionEntry = {
       sessionId: "s-1",
       updatedAt: Date.now(),
@@ -472,7 +489,7 @@ describe("runPreparedReply media-only handling", () => {
           abortKey: "session-key",
           ownerList: [],
           senderIsOwner: false,
-          commandBodyNormalized: "/codex inspect the failing test and propose a fix",
+          commandBodyNormalized: "/codex oneshot inspect the failing test and propose a fix",
         } as never,
       }),
     );
@@ -528,7 +545,7 @@ describe("runPreparedReply media-only handling", () => {
           abortKey: "session-key",
           ownerList: [],
           senderIsOwner: false,
-          commandBodyNormalized: "/codex inspect this quickly",
+          commandBodyNormalized: "/codex oneshot inspect this quickly",
         } as never,
         opts: {
           onReplyStart,
@@ -594,7 +611,7 @@ describe("runPreparedReply media-only handling", () => {
             abortKey: "session-key",
             ownerList: [],
             senderIsOwner: false,
-            commandBodyNormalized: "/codex inspect this quickly",
+            commandBodyNormalized: "/codex oneshot inspect this quickly",
           } as never,
           opts: {
             onToolResult: async (payload) => {
@@ -625,7 +642,7 @@ describe("runPreparedReply media-only handling", () => {
           abortKey: "session-key",
           ownerList: [],
           senderIsOwner: false,
-          commandBodyNormalized: "/codex@openclaw inspect this stack trace",
+          commandBodyNormalized: "/codex@openclaw oneshot inspect this stack trace",
         } as never,
       }),
     );
@@ -637,7 +654,7 @@ describe("runPreparedReply media-only handling", () => {
     );
   });
 
-  it("returns usage for /codex with no prompt", async () => {
+  it("returns usage for /codex with no subcommand", async () => {
     const result = await runPreparedReply(
       baseParams({
         command: {
@@ -650,11 +667,242 @@ describe("runPreparedReply media-only handling", () => {
       }),
     );
 
-    expect(result).toEqual({
-      text: "Usage: /codex <coding task>. I will run Codex App Server, then summarize it with the current model.",
-    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        text: expect.stringContaining("Usage: /codex <subcommand>"),
+      }),
+    );
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("requires /codex oneshot instead of legacy /codex <task>", async () => {
+    const result = await runPreparedReply(
+      baseParams({
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex inspect the failing test",
+        } as never,
+      }),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        text: expect.stringContaining("/codex oneshot <coding task>"),
+      }),
+    );
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("detaches codex thread bindings with /codex detach", async () => {
+    const sessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+      codexThreadId: "thread-123",
+      codexRunId: "run-123",
+      codexProjectKey: "/tmp/workspace",
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex detach",
+        } as never,
+      }),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({ text: expect.stringContaining("Detached this session") }),
+    );
+    expect(sessionEntry.codexThreadId).toBeUndefined();
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("binds a thread id to the current session with /codex bind", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex bind thread-abc --thread here",
+        } as never,
+      }),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({ text: expect.stringContaining("thread-abc") }),
+    );
+    expect(sessionEntry.codexThreadId).toBe("thread-abc");
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("replays pending approval prompt when /codex join attaches to a waiting thread", async () => {
+    const now = Date.now();
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-current",
+      updatedAt: now,
+    };
+    const sessionStore = {
+      "session-key": sessionEntry,
+      "other-session": {
+        sessionId: "s-source",
+        updatedAt: now + 1,
+        codexThreadId: "thread-abc",
+        codexRunId: "run-source",
+        codexProjectKey: "/tmp/workspace",
+        pendingUserInputRequestId: "req-join-1",
+        pendingUserInputOptions: ["Approve", "Approve for session", "Deny", "Cancel"],
+        pendingUserInputExpiresAt: now + 60_000,
+      },
+    };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          channel: "telegram",
+          commandBodyNormalized: "/codex join thread-abc",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("Attached this session to Codex thread thread-abc");
+    expect(reply?.text).toContain("Agent input requested (req-join-1)");
+    expect(reply?.channelData).toMatchObject({
+      telegram: {
+        buttons: [
+          [{ callback_data: "codex_input:req-join-1:1" }],
+          [{ callback_data: "codex_input:req-join-1:2" }],
+          [{ callback_data: "codex_input:req-join-1:3" }],
+          [{ callback_data: "codex_input:req-join-1:4" }],
+        ],
+      },
+    });
+    expect(sessionEntry.sessionId).toBe("s-source");
+    expect(sessionEntry.pendingUserInputRequestId).toBe("req-join-1");
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("clears previous thread state and runs task for /codex new <task>", async () => {
+    const sessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+      codexThreadId: "thread-old",
+      codexProjectKey: "/tmp/old",
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex new investigate flaky test",
+        } as never,
+      }),
+    );
+
+    expect(result).toEqual({ text: "ok" });
+    expect(vi.mocked(runCodexAppServerAgent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runCodexAppServerAgent).mock.calls[0]?.[0]?.prompt).toBe(
+      "investigate flaky test",
+    );
+  });
+
+  it("routes mirrored /codex_<name> commands through oneshot codex execution", async () => {
+    const result = await runPreparedReply(
+      baseParams({
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex_review focus tests for callback routing",
+        } as never,
+      }),
+    );
+
+    expect(result).toEqual({ text: "ok" });
+    expect(vi.mocked(runCodexAppServerAgent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runCodexAppServerAgent).mock.calls[0]?.[0]?.prompt).toBe(
+      "/review focus tests for callback routing",
+    );
+  });
+
+  it("rejects unknown mirrored command when discovery is available", async () => {
+    vi.mocked(discoverCodexAppServerSlashCommands).mockResolvedValueOnce({
+      available: true,
+      commands: [{ name: "review", source: "codex", raw: "/review" }],
+      collisions: [],
+    });
+    const result = await runPreparedReply(
+      baseParams({
+        workspaceDir: "/tmp/ws-codex-mirror-unknown",
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex_refactor tighten tests",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("Unknown mirrored command");
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("lists discoverable mirrored commands with /codex list commands", async () => {
+    vi.mocked(discoverCodexAppServerSlashCommands).mockResolvedValueOnce({
+      available: true,
+      commands: [
+        { name: "review", source: "codex", raw: "/review" },
+        { name: "git_status", source: "mcp", raw: "git_status" },
+      ],
+      collisions: [{ name: "review", raws: ["/review", "review"] }],
+    });
+    const result = await runPreparedReply(
+      baseParams({
+        workspaceDir: "/tmp/ws-codex-list-commands",
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex list commands",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("/codex_review");
+    expect(reply?.text).toContain("/codex_git_status");
+    expect(reply?.text).toContain("Name collisions skipped");
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
 
   it("forces steer queue mode while pending codex input is active", async () => {

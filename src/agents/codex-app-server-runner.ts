@@ -655,6 +655,26 @@ type CodexAppServerSettings = {
   headers?: Record<string, string>;
 };
 
+export type CodexMirrorSlashSource = "codex" | "mcp" | "unknown";
+
+export type CodexMirrorSlashCommand = {
+  name: string;
+  source: CodexMirrorSlashSource;
+  raw: string;
+};
+
+export type CodexMirrorSlashCollision = {
+  name: string;
+  raws: string[];
+};
+
+export type CodexMirrorSlashDiscoveryResult = {
+  available: boolean;
+  commands: CodexMirrorSlashCommand[];
+  collisions: CodexMirrorSlashCollision[];
+  error?: string;
+};
+
 export function isCodexAppServerProvider(provider: string, cfg?: OpenClawConfig): boolean {
   const normalized = normalizeProviderId(provider);
   if (normalized !== "codex-app-server") {
@@ -742,6 +762,186 @@ function resolveCodexAppServerSettings(cfg?: OpenClawConfig): CodexAppServerSett
     inputTimeoutMs: Math.max(5_000, inputTimeoutMs),
     headers: Object.keys(headers).length > 0 ? headers : undefined,
   };
+}
+
+function normalizeMirrorSlashName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const withoutSlash = trimmed.startsWith("/") ? trimmed.slice(1) : trimmed;
+  const token = withoutSlash.split(/\s+/)[0] ?? "";
+  const normalized = token
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/[-_]{2,}/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+  return normalized.slice(0, 64);
+}
+
+function extractSlashTokenFromString(value: string, allowBareName: boolean): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.startsWith("/")) {
+    const token = trimmed.slice(1).split(/\s+/)[0] ?? "";
+    if (/^[a-z0-9][a-z0-9_-]*$/i.test(token)) {
+      return token;
+    }
+    return undefined;
+  }
+  if (allowBareName && /^[a-z0-9][a-z0-9_-]*$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return undefined;
+}
+
+function extractMirrorSlashCandidates(params: {
+  value: unknown;
+  source: CodexMirrorSlashSource;
+  commandContext?: boolean;
+  depth?: number;
+}): CodexMirrorSlashCommand[] {
+  const value = params.value;
+  const depth = params.depth ?? 0;
+  if (depth > 8 || value == null) {
+    return [];
+  }
+  const commandContext = params.commandContext === true;
+  const out: CodexMirrorSlashCommand[] = [];
+  const pushCandidate = (rawCandidate: string) => {
+    const normalized = normalizeMirrorSlashName(rawCandidate);
+    if (!normalized) {
+      return;
+    }
+    out.push({
+      name: normalized,
+      source: params.source,
+      raw: rawCandidate.trim(),
+    });
+  };
+  if (typeof value === "string") {
+    const token = extractSlashTokenFromString(value, commandContext);
+    if (token) {
+      pushCandidate(token);
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      out.push(
+        ...extractMirrorSlashCandidates({
+          value: entry,
+          source: params.source,
+          commandContext,
+          depth: depth + 1,
+        }),
+      );
+    });
+    return out;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return out;
+  }
+  for (const [key, entry] of Object.entries(record)) {
+    const keyLower = key.toLowerCase();
+    const nextCommandContext =
+      commandContext ||
+      /command|slash|tool|mcp|action|actions|manifest|registry|list|item|items|available/.test(
+        keyLower,
+      );
+    if (typeof entry === "string") {
+      const allowBareName = commandContext || keyLower === "name" || keyLower === "command";
+      const token = extractSlashTokenFromString(entry, allowBareName);
+      if (token) {
+        pushCandidate(token);
+      }
+      continue;
+    }
+    if (Array.isArray(entry) || (entry && typeof entry === "object")) {
+      out.push(
+        ...extractMirrorSlashCandidates({
+          value: entry,
+          source: params.source,
+          commandContext: nextCommandContext,
+          depth: depth + 1,
+        }),
+      );
+    }
+  }
+  return out;
+}
+
+function dedupeMirrorSlashCandidates(
+  candidates: CodexMirrorSlashCommand[],
+): Pick<CodexMirrorSlashDiscoveryResult, "commands" | "collisions"> {
+  const byName = new Map<
+    string,
+    {
+      command: CodexMirrorSlashCommand;
+      raws: Set<string>;
+    }
+  >();
+  for (const candidate of candidates) {
+    const existing = byName.get(candidate.name);
+    if (!existing) {
+      byName.set(candidate.name, {
+        command: candidate,
+        raws: new Set([candidate.raw]),
+      });
+      continue;
+    }
+    existing.raws.add(candidate.raw);
+    const keepExisting = existing.command.source === "codex";
+    const preferIncoming = !keepExisting && candidate.source === "codex";
+    if (preferIncoming) {
+      existing.command = candidate;
+    }
+  }
+  const commands = [...byName.values()]
+    .map((entry) => entry.command)
+    .toSorted((a, b) => a.name.localeCompare(b.name));
+  const collisions = [...byName.entries()]
+    .map(([name, entry]) => ({ name, raws: [...entry.raws].toSorted() }))
+    .filter((entry) => entry.raws.length > 1)
+    .toSorted((a, b) => a.name.localeCompare(b.name));
+  return { commands, collisions };
+}
+
+function resolveSlashDiscoveryAttempts(): Array<{
+  method: string;
+  source: CodexMirrorSlashSource;
+  variants: Array<Record<string, unknown>>;
+}> {
+  return [
+    {
+      method: "commands/list",
+      source: "codex",
+      variants: [{}, { scope: "slash" }, { includeMcp: true }],
+    },
+    {
+      method: "slash/list",
+      source: "codex",
+      variants: [{}, { includeMcp: true }],
+    },
+    {
+      method: "commands/discover",
+      source: "codex",
+      variants: [{}, { includeMcp: true }],
+    },
+    {
+      method: "mcp/commands/list",
+      source: "mcp",
+      variants: [{}, { includeBuiltin: false }],
+    },
+    {
+      method: "mcp/list",
+      source: "mcp",
+      variants: [{}, { kind: "commands" }],
+    },
+  ];
 }
 
 type ExtractedIds = {
@@ -1380,11 +1580,145 @@ function buildTurnStartVariants(params: {
   ];
 }
 
+async function initializeCodexAppServerClient(params: {
+  client: JsonRpcClient;
+  settings: CodexAppServerSettings;
+  sessionKey?: string;
+  workspaceDir?: string;
+}) {
+  const initializeVariants: Array<Record<string, unknown>> = [
+    {
+      protocolVersion: "1.0",
+      clientInfo: { name: "openclaw", version: "1.0" },
+      capabilities: {},
+    },
+    {
+      clientInfo: { name: "openclaw", version: "1.0" },
+      capabilities: {},
+    },
+    {
+      client: { name: "openclaw", version: "1.0" },
+    },
+  ];
+  let initializeError: unknown;
+  let initialized = false;
+  for (const variant of initializeVariants) {
+    try {
+      log.debug("attempting codex app server initialize", {
+        hasProtocolVersion: Object.hasOwn(variant, "protocolVersion"),
+        hasClientInfo: Object.hasOwn(variant, "clientInfo"),
+        hasClient: Object.hasOwn(variant, "client"),
+      });
+      await params.client.request("initialize", variant, params.settings.requestTimeoutMs);
+      initialized = true;
+      break;
+    } catch (err) {
+      if (isAlreadyInitializedError(err)) {
+        log.info("codex app server initialize already completed on shared transport");
+        initialized = true;
+        break;
+      }
+      log.debug("codex app server initialize attempt failed", {
+        error: String(err),
+      });
+      initializeError = err;
+    }
+  }
+  if (!initialized) {
+    throw initializeError instanceof Error
+      ? new Error(`initialize: ${initializeError.message}`)
+      : new Error(`initialize: ${String(initializeError)}`);
+  }
+  await params.client.request("initialized", {}).catch(() => undefined);
+  if (params.workspaceDir || params.sessionKey) {
+    await params.client
+      .request("session/update", {
+        session_key: params.sessionKey ?? "codex-slash-discovery",
+        cwd: params.workspaceDir,
+      })
+      .catch(() => undefined);
+  }
+}
+
+export async function discoverCodexAppServerSlashCommands(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+}): Promise<CodexMirrorSlashDiscoveryResult> {
+  const settings = resolveCodexAppServerSettings(params?.config);
+  if (!settings.enabled) {
+    return {
+      available: false,
+      commands: [],
+      collisions: [],
+      error: "codex app server is disabled",
+    };
+  }
+  const client = createJsonRpcClient(settings);
+  const candidates: CodexMirrorSlashCommand[] = [];
+  let discoveryAvailable = false;
+  let lastError: string | undefined;
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params?.sessionKey,
+      workspaceDir: params?.workspaceDir,
+    });
+    const attempts = resolveSlashDiscoveryAttempts();
+    for (const attempt of attempts) {
+      for (const variant of attempt.variants) {
+        try {
+          const result = await client.request(attempt.method, variant, settings.requestTimeoutMs);
+          discoveryAvailable = true;
+          candidates.push(
+            ...extractMirrorSlashCandidates({
+              value: result,
+              source: attempt.source,
+              commandContext: true,
+            }),
+          );
+          break;
+        } catch (err) {
+          lastError = String(err);
+        }
+      }
+    }
+    if (!discoveryAvailable) {
+      return {
+        available: false,
+        commands: [],
+        collisions: [],
+        error: lastError ?? "slash discovery unavailable",
+      };
+    }
+    const { commands, collisions } = dedupeMirrorSlashCandidates(candidates);
+    return {
+      available: true,
+      commands,
+      collisions,
+    };
+  } catch (err) {
+    return {
+      available: false,
+      commands: [],
+      collisions: [],
+      error: String(err),
+    };
+  } finally {
+    await client.close();
+  }
+}
+
 export const __testing = {
   getTurnStartRpcMethods,
   buildTurnStartVariants,
   buildPromptText,
   extractApprovalPromptContext,
+  normalizeMirrorSlashName,
+  extractMirrorSlashCandidates,
+  dedupeMirrorSlashCandidates,
 };
 
 function createJsonRpcClient(settings: CodexAppServerSettings): JsonRpcClient {
@@ -1740,58 +2074,13 @@ export async function runCodexAppServerAgent(
       transport: settings.transport,
     });
 
-    const initializeVariants: Array<Record<string, unknown>> = [
-      {
-        protocolVersion: "1.0",
-        clientInfo: { name: "openclaw", version: "1.0" },
-        capabilities: {},
-      },
-      {
-        clientInfo: { name: "openclaw", version: "1.0" },
-        capabilities: {},
-      },
-      {
-        client: { name: "openclaw", version: "1.0" },
-      },
-    ];
-    let initializeError: unknown;
-    let initialized = false;
-    for (const variant of initializeVariants) {
-      try {
-        log.debug("attempting codex app server initialize", {
-          hasProtocolVersion: Object.hasOwn(variant, "protocolVersion"),
-          hasClientInfo: Object.hasOwn(variant, "clientInfo"),
-          hasClient: Object.hasOwn(variant, "client"),
-        });
-        await client.request("initialize", variant, settings.requestTimeoutMs);
-        initialized = true;
-        break;
-      } catch (err) {
-        if (isAlreadyInitializedError(err)) {
-          log.info("codex app server initialize already completed on shared transport");
-          initialized = true;
-          break;
-        }
-        log.debug("codex app server initialize attempt failed", {
-          error: String(err),
-        });
-        initializeError = err;
-      }
-    }
-    if (!initialized) {
-      throw initializeError instanceof Error
-        ? new Error(`initialize: ${initializeError.message}`)
-        : new Error(`initialize: ${String(initializeError)}`);
-    }
-    await client.request("initialized", {}).catch(() => undefined);
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params.sessionKey ?? params.sessionId,
+      workspaceDir: params.workspaceDir,
+    });
     log.info("codex app server initialize handshake complete");
-
-    await client
-      .request("session/update", {
-        session_key: params.sessionKey ?? params.sessionId,
-        cwd: params.workspaceDir,
-      })
-      .catch(() => undefined);
 
     const ensureThreadStarted = async () => {
       if (threadId) {

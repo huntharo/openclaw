@@ -147,7 +147,7 @@ describe("createTelegramBot", () => {
     expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-1");
   });
 
-  it("maps codex input callback buttons to numeric replies and clears inline keyboard", async () => {
+  it("rejects stale codex callback buttons with request ids and clears inline keyboard", async () => {
     createTelegramBot({ token: "tok" });
     const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
       ctx: Record<string, unknown>,
@@ -174,9 +174,12 @@ describe("createTelegramBot", () => {
     expect(editMessageTextSpy).toHaveBeenCalledWith(1234, 11, "🧭 Agent input requested (req-1)", {
       reply_markup: { inline_keyboard: [] },
     });
-    expect(replySpy).toHaveBeenCalledTimes(1);
-    const payload = replySpy.mock.calls[0][0];
-    expect(payload.Body).toContain("2");
+    expect(queueAgentRunMessageBySessionKeySpy).not.toHaveBeenCalled();
+    expect(sendMessageSpy).toHaveBeenCalledWith(
+      1234,
+      expect.stringContaining("no longer active"),
+      undefined,
+    );
   });
 
   it("processes codex input callbacks even when inline buttons are allowlist-scoped", async () => {
@@ -361,7 +364,7 @@ describe("createTelegramBot", () => {
     expect(replySpy).not.toHaveBeenCalled();
   });
 
-  it("forwards reply-to-prompt free-form approval by session key without pending metadata", async () => {
+  it("rejects stale reply-to-prompt approvals when pending metadata is missing", async () => {
     loadConfig.mockReturnValue({
       session: { dmScope: "per-account-channel-peer" },
       channels: {
@@ -397,11 +400,12 @@ describe("createTelegramBot", () => {
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 
-    expect(queueAgentRunMessageBySessionKeySpy).toHaveBeenCalledWith(
-      "agent:main:telegram:default:direct:1234",
-      "approve",
+    expect(queueAgentRunMessageBySessionKeySpy).not.toHaveBeenCalled();
+    expect(sendMessageSpy).toHaveBeenCalledWith(
+      1234,
+      expect.stringContaining("no longer active"),
+      undefined,
     );
-    expect(replySpy).not.toHaveBeenCalled();
   });
   it("wraps inbound message with Telegram envelope", async () => {
     await withEnvAsync({ TZ: "Europe/Vienna" }, async () => {

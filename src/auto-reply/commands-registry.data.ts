@@ -568,13 +568,13 @@ function buildChatCommands(): ChatCommandDefinition[] {
     defineChatCommand({
       key: "codex",
       nativeName: "codex",
-      description: "Run Codex App Server and summarize with current model.",
+      description: "Manage Codex App Server threads and run Codex actions.",
       textAlias: "/codex",
       category: "session",
       args: [
         {
-          name: "task",
-          description: "Task to send to Codex App Server",
+          name: "command",
+          description: "oneshot|new|join|resume|list|bind|detach|status",
           type: "string",
           captureRemaining: true,
         },
