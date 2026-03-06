@@ -67,10 +67,10 @@ const CODEX_USAGE_TEXT = [
   "Subcommands:",
   "- /codex oneshot <coding task>",
   "- /codex new [task]",
-  "- /codex join <query|thread-id>",
-  "- /codex resume <thread-id|alias>",
+  "- /codex join <query|thread-id> (find + attach)",
+  "- /codex resume <thread-id|alias> (reattach known thread)",
   "- /codex list [filter]",
-  "- /codex bind <thread-id> [--thread here]",
+  "- /codex bind <thread-id> [--thread here] (force-bind explicit thread id)",
   "- /codex detach",
   "- /codex status",
   "- /codex_<slash> [args] (mirrors discovered Codex/MCP slash commands)",
@@ -697,7 +697,7 @@ export async function runPreparedReply(
   ].filter(Boolean);
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
   const parsedCodexCommand = parseCodexCommand(command.commandBodyNormalized);
-  const codexCommandPrompt =
+  const explicitCodexCommandPrompt =
     parsedCodexCommand.type === "oneshot"
       ? parsedCodexCommand.prompt
       : parsedCodexCommand.type === "mirrored"
@@ -705,6 +705,9 @@ export async function runPreparedReply(
         : parsedCodexCommand.type === "new" && parsedCodexCommand.task
           ? parsedCodexCommand.task
           : null;
+  const shouldAutoRouteToCodex =
+    parsedCodexCommand.type === "none" && sessionEntry?.codexAutoRoute === true;
+  let codexCommandPrompt = explicitCodexCommandPrompt;
   const normalizedCommandBody = (command.commandBodyNormalized ?? "").trim();
   log.debug("prepared reply command context", {
     commandSource: ctx.CommandSource ?? "unknown",
@@ -822,6 +825,9 @@ export async function runPreparedReply(
   const effectiveBaseBodyBase = baseBodyTrimmed
     ? baseBodyForPrompt
     : "[User sent media without caption]";
+  if (!codexCommandPrompt && shouldAutoRouteToCodex) {
+    codexCommandPrompt = effectiveBaseBodyBase;
+  }
   let effectiveBaseBody = codexCommandPrompt ?? effectiveBaseBodyBase;
   let prefixedBodyBase = await applySessionHints({
     baseBody: effectiveBaseBody,
@@ -944,11 +950,12 @@ export async function runPreparedReply(
     }
     return true;
   };
-  const clearCodexSessionState = async () =>
+  const clearCodexSessionState = async (opts?: { keepAutoRoute?: boolean }) =>
     persistCodexSessionUpdate({
       codexThreadId: undefined,
       codexRunId: undefined,
       codexProjectKey: undefined,
+      codexAutoRoute: opts?.keepAutoRoute ? sessionEntry?.codexAutoRoute : undefined,
       pendingUserInputRequestId: undefined,
       pendingUserInputOptions: undefined,
       pendingUserInputExpiresAt: undefined,
@@ -1043,7 +1050,13 @@ export async function runPreparedReply(
       ...(buttons ? { channelData: { telegram: { buttons } } } : {}),
     };
   };
-  const resolveCodexThreadTarget = (raw: string) => {
+  const resolveCodexThreadTarget = (
+    raw: string,
+    opts?: {
+      allowUnknownExplicitId?: boolean;
+      allowFuzzyMatch?: boolean;
+    },
+  ) => {
     const query = raw.trim();
     if (!query) {
       return { ok: false as const, error: "Missing thread id/query." };
@@ -1053,23 +1066,31 @@ export async function runPreparedReply(
     if (exact) {
       return { ok: true as const, match: exact };
     }
-    const normalizedQuery = query.toLowerCase();
-    const matches = rows.filter(
-      (entry) =>
-        entry.threadId.toLowerCase().includes(normalizedQuery) ||
-        entry.projectKey.toLowerCase().includes(normalizedQuery) ||
-        entry.sessionKey.toLowerCase().includes(normalizedQuery),
-    );
-    if (matches.length === 1) {
-      return {
-        ok: true as const,
-        match: matches[0],
-      };
+    if (opts?.allowFuzzyMatch !== false) {
+      const normalizedQuery = query.toLowerCase();
+      const matches = rows.filter(
+        (entry) =>
+          entry.threadId.toLowerCase().includes(normalizedQuery) ||
+          entry.projectKey.toLowerCase().includes(normalizedQuery) ||
+          entry.sessionKey.toLowerCase().includes(normalizedQuery),
+      );
+      if (matches.length === 1) {
+        return {
+          ok: true as const,
+          match: matches[0],
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          ok: false as const,
+          error: `Query matched multiple threads. Use exact thread id.\n${formatKnownCodexThreads(query)}`,
+        };
+      }
     }
-    if (matches.length > 1) {
+    if (opts?.allowUnknownExplicitId === false) {
       return {
         ok: false as const,
-        error: `Query matched multiple threads. Use exact thread id.\n${formatKnownCodexThreads(query)}`,
+        error: `No known Codex threads matched "${query}". Use \`/codex list\` or \`/codex bind <thread-id>\`.`,
       };
     }
     // Accept explicit ids even if unseen in local store.
@@ -1096,6 +1117,7 @@ export async function runPreparedReply(
         `thread: ${sessionEntry?.codexThreadId?.trim() || "unbound"}`,
         `run: ${sessionEntry?.codexRunId?.trim() || "n/a"}`,
         `project: ${sessionEntry?.codexProjectKey?.trim() || "n/a"}`,
+        `routing: ${sessionEntry?.codexAutoRoute === true ? "codex-bound" : "default"}`,
         sessionEntry?.pendingUserInputRequestId
           ? `pending approval: ${sessionEntry.pendingUserInputRequestId}`
           : "pending approval: none",
@@ -1148,10 +1170,19 @@ export async function runPreparedReply(
   ) {
     const lookup =
       parsedCodexCommand.type === "join"
-        ? resolveCodexThreadTarget(parsedCodexCommand.query)
+        ? resolveCodexThreadTarget(parsedCodexCommand.query, {
+            allowUnknownExplicitId: true,
+            allowFuzzyMatch: true,
+          })
         : parsedCodexCommand.type === "resume"
-          ? resolveCodexThreadTarget(parsedCodexCommand.target)
-          : resolveCodexThreadTarget(parsedCodexCommand.threadId);
+          ? resolveCodexThreadTarget(parsedCodexCommand.target, {
+              allowUnknownExplicitId: false,
+              allowFuzzyMatch: true,
+            })
+          : resolveCodexThreadTarget(parsedCodexCommand.threadId, {
+              allowUnknownExplicitId: true,
+              allowFuzzyMatch: false,
+            });
     if (!lookup.ok) {
       typing.cleanup();
       return { text: `⚠️ ${lookup.error}` };
@@ -1163,8 +1194,9 @@ export async function runPreparedReply(
     await persistCodexSessionUpdate({
       sessionId: match.sessionId || sessionEntry?.sessionId,
       codexThreadId: match.threadId,
-      codexProjectKey: match.projectKey || sessionEntry?.codexProjectKey,
+      codexProjectKey: match.projectKey || undefined,
       codexRunId: match.runId || undefined,
+      codexAutoRoute: true,
       pendingUserInputRequestId: shouldCarryPending ? match.pendingRequestId : undefined,
       pendingUserInputOptions: shouldCarryPending ? match.pendingOptions : undefined,
       pendingUserInputExpiresAt: shouldCarryPending ? match.pendingExpiresAt : undefined,
@@ -1174,15 +1206,24 @@ export async function runPreparedReply(
       parsedCodexCommand.type === "bind" && parsedCodexCommand.bindHere
         ? " (bound to current thread context)"
         : "";
+    const verb =
+      parsedCodexCommand.type === "join"
+        ? "Joined"
+        : parsedCodexCommand.type === "resume"
+          ? "Resumed"
+          : "Bound";
     const replay = shouldCarryPending ? buildPendingInputReplayReply(match) : undefined;
     const replayText = replay?.text ? `\n\n${replay.text}` : "";
     return {
-      text: `✅ Attached this session to Codex thread ${match.threadId}${bindHint}.${replayText}`,
+      text: `✅ ${verb} this session to Codex thread ${match.threadId}${bindHint}.${replayText}`,
       ...(replay?.channelData ? { channelData: replay.channelData } : {}),
     };
   }
   if (command.isAuthorizedSender && parsedCodexCommand.type === "new") {
     await clearCodexSessionState();
+    await persistCodexSessionUpdate({
+      codexAutoRoute: true,
+    });
     if (!parsedCodexCommand.task) {
       typing.cleanup();
       return {
@@ -1218,8 +1259,13 @@ export async function runPreparedReply(
     resolveSessionFilePathOptions({ agentId, storePath }),
   );
   let codexRelayContext: string | undefined;
+  let codexDirectReply: ReplyPayload | undefined;
   if (codexCommandPrompt) {
-    const codexWorkspaceDir = resolveCodexWorkspaceDirFromPrompt(codexCommandPrompt, workspaceDir);
+    const boundCodexProjectKey = sessionEntry?.codexProjectKey?.trim();
+    const codexWorkspaceFallback = boundCodexProjectKey || workspaceDir;
+    const codexWorkspaceDir = shouldAutoRouteToCodex
+      ? codexWorkspaceFallback
+      : resolveCodexWorkspaceDirFromPrompt(codexCommandPrompt, codexWorkspaceFallback);
     try {
       log.info("dispatching /codex task to App Server", {
         workspaceDir: codexWorkspaceDir,
@@ -1347,19 +1393,47 @@ export async function runPreparedReply(
       codexRelayContext = truncateCodexContext(codexText || "(no text output)");
       const codexThreadId = codexResult.meta.agentMeta?.sessionId?.trim();
       const codexRunId = codexResult.meta.agentMeta?.runId?.trim();
+      const hasPendingCodexInput =
+        Boolean(sessionEntry?.pendingUserInputRequestId) &&
+        (sessionEntry?.pendingUserInputExpiresAt == null ||
+          sessionEntry.pendingUserInputExpiresAt > Date.now());
       if (sessionEntry && sessionStore && sessionKey) {
         sessionEntry.codexThreadId = codexThreadId || sessionEntry.codexThreadId;
         sessionEntry.codexRunId = codexRunId || sessionEntry.codexRunId;
         sessionEntry.codexProjectKey = codexWorkspaceDir;
-        sessionEntry.pendingUserInputRequestId = undefined;
-        sessionEntry.pendingUserInputOptions = undefined;
-        sessionEntry.pendingUserInputExpiresAt = undefined;
+        if (!hasPendingCodexInput) {
+          sessionEntry.pendingUserInputRequestId = undefined;
+          sessionEntry.pendingUserInputOptions = undefined;
+          sessionEntry.pendingUserInputExpiresAt = undefined;
+        }
         sessionEntry.updatedAt = Date.now();
         sessionStore[sessionKey] = sessionEntry;
         if (storePath) {
           await updateSessionStore(storePath, (store) => {
             store[sessionKey] = sessionEntry;
           });
+        }
+      }
+      if (shouldAutoRouteToCodex) {
+        if (codexText) {
+          codexDirectReply = { text: codexText };
+        } else if (hasPendingCodexInput && sessionEntry?.pendingUserInputRequestId) {
+          const pendingOptions = sessionEntry.pendingUserInputOptions;
+          const promptText = `🧭 Agent input requested (${sessionEntry.pendingUserInputRequestId})`;
+          const buttons =
+            command.channel === "telegram"
+              ? buildCodexInputButtons({
+                  text: promptText,
+                  requestId: sessionEntry.pendingUserInputRequestId,
+                  options: pendingOptions,
+                })
+              : undefined;
+          codexDirectReply = {
+            text: `${promptText}\nReply with an option number or free-form text.`,
+            ...(buttons ? { channelData: { telegram: { buttons } } } : {}),
+          };
+        } else {
+          codexDirectReply = { text: "(Codex run completed with no text output.)" };
         }
       }
       prefixedCommandBody = [
@@ -1376,19 +1450,9 @@ export async function runPreparedReply(
         sessionKey &&
         /conversation not found|thread not found/i.test(errText)
       ) {
-        sessionEntry.codexThreadId = undefined;
-        sessionEntry.codexRunId = undefined;
-        sessionEntry.codexProjectKey = undefined;
-        sessionEntry.pendingUserInputRequestId = undefined;
-        sessionEntry.pendingUserInputOptions = undefined;
-        sessionEntry.pendingUserInputExpiresAt = undefined;
-        sessionEntry.updatedAt = Date.now();
-        sessionStore[sessionKey] = sessionEntry;
-        if (storePath) {
-          await updateSessionStore(storePath, (store) => {
-            store[sessionKey] = sessionEntry;
-          });
-        }
+        await clearCodexSessionState({
+          keepAutoRoute: shouldAutoRouteToCodex,
+        });
         log.warn("cleared stale codex thread binding after not-found error", {
           sessionKey,
           workspaceDir: codexWorkspaceDir,
@@ -1402,6 +1466,10 @@ export async function runPreparedReply(
         text: `Codex App Server run failed: ${errText}`,
       };
     }
+  }
+  if (codexDirectReply) {
+    typing.cleanup();
+    return codexDirectReply;
   }
   // Use bodyWithEvents (events prepended, but no session hints / untrusted context) so
   // deferred turns receive system events while keeping the same scope as effectiveBaseBody did.

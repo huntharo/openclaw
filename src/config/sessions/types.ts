@@ -154,6 +154,8 @@ export type SessionEntry = {
   codexRunId?: string;
   /** Workspace identity for current codexThreadId binding. */
   codexProjectKey?: string;
+  /** When true, non-command turns in this session are routed to Codex App Server. */
+  codexAutoRoute?: boolean;
   /** Pending server-initiated user input request id (if any). */
   pendingUserInputRequestId?: string;
   /** Numbered options presented for the pending user input request. */

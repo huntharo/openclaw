@@ -710,6 +710,7 @@ describe("runPreparedReply media-only handling", () => {
       codexThreadId: "thread-123",
       codexRunId: "run-123",
       codexProjectKey: "/tmp/workspace",
+      codexAutoRoute: true,
     };
     const sessionStore = { "session-key": sessionEntry };
     const result = await runPreparedReply(
@@ -730,6 +731,7 @@ describe("runPreparedReply media-only handling", () => {
       expect.objectContaining({ text: expect.stringContaining("Detached this session") }),
     );
     expect(sessionEntry.codexThreadId).toBeUndefined();
+    expect(sessionEntry.codexAutoRoute).toBeUndefined();
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
 
@@ -754,9 +756,12 @@ describe("runPreparedReply media-only handling", () => {
     );
 
     expect(result).toEqual(
-      expect.objectContaining({ text: expect.stringContaining("thread-abc") }),
+      expect.objectContaining({
+        text: expect.stringContaining("Bound this session to Codex thread thread-abc"),
+      }),
     );
     expect(sessionEntry.codexThreadId).toBe("thread-abc");
+    expect(sessionEntry.codexAutoRoute).toBe(true);
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
 
@@ -794,7 +799,7 @@ describe("runPreparedReply media-only handling", () => {
       }),
     );
     const reply = asSingleReply(result);
-    expect(reply?.text).toContain("Attached this session to Codex thread thread-abc");
+    expect(reply?.text).toContain("Joined this session to Codex thread thread-abc");
     expect(reply?.text).toContain("Agent input requested (req-join-1)");
     expect(reply?.channelData).toMatchObject({
       telegram: {
@@ -808,6 +813,82 @@ describe("runPreparedReply media-only handling", () => {
     });
     expect(sessionEntry.sessionId).toBe("s-source");
     expect(sessionEntry.pendingUserInputRequestId).toBe("req-join-1");
+    expect(sessionEntry.codexAutoRoute).toBe(true);
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("auto-routes plain text to Codex after /codex bind", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+      codexThreadId: "thread-abc",
+      codexProjectKey: "/tmp/codex-project",
+      codexAutoRoute: true,
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "Who are you?",
+        } as never,
+        ctx: {
+          Body: "Who are you?",
+          RawBody: "Who are you?",
+          CommandBody: "Who are you?",
+          ThreadHistoryBody: "Earlier message in this thread",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "topic:123",
+          ChatType: "group",
+        },
+        sessionCtx: {
+          Body: "Who are you?",
+          BodyStripped: "Who are you?",
+          ThreadHistoryBody: "Earlier message in this thread",
+          Provider: "telegram",
+          ChatType: "group",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "topic:123",
+        },
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("codex output summary");
+    expect(vi.mocked(runCodexAppServerAgent)).toHaveBeenCalledTimes(1);
+    const codexCall = vi.mocked(runCodexAppServerAgent).mock.calls[0]?.[0];
+    expect(codexCall?.prompt).toContain("Who are you?");
+    expect(codexCall?.workspaceDir).toBe("/tmp/codex-project");
+    expect(codexCall?.existingThreadId).toBe("thread-abc");
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("requires known threads for /codex resume and points unknown ids to /codex bind", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex resume thread-does-not-exist",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain('No known Codex threads matched "thread-does-not-exist"');
+    expect(reply?.text).toContain("/codex bind <thread-id>");
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
 
