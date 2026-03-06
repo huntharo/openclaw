@@ -8,10 +8,12 @@ import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const discoverCodexAppServerThreadsMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerThreadContextMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
 const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
   vi.fn<() => string | null>(() => null),
 );
+const routeReplyMock = vi.hoisted(() => vi.fn());
 const sessionBindingServiceMock = vi.hoisted(() => ({
   bind: vi.fn(),
   getCapabilities: vi.fn(),
@@ -24,6 +26,8 @@ const sessionBindingServiceMock = vi.hoisted(() => ({
 vi.mock("../../agents/codex-app-server-runner.js", () => ({
   discoverCodexAppServerThreads: (...args: unknown[]) => discoverCodexAppServerThreadsMock(...args),
   isCodexAppServerProvider: (provider: string) => provider === "codex-app-server",
+  readCodexAppServerThreadContext: (...args: unknown[]) =>
+    readCodexAppServerThreadContextMock(...args),
 }));
 
 vi.mock("../../agents/codex-app-server-startup.js", () => ({
@@ -33,6 +37,11 @@ vi.mock("../../agents/codex-app-server-startup.js", () => ({
 
 vi.mock("../../infra/outbound/session-binding-service.js", () => ({
   getSessionBindingService: () => sessionBindingServiceMock,
+}));
+
+vi.mock("./route-reply.js", () => ({
+  isRoutableChannel: (channel: string | undefined) => Boolean(channel && channel !== "webchat"),
+  routeReply: (...args: unknown[]) => routeReplyMock(...args),
 }));
 
 const { handleCodexCommand } = await import("./commands-codex.js");
@@ -45,8 +54,10 @@ describe("handleCodexCommand", () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-command-"));
     storePath = path.join(tempDir, "sessions.json");
     discoverCodexAppServerThreadsMock.mockReset().mockResolvedValue([]);
+    readCodexAppServerThreadContextMock.mockReset().mockResolvedValue({});
     getCodexAppServerAvailabilityErrorMock.mockReset().mockReturnValue(null);
     getCodexAppServerRuntimeStatusMock.mockReset().mockReturnValue({ state: "unknown" });
+    routeReplyMock.mockReset().mockResolvedValue({ ok: true, messageId: "m-1" });
     sessionBindingServiceMock.bind.mockReset().mockImplementation(async (input: unknown) => {
       const record = input as {
         targetSessionKey: string;
@@ -240,6 +251,10 @@ describe("handleCodexCommand", () => {
         updatedAt: Date.now(),
       },
     ]);
+    readCodexAppServerThreadContextMock.mockResolvedValue({
+      lastUserMessage: "Please fix exec approvals safely.",
+      lastAssistantMessage: "I updated the plan and I am ready for the next change.",
+    });
     const params = buildParams(
       "/codex join exec approvals",
       {},
@@ -262,14 +277,75 @@ describe("handleCodexCommand", () => {
     expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: "agent:main:main",
-        workspaceDir: params.workspaceDir,
+        workspaceDir: undefined,
         filter: "exec approvals",
       }),
     );
-    expect(result?.reply?.text).toContain("thread-456");
+    expect(readCodexAppServerThreadContextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: boundSessionKey,
+        workspaceDir: "/repo/openclaw",
+        threadId: "thread-456",
+      }),
+    );
+    expect(result).toEqual({ shouldContinue: false });
+    expect(routeReplyMock).toHaveBeenCalledTimes(5);
+    expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        text: "Codex thread bound.\n\nThread: thread-456\nTitle: Fix exec approvals\nProject: /repo/openclaw",
+      },
+    });
+    expect(routeReplyMock.mock.calls[1]?.[0]).toMatchObject({
+      payload: { text: "Last User Request in Thread:" },
+    });
+    expect(routeReplyMock.mock.calls[2]?.[0]).toMatchObject({
+      payload: { text: "Please fix exec approvals safely." },
+    });
+    expect(routeReplyMock.mock.calls[3]?.[0]).toMatchObject({
+      payload: { text: "Last Agent Reply in Thread:" },
+    });
+    expect(routeReplyMock.mock.calls[4]?.[0]).toMatchObject({
+      payload: { text: "I updated the plan and I am ready for the next change." },
+    });
     const store = loadSessionStore(storePath);
     expect(store[boundSessionKey]?.codexThreadId).toBe("thread-456");
     expect(store[boundSessionKey]?.providerOverride).toBe("codex-app-server");
+  });
+
+  it("allows joining an exact thread id from another workspace", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019c68d3-d622-75c0-a542-198753af0b2c",
+        title: "Plan TASKS doc refresh",
+        projectKey: "/Users/huntharo/github/jeerreview",
+        updatedAt: Date.now(),
+      },
+    ]);
+    const params = buildParams(
+      "/codex join 019c68d3-d622-75c0-a542-198753af0b2c",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:main:main",
+        workspaceDir: undefined,
+        filter: "019c68d3-d622-75c0-a542-198753af0b2c",
+      }),
+    );
+    expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        text: "Codex thread bound.\n\nThread: 019c68d3-d622-75c0-a542-198753af0b2c\nTitle: Plan TASKS doc refresh\nProject: /Users/huntharo/github/jeerreview",
+      },
+    });
   });
 
   it("does not force the current workspace when /codex list has a filter", async () => {
@@ -312,6 +388,10 @@ describe("handleCodexCommand", () => {
         updatedAt: Date.now(),
       },
     ]);
+    readCodexAppServerThreadContextMock.mockResolvedValue({
+      lastUserMessage: "Can you approve the deploy?",
+      lastAssistantMessage: "I am waiting for approval.",
+    });
     const params = buildParams(
       "/codex join exec approvals",
       {},
@@ -343,17 +423,87 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result?.reply?.text).toContain("Pending Codex input:");
-    expect(result?.reply?.text).toContain("Approve deploy?");
-    expect(
-      (result?.reply?.channelData as { telegram?: { buttons?: unknown[][] } } | undefined)?.telegram
-        ?.buttons,
-    ).toEqual([
-      [
-        { text: "1. Approve", callback_data: "1" },
-        { text: "2. Decline", callback_data: "2" },
-      ],
+    expect(result).toEqual({ shouldContinue: false });
+    expect(routeReplyMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      payload: {
+        text: expect.stringContaining("Pending Codex input:"),
+        channelData: {
+          telegram: {
+            buttons: [
+              [
+                { text: "1. Approve", callback_data: "1" },
+                { text: "2. Decline", callback_data: "2" },
+              ],
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it("pins the binding notice in Telegram topics like ACP bindings", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-456",
+        title: "Fix exec approvals",
+        projectKey: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
     ]);
+    const params = buildParams(
+      "/codex join exec approvals",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "group:123:topic:77",
+        To: "group:123:topic:77",
+        MessageThreadId: "77",
+      },
+    );
+
+    await handleCodexCommand(params, true);
+
+    expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        channelData: { telegram: { pin: true } },
+      },
+    });
+  });
+
+  it("does not include older thread history in the routed join replay", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-456",
+        title: "Fix exec approvals",
+        projectKey: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
+    ]);
+    readCodexAppServerThreadContextMock.mockResolvedValue({
+      lastUserMessage: "Newest request",
+      lastAssistantMessage: "Newest response",
+    });
+    const params = buildParams(
+      "/codex join exec approvals",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+
+    await handleCodexCommand(params, true);
+
+    const routedTexts = routeReplyMock.mock.calls
+      .map((call) => (call[0] as { payload?: { text?: string } })?.payload?.text)
+      .filter(Boolean)
+      .join("\n");
+    expect(routedTexts).toContain("Newest request");
+    expect(routedTexts).toContain("Newest response");
+    expect(routedTexts).not.toContain("Older message 1");
   });
 
   it("shows pending Codex input details and buttons in /codex status", async () => {

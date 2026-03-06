@@ -92,6 +92,11 @@ export type CodexAppServerThreadSummary = {
   updatedAt?: number;
 };
 
+export type CodexAppServerThreadReplay = {
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
+};
+
 type RunCodexAppServerAgentParams = {
   sessionId: string;
   sessionKey?: string;
@@ -940,6 +945,102 @@ function extractSlashCommands(value: unknown): CodexMirrorSlashCommand[] {
   return [...out.values()].toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+function normalizeConversationRole(value: string | undefined): "user" | "assistant" | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "user") {
+    return "user";
+  }
+  if (normalized === "assistant") {
+    return "assistant";
+  }
+  if (normalized === "usermessage") {
+    return "user";
+  }
+  if (normalized === "agentmessage" || normalized === "assistantmessage") {
+    return "assistant";
+  }
+  return undefined;
+}
+
+function collectMessageText(record: Record<string, unknown>): string {
+  return dedupeJoinedText([
+    ...collectText(record.content),
+    ...collectText(record.text),
+    ...collectText(record.message),
+    ...collectText(record.messages),
+    ...collectText(record.input),
+    ...collectText(record.output),
+    ...collectText(record.parts),
+  ]);
+}
+
+function extractConversationMessages(
+  value: unknown,
+): Array<{ role: "user" | "assistant"; text: string }> {
+  const out: Array<{ role: "user" | "assistant"; text: string }> = [];
+  const visit = (node: unknown) => {
+    if (Array.isArray(node)) {
+      node.forEach((entry) => visit(entry));
+      return;
+    }
+    const record = asRecord(node);
+    if (!record) {
+      return;
+    }
+
+    const role = normalizeConversationRole(
+      pickString(record, ["role", "author", "speaker", "source", "type"]),
+    );
+    const text = collectMessageText(record);
+    if (role && text) {
+      out.push({ role, text });
+    }
+
+    for (const key of [
+      "items",
+      "messages",
+      "content",
+      "parts",
+      "entries",
+      "data",
+      "results",
+      "turns",
+      "events",
+      "item",
+      "message",
+      "thread",
+      "response",
+      "result",
+    ]) {
+      visit(record[key]);
+    }
+  };
+  visit(value);
+  return out;
+}
+
+function extractThreadReplayFromReadResult(value: unknown): CodexAppServerThreadReplay {
+  const messages = extractConversationMessages(value);
+  let lastUserMessage: string | undefined;
+  let lastAssistantMessage: string | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!lastAssistantMessage && message?.role === "assistant") {
+      lastAssistantMessage = message.text;
+    }
+    if (!lastUserMessage && message?.role === "user") {
+      lastUserMessage = message.text;
+    }
+    if (lastUserMessage && lastAssistantMessage) {
+      break;
+    }
+  }
+  return {
+    lastUserMessage,
+    lastAssistantMessage,
+  };
+}
+
 export async function discoverCodexAppServerSlashCommands(params?: {
   config?: OpenClawConfig;
   sessionKey?: string;
@@ -1019,6 +1120,40 @@ export async function discoverCodexAppServerThreads(params?: {
       );
     }
     return threads;
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+export async function readCodexAppServerThreadContext(params: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+  threadId: string;
+}): Promise<CodexAppServerThreadReplay> {
+  const settings = resolveCodexAppServerSettings(params.config);
+  if (!settings.enabled) {
+    return {};
+  }
+  const client = createJsonRpcClient(settings);
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params.sessionKey,
+      workspaceDir: params.workspaceDir,
+    });
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["thread/read"],
+      payloads: [
+        { threadId: params.threadId, includeTurns: true },
+        { thread_id: params.threadId, include_turns: true },
+      ],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    return extractThreadReplayFromReadResult(result);
   } finally {
     await client.close().catch(() => undefined);
   }
@@ -1309,6 +1444,7 @@ export async function runCodexAppServerAgent(
 export const __testing = {
   applyThreadFilter,
   buildCodexTelegramOptionButtons,
+  extractThreadReplayFromReadResult,
   isMethodUnavailableError,
   mapPendingInputResponse,
   resolveApprovalDecisionFromText,

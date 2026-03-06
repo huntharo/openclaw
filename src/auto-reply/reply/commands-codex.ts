@@ -3,6 +3,7 @@ import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-binding
 import {
   discoverCodexAppServerThreads,
   isCodexAppServerProvider,
+  readCodexAppServerThreadContext,
   type CodexAppServerThreadSummary,
 } from "../../agents/codex-app-server-runner.js";
 import {
@@ -21,12 +22,14 @@ import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import type { ReplyPayload } from "../types.js";
 import { resolveAcpCommandBindingContext } from "./commands-acp/context.js";
 import type {
   CommandHandler,
   CommandHandlerResult,
   HandleCommandsParams,
 } from "./commands-types.js";
+import { isRoutableChannel, routeReply } from "./route-reply.js";
 
 const COMMAND = "/codex";
 
@@ -462,7 +465,7 @@ async function unbindCodexConversation(params: HandleCommandsParams): Promise<vo
   });
 }
 
-function summarizeThread(thread: CodexAppServerThreadSummary): string {
+function summarizeThreadBinding(thread: CodexAppServerThreadSummary): string {
   const lines = [`Thread: ${thread.threadId}`];
   if (thread.title) {
     lines.push(`Title: ${thread.title}`);
@@ -470,10 +473,76 @@ function summarizeThread(thread: CodexAppServerThreadSummary): string {
   if (thread.projectKey) {
     lines.push(`Project: ${thread.projectKey}`);
   }
-  if (thread.summary) {
-    lines.push(`Summary: ${thread.summary}`);
-  }
   return lines.join("\n");
+}
+
+function buildThreadReplayPayloads(params: {
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
+}): ReplyPayload[] {
+  const payloads: ReplyPayload[] = [];
+  if (params.lastUserMessage?.trim()) {
+    payloads.push({ text: "Last User Request in Thread:" });
+    payloads.push({ text: params.lastUserMessage.trim() });
+  }
+  if (params.lastAssistantMessage?.trim()) {
+    payloads.push({ text: "Last Agent Reply in Thread:" });
+    payloads.push({ text: params.lastAssistantMessage.trim() });
+  }
+  return payloads;
+}
+
+function shouldPinCodexBindingNotice(params: HandleCommandsParams): boolean {
+  const bindingContext = resolveAcpCommandBindingContext(params);
+  return (
+    bindingContext.channel === "telegram" &&
+    Boolean(bindingContext.conversationId?.includes(":topic:"))
+  );
+}
+
+function resolveCodexReplyRoute(params: HandleCommandsParams): {
+  channel: Parameters<typeof routeReply>[0]["channel"];
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+} | null {
+  const channel = params.ctx.OriginatingChannel ?? params.command.channel;
+  const to = params.ctx.OriginatingTo ?? params.command.from ?? params.command.to;
+  if (!channel || !to || !isRoutableChannel(channel)) {
+    return null;
+  }
+  return {
+    channel: channel as Parameters<typeof routeReply>[0]["channel"],
+    to,
+    accountId: params.ctx.AccountId,
+    threadId: params.ctx.MessageThreadId,
+  };
+}
+
+async function sendCodexReplies(params: {
+  commandParams: HandleCommandsParams;
+  sessionKey: string;
+  payloads: ReplyPayload[];
+}): Promise<boolean> {
+  const route = resolveCodexReplyRoute(params.commandParams);
+  if (!route) {
+    return false;
+  }
+  for (const payload of params.payloads) {
+    const result = await routeReply({
+      payload,
+      channel: route.channel,
+      to: route.to,
+      sessionKey: params.sessionKey,
+      accountId: route.accountId,
+      threadId: route.threadId,
+      cfg: params.commandParams.cfg,
+    });
+    if (!result.ok) {
+      throw new Error(result.error ?? "failed to route Codex reply");
+    }
+  }
+  return true;
 }
 
 function resolveStatusText(params: HandleCommandsParams): string {
@@ -667,7 +736,7 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     const threads = await discoverCodexAppServerThreads({
       config: params.cfg,
       sessionKey: params.sessionKey,
-      workspaceDir: params.workspaceDir,
+      workspaceDir: undefined,
       filter: token,
     });
     const selected = pickBestThread(threads, token);
@@ -712,11 +781,44 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     );
     const refreshedEntry =
       params.sessionStore?.[targetSession.sessionKey] ?? targetSession.sessionEntry;
+    const threadReplay = await readCodexAppServerThreadContext({
+      config: params.cfg,
+      sessionKey: params.sessionKey,
+      workspaceDir: selected.projectKey ?? params.workspaceDir,
+      threadId: selected.threadId,
+    }).catch((error) => {
+      logVerbose(`Failed to read Codex thread context for ${selected.threadId}: ${String(error)}`);
+      return {};
+    });
     const pendingReplay = buildPendingInputReplay(refreshedEntry);
+    const payloads: ReplyPayload[] = [
+      {
+        text: ["Codex thread bound.", summarizeThreadBinding(selected)].join("\n\n"),
+        channelData: shouldPinCodexBindingNotice(params) ? { telegram: { pin: true } } : undefined,
+      },
+      ...buildThreadReplayPayloads(threadReplay),
+    ];
+    if (pendingReplay) {
+      payloads.push({
+        text: pendingReplay,
+        channelData: buildPendingInputChannelData(params, refreshedEntry),
+      });
+    }
+    const routed = await sendCodexReplies({
+      commandParams: params,
+      sessionKey: targetSession.sessionKey,
+      payloads,
+    }).catch((error) => {
+      logVerbose(`Failed to route Codex join replay: ${String(error)}`);
+      return false;
+    });
+    if (routed) {
+      return { shouldContinue: false };
+    }
     return {
       shouldContinue: false,
       reply: {
-        text: ["Codex thread bound.", summarizeThread(selected), pendingReplay]
+        text: ["Codex thread bound.", summarizeThreadBinding(selected), pendingReplay]
           .filter(Boolean)
           .join("\n\n"),
         channelData: buildPendingInputChannelData(params, refreshedEntry),

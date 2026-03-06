@@ -113,6 +113,118 @@ describe("buildCodexTelegramOptionButtons", () => {
   });
 });
 
+describe("extractThreadReplayFromReadResult", () => {
+  it("parses userMessage and agentMessage items from thread/read turns", () => {
+    expect(
+      __testing.extractThreadReplayFromReadResult({
+        thread: {
+          id: "thread-1",
+          turns: [
+            {
+              id: "turn-1",
+              items: [
+                {
+                  type: "userMessage",
+                  content: [{ type: "text", text: "Old request" }],
+                },
+                {
+                  type: "agentMessage",
+                  text: "Old response",
+                },
+              ],
+            },
+            {
+              id: "turn-2",
+              items: [
+                {
+                  type: "userMessage",
+                  content: [{ type: "text", text: "Newest request" }],
+                },
+                {
+                  type: "agentMessage",
+                  text: "Newest response",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      lastUserMessage: "Newest request",
+      lastAssistantMessage: "Newest response",
+    });
+  });
+
+  it("returns the most recent user request and assistant reply from a thread read result", () => {
+    const messages = Array.from({ length: 100 }, (_, index) => ({
+      type: "message",
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: [
+        {
+          type: "input_text",
+          text:
+            index === 98
+              ? "Most recent user request"
+              : index === 99
+                ? "Most recent assistant reply"
+                : `Older message ${index}`,
+        },
+      ],
+    }));
+    messages[99] = {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Most recent assistant reply" }],
+    };
+
+    expect(
+      __testing.extractThreadReplayFromReadResult({
+        thread: {
+          id: "thread-1",
+        },
+        items: messages,
+      }),
+    ).toEqual({
+      lastUserMessage: "Most recent user request",
+      lastAssistantMessage: "Most recent assistant reply",
+    });
+  });
+
+  it("ignores earlier conversation text once a later user and assistant pair exists", () => {
+    const replay = __testing.extractThreadReplayFromReadResult({
+      items: [
+        {
+          role: "user",
+          text: "Old request that should not be replayed",
+        },
+        {
+          role: "assistant",
+          text: "Old response that should not be replayed",
+        },
+        {
+          item: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Newest request" }],
+          },
+        },
+        {
+          item: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Newest response" }],
+          },
+        },
+      ],
+    });
+
+    expect(replay.lastUserMessage).toBe("Newest request");
+    expect(replay.lastAssistantMessage).toBe("Newest response");
+    expect(replay.lastUserMessage).not.toContain("Old request");
+    expect(replay.lastAssistantMessage).not.toContain("Old response");
+  });
+});
+
 describe("mapPendingInputResponse", () => {
   it("maps approval text to the expected Codex decision", () => {
     expect(__testing.resolveApprovalDecisionFromText("Approve for this session", true)).toBe(
