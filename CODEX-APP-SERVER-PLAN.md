@@ -156,7 +156,7 @@ This plan defines a new Codex App Server integration that follows the `/acp` mod
 
 ### Phase 1: ACP-Parity Core For Telegram
 
-Current status: functionally complete for the current Phase 1 scope. The command surface, runner foundation, deterministic `/codex list`, startup readiness probe, shared session-binding integration, pending-input persistence, stale-pending startup reconcile, Telegram option-button relay, join/status replay, startup binding reconcile, and Telegram workflow docs now exist. The remaining unchecked item is the broad tests-first bookkeeping line.
+Current status: functionally complete for the current Phase 1 scope. The command surface, runner foundation, deterministic `/codex list`, startup readiness probe, shared session-binding integration, pending-input persistence, stale-pending startup reconcile, Telegram option-button relay, join/status replay, startup binding reconcile, Telegram workflow docs, approval-response mapping tests, and active-run free-form reply routing tests now exist. The remaining unchecked item is the historical tests-first bookkeeping line rather than a known behavior gap.
 
 - [x] Before coding, identify the exact ACP integration points to mirror for targeting, binding, relay, and status.
 - [ ] Write or update unit tests first where the interface is already clear:
