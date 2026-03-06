@@ -428,10 +428,19 @@ function isInteractiveServerRequest(method: string): boolean {
   return normalized.includes("requestuserinput") || normalized.includes("requestapproval");
 }
 
-function isMethodUnavailableError(error: unknown): boolean {
+function isMethodUnavailableError(error: unknown, method?: string): boolean {
   const text = error instanceof Error ? error.message : String(error);
   const normalized = text.toLowerCase();
-  return normalized.includes("method not found") || normalized.includes("unknown method");
+  if (normalized.includes("method not found") || normalized.includes("unknown method")) {
+    return true;
+  }
+  if (!normalized.includes("unknown variant")) {
+    return false;
+  }
+  if (!method) {
+    return true;
+  }
+  return normalized.includes(`unknown variant \`${method.toLowerCase()}\``);
 }
 
 class WsJsonRpcClient implements JsonRpcClient {
@@ -748,11 +757,17 @@ async function initializeCodexAppServerClient(params: {
   });
   await params.client.notify("initialized", {});
   if (params.sessionKey || params.workspaceDir) {
-    await params.client.request("session/update", {
-      sessionKey: params.sessionKey ?? "openclaw",
-      session_key: params.sessionKey ?? "openclaw",
-      cwd: params.workspaceDir,
-    });
+    await params.client
+      .request("session/update", {
+        sessionKey: params.sessionKey ?? "openclaw",
+        session_key: params.sessionKey ?? "openclaw",
+        cwd: params.workspaceDir,
+      })
+      .catch((error) => {
+        if (!isMethodUnavailableError(error, "session/update")) {
+          throw error;
+        }
+      });
   }
 }
 
@@ -769,7 +784,7 @@ async function requestWithFallbacks(params: {
         return await params.client.request(method, payload, params.timeoutMs);
       } catch (error) {
         lastError = error;
-        if (!isMethodUnavailableError(error)) {
+        if (!isMethodUnavailableError(error, method)) {
           continue;
         }
       }
@@ -1244,3 +1259,7 @@ export async function runCodexAppServerAgent(
     await client.close().catch(() => undefined);
   }
 }
+
+export const __testing = {
+  isMethodUnavailableError,
+};

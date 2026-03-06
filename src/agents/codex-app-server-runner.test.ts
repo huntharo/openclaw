@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isCodexAppServerProvider, parseCodexUserInput } from "./codex-app-server-runner.js";
+import {
+  __testing,
+  isCodexAppServerProvider,
+  parseCodexUserInput,
+} from "./codex-app-server-runner.js";
 
 describe("parseCodexUserInput", () => {
   it("parses numeric option choices", () => {
@@ -28,6 +32,30 @@ describe("isCodexAppServerProvider", () => {
       isCodexAppServerProvider("codex-app-server", {
         agents: { defaults: { codexAppServer: { enabled: false } } },
       }),
+    ).toBe(false);
+  });
+});
+
+describe("isMethodUnavailableError", () => {
+  it("recognizes unknown variant errors for the matching rpc method", () => {
+    expect(
+      __testing.isMethodUnavailableError(
+        new Error(
+          "codex app server rpc error (-32600): Invalid request: unknown variant `session/update`",
+        ),
+        "session/update",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat other unknown variant errors as the same rpc method", () => {
+    expect(
+      __testing.isMethodUnavailableError(
+        new Error(
+          "codex app server rpc error (-32600): Invalid request: unknown variant `thread/list`",
+        ),
+        "session/update",
+      ),
     ).toBe(false);
   });
 });
