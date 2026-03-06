@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   __testing,
   isCodexAppServerProvider,
@@ -110,6 +110,192 @@ describe("buildCodexTelegramOptionButtons", () => {
       ],
       [{ text: "3. Cancel", callback_data: "3" }],
     ]);
+  });
+});
+
+describe("mergeAssistantReplyAndEmit", () => {
+  it("emits cumulative preview text for snapshot-style partials", async () => {
+    const onPartialReply = vi.fn();
+
+    let assistantText = "";
+    assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText,
+      incomingText: "Cod",
+      onPartialReply,
+    });
+    assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText,
+      incomingText: "Codex",
+      onPartialReply,
+    });
+    assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText,
+      incomingText: "Codex. I'm your workspace AI engineer.",
+      onPartialReply,
+    });
+
+    expect(assistantText).toBe("Codex. I'm your workspace AI engineer.");
+    expect(onPartialReply).toHaveBeenNthCalledWith(1, { text: "Cod" });
+    expect(onPartialReply).toHaveBeenNthCalledWith(2, { text: "Codex" });
+    expect(onPartialReply).toHaveBeenNthCalledWith(3, {
+      text: "Codex. I'm your workspace AI engineer.",
+    });
+  });
+
+  it("preserves token spacing when Codex streams raw deltas", async () => {
+    const onPartialReply = vi.fn();
+
+    let assistantText = "";
+    assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText,
+      incomingText: "Cod",
+      onPartialReply,
+    });
+    assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText,
+      incomingText: "ex",
+      onPartialReply,
+    });
+    assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText,
+      incomingText: ". Your",
+      onPartialReply,
+    });
+    assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText,
+      incomingText: " pragmatic AI dev partner in this workspace.",
+      onPartialReply,
+    });
+
+    expect(assistantText).toBe("Codex. Your pragmatic AI dev partner in this workspace.");
+    expect(onPartialReply).toHaveBeenNthCalledWith(1, { text: "Cod" });
+    expect(onPartialReply).toHaveBeenNthCalledWith(2, { text: "Codex" });
+    expect(onPartialReply).toHaveBeenNthCalledWith(3, {
+      text: "Codex. Your",
+    });
+    expect(onPartialReply).toHaveBeenNthCalledWith(4, {
+      text: "Codex. Your pragmatic AI dev partner in this workspace.",
+    });
+  });
+
+  it("does not re-emit when the incoming text is already contained in the preview", async () => {
+    const onPartialReply = vi.fn();
+
+    const assistantText = await __testing.mergeAssistantReplyAndEmit({
+      assistantText: "Codex. I'm your workspace AI engineer.",
+      incomingText: "Codex",
+      onPartialReply,
+    });
+
+    expect(assistantText).toBe("Codex. I'm your workspace AI engineer.");
+    expect(onPartialReply).not.toHaveBeenCalled();
+  });
+});
+
+describe("collectStreamingText", () => {
+  it("prefers raw delta text without trimming token whitespace", () => {
+    expect(
+      __testing.collectStreamingText({
+        item: {
+          delta: " pragmatic",
+          text: "ignored full snapshot",
+        },
+      }),
+    ).toBe(" pragmatic");
+  });
+
+  it("can surface prompt text from turn-start style payloads, so callers must not use it for assistant previews", () => {
+    expect(
+      __testing.collectStreamingText({
+        threadId: "thread-1",
+        turnId: "turn-1",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Who are you?" }],
+          },
+        ],
+      }),
+    ).toBe("Who are you?");
+  });
+});
+
+describe("extractAssistantNotificationText", () => {
+  it("extracts streamed assistant text from agentMessage delta notifications", () => {
+    expect(
+      __testing.extractAssistantNotificationText("item/agentMessage/delta", {
+        item: {
+          type: "agentMessage",
+          delta: " in this workspace.",
+        },
+      }),
+    ).toEqual({
+      mode: "delta",
+      text: " in this workspace.",
+    });
+  });
+
+  it("extracts completed assistant snapshots from item/completed notifications", () => {
+    expect(
+      __testing.extractAssistantNotificationText("item/completed", {
+        item: {
+          type: "agentMessage",
+          text: "Codex. I'm your AI engineering assistant in this workspace.",
+        },
+      }),
+    ).toEqual({
+      mode: "snapshot",
+      text: "Codex. I'm your AI engineering assistant in this workspace.",
+    });
+  });
+
+  it("ignores userMessage item notifications", () => {
+    expect(
+      __testing.extractAssistantNotificationText("item/completed", {
+        item: {
+          type: "userMessage",
+          text: "Who are you?",
+        },
+      }),
+    ).toEqual({
+      mode: "snapshot",
+      text: "",
+    });
+  });
+
+  it("ignores generic turn payloads that can echo prompt input", () => {
+    expect(
+      __testing.extractAssistantNotificationText("turn/updated", {
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Who are you?" }],
+          },
+        ],
+        turn: {
+          id: "turn-1",
+        },
+      }),
+    ).toEqual({
+      mode: "ignore",
+      text: "",
+    });
+  });
+
+  it("ignores item/started payloads so early snapshots do not duplicate streamed text", () => {
+    expect(
+      __testing.extractAssistantNotificationText("item/started", {
+        item: {
+          type: "agentMessage",
+          text: "I’m checking your recent workspace memory notes...",
+        },
+      }),
+    ).toEqual({
+      mode: "ignore",
+      text: "",
+    });
   });
 });
 

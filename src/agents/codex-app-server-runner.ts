@@ -212,6 +212,33 @@ function collectText(value: unknown): string[] {
   return out;
 }
 
+function collectStreamingText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => collectStreamingText(entry)).join("");
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return "";
+  }
+
+  for (const key of ["delta", "text", "content", "message", "input", "output", "parts"]) {
+    const direct = collectStreamingText(record[key]);
+    if (direct) {
+      return direct;
+    }
+  }
+  for (const nestedKey of ["item", "turn", "thread", "response", "result", "data"]) {
+    const nested = collectStreamingText(record[nestedKey]);
+    if (nested) {
+      return nested;
+    }
+  }
+  return "";
+}
+
 function dedupeJoinedText(chunks: string[]): string {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -246,24 +273,78 @@ function extractIds(value: unknown): { threadId?: string; runId?: string; reques
 }
 
 function mergeAssistantText(existing: string, incoming: string): { next: string; delta: string } {
-  const nextChunk = incoming.trim();
-  if (!nextChunk) {
+  if (!incoming.trim()) {
     return { next: existing, delta: "" };
   }
+  const nextChunk = incoming;
   if (!existing) {
-    return { next: nextChunk, delta: nextChunk };
+    return { next: nextChunk.trimStart(), delta: nextChunk.trimStart() };
   }
   if (nextChunk.startsWith(existing)) {
-    return { next: nextChunk, delta: nextChunk.slice(existing.length).trimStart() };
+    return { next: nextChunk, delta: nextChunk.slice(existing.length) };
   }
   if (existing.includes(nextChunk)) {
     return { next: existing, delta: "" };
   }
-  const separator = existing.endsWith("\n") ? "" : "\n\n";
   return {
-    next: `${existing}${separator}${nextChunk}`,
-    delta: `${separator}${nextChunk}`.trimStart(),
+    next: `${existing}${nextChunk}`,
+    delta: nextChunk,
   };
+}
+
+async function mergeAssistantReplyAndEmit(params: {
+  assistantText: string;
+  incomingText: string;
+  onPartialReply?: (payload: { text?: string }) => Promise<void> | void;
+}): Promise<string> {
+  const merged = mergeAssistantText(params.assistantText, params.incomingText);
+  if (merged.next !== params.assistantText) {
+    await params.onPartialReply?.({ text: merged.next });
+  }
+  return merged.next;
+}
+
+function extractAssistantTextFromItemPayload(
+  value: unknown,
+  options?: { streaming?: boolean },
+): string {
+  const record = asRecord(value);
+  if (!record) {
+    return "";
+  }
+  const item = asRecord(record.item) ?? record;
+  const itemType = pickString(item, ["type"])?.toLowerCase();
+  if (itemType !== "agentmessage") {
+    return "";
+  }
+  return options?.streaming
+    ? collectStreamingText(item)
+    : (pickString(item, ["text"], { trim: false }) ?? collectStreamingText(item));
+}
+
+type AssistantNotificationText = {
+  mode: "delta" | "snapshot" | "ignore";
+  text: string;
+};
+
+function extractAssistantNotificationText(
+  method: string,
+  params: unknown,
+): AssistantNotificationText {
+  const methodLower = method.trim().toLowerCase();
+  if (methodLower === "item/agentmessage/delta") {
+    return {
+      mode: "delta",
+      text: collectStreamingText(params),
+    };
+  }
+  if (methodLower === "item/completed") {
+    return {
+      mode: "snapshot",
+      text: extractAssistantTextFromItemPayload(params),
+    };
+  }
+  return { mode: "ignore", text: "" };
 }
 
 function extractOptionValues(value: unknown): string[] {
@@ -1260,12 +1341,18 @@ export async function runCodexAppServerAgent(
       return;
     }
 
-    const notificationText = dedupeJoinedText(collectText(notificationParams));
-    if (notificationText) {
-      const merged = mergeAssistantText(assistantText, notificationText);
-      assistantText = merged.next;
-      if (merged.delta) {
-        await params.onPartialReply?.({ text: merged.delta });
+    const assistantNotification = extractAssistantNotificationText(methodLower, notificationParams);
+    if (assistantNotification.mode === "delta" && assistantNotification.text) {
+      assistantText = await mergeAssistantReplyAndEmit({
+        assistantText,
+        incomingText: assistantNotification.text,
+        onPartialReply: params.onPartialReply,
+      });
+    } else if (assistantNotification.mode === "snapshot" && assistantNotification.text) {
+      const snapshotText = assistantNotification.text.trim();
+      if (snapshotText && snapshotText !== assistantText) {
+        assistantText = snapshotText;
+        await params.onPartialReply?.({ text: assistantText });
       }
     }
 
@@ -1401,14 +1488,8 @@ export async function runCodexAppServerAgent(
     const startedIds = extractIds(started);
     threadId ||= startedIds.threadId ?? "";
     turnId ||= startedIds.runId ?? "";
-    const startText = dedupeJoinedText(collectText(started));
-    if (startText) {
-      const merged = mergeAssistantText(assistantText, startText);
-      assistantText = merged.next;
-      if (merged.delta) {
-        await params.onPartialReply?.({ text: merged.delta });
-      }
-    }
+    // `turn/start` responses can echo request input and metadata; assistant text
+    // should come from turn lifecycle notifications instead.
 
     await Promise.race([
       completion,
@@ -1444,8 +1525,11 @@ export async function runCodexAppServerAgent(
 export const __testing = {
   applyThreadFilter,
   buildCodexTelegramOptionButtons,
+  collectStreamingText,
+  extractAssistantNotificationText,
   extractThreadReplayFromReadResult,
   isMethodUnavailableError,
+  mergeAssistantReplyAndEmit,
   mapPendingInputResponse,
   resolveApprovalDecisionFromText,
 };
