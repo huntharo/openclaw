@@ -81,6 +81,11 @@ describe("createTelegramBot", () => {
         delete store[key];
       }
     });
+    await updateSessionStore(resolveStorePath(undefined, { agentId: "pwrdrvr" }), (store) => {
+      for (const key of Object.keys(store)) {
+        delete store[key];
+      }
+    });
     sessionBindingServiceMock.resolveByConversation.mockReset().mockReturnValue(null);
     sessionBindingServiceMock.touch.mockReset();
     submitAgentRunPendingInputBySessionKeyMock.mockReset().mockReturnValue(true);
@@ -511,7 +516,7 @@ describe("createTelegramBot", () => {
     onSpy.mockClear();
     sendMessageSpy.mockClear();
     editMessageReplyMarkupSpy.mockClear();
-    const storePath = resolveStorePath();
+    const storePath = resolveStorePath(undefined, { agentId: "pwrdrvr" });
     await updateSessionStore(storePath, (store) => {
       store["agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364"] = {
         sessionId: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
@@ -586,7 +591,7 @@ describe("createTelegramBot", () => {
     onSpy.mockClear();
     sendMessageSpy.mockClear();
     editMessageReplyMarkupSpy.mockClear();
-    const storePath = resolveStorePath();
+    const storePath = resolveStorePath(undefined, { agentId: "pwrdrvr" });
     await updateSessionStore(storePath, (store) => {
       store["agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364"] = {
         sessionId: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",

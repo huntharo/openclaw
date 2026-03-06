@@ -1,5 +1,9 @@
 import type { Message, ReactionTypeEmoji } from "@grammyjs/types";
-import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import {
+  resolveAgentDir,
+  resolveAgentIdFromSessionKey,
+  resolveDefaultAgentId,
+} from "../agents/agent-scope.js";
 import {
   matchesCodexPendingInputRequestToken,
   parseCodexPendingInputCallbackData,
@@ -1374,7 +1378,9 @@ export const registerTelegramHandlers = ({
         if (binding?.bindingId) {
           getSessionBindingService().touch(binding.bindingId);
         }
-        const storePath = resolveStorePath();
+        const storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
         const sessionStore = loadSessionStore(storePath);
         const pendingEntry = sessionStore[targetSessionKey];
         const requestId = pendingEntry?.pendingUserInputRequestId?.trim();

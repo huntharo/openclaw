@@ -450,7 +450,7 @@ describe("mapPendingInputResponse", () => {
         ],
         timedOut: false,
       }),
-    ).toEqual({ decision: "acceptForSession" });
+    ).toBe("acceptForSession");
   });
 
   it("maps timed-out approvals to cancel", () => {
@@ -466,7 +466,7 @@ describe("mapPendingInputResponse", () => {
         ],
         timedOut: true,
       }),
-    ).toEqual({ decision: "cancel" });
+    ).toBe("cancel");
   });
 
   it("maps tool request user input selections into answer payloads", () => {

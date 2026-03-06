@@ -527,10 +527,10 @@ function mapPendingInputResponse(params: {
   }
   if (methodLower.includes("requestapproval")) {
     if (timedOut) {
-      return { decision: "cancel" };
+      return "cancel";
     }
     const selected = pickPendingSelectionText(response, options, actions);
-    return { decision: selected || "decline" };
+    return selected || "decline";
   }
   if (timedOut) {
     return { cancelled: true, reason: "timeout" };

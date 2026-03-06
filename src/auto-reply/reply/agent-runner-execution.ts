@@ -228,12 +228,10 @@ export async function runAgentTurnWithFallback(params: {
               let lifecycleTerminalEmitted = false;
               try {
                 const activeSessionEntry = params.getActiveSessionEntry();
-                const workspaceDir = params.followupRun.run.workspaceDir;
-                const existingThreadId =
-                  activeSessionEntry?.codexProjectKey &&
-                  activeSessionEntry.codexProjectKey !== workspaceDir
-                    ? undefined
-                    : activeSessionEntry?.codexThreadId;
+                const workspaceDir =
+                  activeSessionEntry?.codexProjectKey?.trim() ||
+                  params.followupRun.run.workspaceDir;
+                const existingThreadId = activeSessionEntry?.codexThreadId;
                 const result = await runCodexAppServerAgent({
                   sessionId: params.followupRun.run.sessionId,
                   sessionKey: params.sessionKey,
