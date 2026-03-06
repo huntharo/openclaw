@@ -930,8 +930,10 @@ export async function runPreparedReply(
   const effectiveBaseBodyBase = baseBodyTrimmed
     ? baseBodyForPrompt
     : "[User sent media without caption]";
+  const codexBodyBase = baseBodyFinal.trim() ? baseBodyFinal : "[User sent media without caption]";
   if (!codexCommandPrompt && shouldAutoRouteToCodex) {
-    codexCommandPrompt = effectiveBaseBodyBase;
+    // For bound Codex turns, send only the user body text (no inbound metadata preamble).
+    codexCommandPrompt = codexBodyBase;
   }
   let effectiveBaseBody = codexCommandPrompt ?? effectiveBaseBodyBase;
   let prefixedBodyBase = await applySessionHints({
@@ -1567,10 +1569,6 @@ export async function runPreparedReply(
         minEmitChars: 320,
         maxEmitChars: 1_600,
         minEmitIntervalMs: 5_000,
-      });
-      await opts?.onToolResult?.({
-        text: "Running Codex App Server...",
-        channelData: { forceToolSummary: true },
       });
       const existingThreadId =
         sessionEntry?.codexProjectKey && sessionEntry.codexProjectKey !== codexWorkspaceDir

@@ -2616,9 +2616,6 @@ export async function runCodexAppServerAgent(
       turnId: turnId ?? null,
       status: startStatus ?? "unknown",
     });
-    await params.onToolResult?.({
-      text: `Codex turn started${threadId ? ` (thread ${threadId})` : ""}.`,
-    });
     if (startStatus && startStatus !== "inprogress") {
       completeTurn();
     }

@@ -596,8 +596,8 @@ describe("runPreparedReply media-only handling", () => {
     );
 
     expect(result).toEqual({ text: "ok" });
-    expect(delivered[0]?.text).toBe("Running Codex App Server...");
-    expect(delivered[1]?.text).toContain("Checking npm registry");
+    expect(delivered.some((entry) => entry.text === "Running Codex App Server...")).toBe(false);
+    expect(delivered.some((entry) => entry.text?.includes("Checking npm registry"))).toBe(true);
     const promptPayload = delivered.find((entry) => entry.text?.includes("Agent input requested"));
     expect(promptPayload?.text).toContain("Agent input requested");
     expect(promptPayload?.channelData).toMatchObject({
@@ -663,7 +663,7 @@ describe("runPreparedReply media-only handling", () => {
       const result = await replyPromise;
 
       expect(result).toEqual({ text: "ok" });
-      expect(delivered[0]).toBe("Running Codex App Server...");
+      expect(delivered.includes("Running Codex App Server...")).toBe(false);
       expect(delivered.some((entry) => entry.includes("Checking npm registry"))).toBe(true);
     } finally {
       vi.useRealTimers();
@@ -1008,6 +1008,8 @@ describe("runPreparedReply media-only handling", () => {
     expect(vi.mocked(runCodexAppServerAgent)).toHaveBeenCalledTimes(1);
     const codexCall = vi.mocked(runCodexAppServerAgent).mock.calls[0]?.[0];
     expect(codexCall?.prompt).toContain("Who are you?");
+    expect(codexCall?.prompt).not.toContain("Conversation info (untrusted metadata):");
+    expect(codexCall?.prompt).not.toContain("Sender (untrusted metadata):");
     expect(codexCall?.workspaceDir).toBe("/tmp/codex-project");
     expect(codexCall?.existingThreadId).toBe("thread-abc");
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
