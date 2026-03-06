@@ -1,6 +1,9 @@
 import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { ACP_SESSION_IDENTITY_RENDERER_VERSION } from "../acp/runtime/session-identifiers.js";
-import { initializeCodexAppServerRuntime } from "../agents/codex-app-server-startup.js";
+import {
+  initializeCodexAppServerRuntime,
+  reconcileCodexPendingInputsOnStartup,
+} from "../agents/codex-app-server-startup.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { loadModelCatalog } from "../agents/model-catalog.js";
 import {
@@ -185,6 +188,21 @@ export async function startGatewaySidecars(params: {
   }).catch((err) => {
     params.logAgents.warn(`codex app server runtime setup failed: ${String(err)}`);
   });
+
+  void reconcileCodexPendingInputsOnStartup({
+    cfg: params.cfg,
+  })
+    .then((result) => {
+      if (result.checked === 0) {
+        return;
+      }
+      params.log.warn(
+        `codex startup pending-input reconcile: checked=${result.checked} cleared=${result.cleared} failed=${result.failed}`,
+      );
+    })
+    .catch((err) => {
+      params.log.warn(`codex startup pending-input reconcile failed: ${String(err)}`);
+    });
 
   void startGatewayMemoryBackend({ cfg: params.cfg, log: params.log }).catch((err) => {
     params.log.warn(`qmd memory startup initialization failed: ${String(err)}`);

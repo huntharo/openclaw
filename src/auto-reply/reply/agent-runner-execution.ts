@@ -258,7 +258,11 @@ export async function runAgentTurnWithFallback(params: {
                   },
                   onToolResult: async (payload) => {
                     const text = payload.text?.trim();
-                    if (!text) {
+                    const hasChannelData =
+                      payload.channelData != null &&
+                      typeof payload.channelData === "object" &&
+                      Object.keys(payload.channelData).length > 0;
+                    if (!text && !hasChannelData) {
                       return;
                     }
                     emitAgentEvent({
@@ -269,7 +273,10 @@ export async function runAgentTurnWithFallback(params: {
                         text,
                       },
                     });
-                    await params.opts?.onToolResult?.({ text });
+                    await params.opts?.onToolResult?.({
+                      ...payload,
+                      text,
+                    });
                   },
                   onPendingUserInput: async (pending) => {
                     const pendingSessionKey = params.sessionKey;
@@ -281,6 +288,8 @@ export async function runAgentTurnWithFallback(params: {
                         entry.pendingUserInputRequestId = pending?.requestId;
                         entry.pendingUserInputOptions = pending?.options;
                         entry.pendingUserInputExpiresAt = pending?.expiresAt;
+                        entry.pendingUserInputPromptText = pending?.promptText;
+                        entry.pendingUserInputMethod = pending?.method;
                         entry.updatedAt = Date.now();
                         params.activeSessionStore[pendingSessionKey] = entry;
                       }
@@ -297,6 +306,8 @@ export async function runAgentTurnWithFallback(params: {
                         entry.pendingUserInputRequestId = pending?.requestId;
                         entry.pendingUserInputOptions = pending?.options;
                         entry.pendingUserInputExpiresAt = pending?.expiresAt;
+                        entry.pendingUserInputPromptText = pending?.promptText;
+                        entry.pendingUserInputMethod = pending?.method;
                         entry.updatedAt = Date.now();
                         store[pendingSessionKey] = entry;
                       });

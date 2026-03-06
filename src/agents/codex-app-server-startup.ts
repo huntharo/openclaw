@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
 import type { OpenClawConfig } from "../config/config.js";
+import { updateSessionStore } from "../config/sessions.js";
+import {
+  loadCombinedSessionStoreForGateway,
+  resolveGatewaySessionStoreTarget,
+} from "../gateway/session-utils.js";
 import {
   resolveCodexAppServerSettings,
   type CodexAppServerSettings,
@@ -16,6 +21,12 @@ export type CodexAppServerRuntimeStatus = {
   command?: string;
   url?: string;
   error?: string;
+};
+
+export type CodexPendingInputReconcileResult = {
+  checked: number;
+  cleared: number;
+  failed: number;
 };
 
 let runtimeStatus: CodexAppServerRuntimeStatus = {
@@ -171,6 +182,75 @@ export function getCodexAppServerAvailabilityError(cfg?: OpenClawConfig): string
   }
 
   return `Codex App Server runtime is unavailable: ${status.error ?? "startup probe failed"}`;
+}
+
+function hasPendingCodexInput(entry: Record<string, unknown> | undefined): boolean {
+  const requestId =
+    typeof entry?.pendingUserInputRequestId === "string"
+      ? entry.pendingUserInputRequestId.trim()
+      : "";
+  return requestId.length > 0;
+}
+
+function isPendingCodexInputExpired(
+  entry: Record<string, unknown> | undefined,
+  now: number,
+): boolean {
+  if (!hasPendingCodexInput(entry)) {
+    return false;
+  }
+  return (
+    typeof entry?.pendingUserInputExpiresAt === "number" && entry.pendingUserInputExpiresAt <= now
+  );
+}
+
+export async function reconcileCodexPendingInputsOnStartup(params: {
+  cfg: OpenClawConfig;
+}): Promise<CodexPendingInputReconcileResult> {
+  const now = Date.now();
+  const { store } = loadCombinedSessionStoreForGateway(params.cfg);
+  const pendingKeys = Object.entries(store)
+    .filter(([, entry]) => hasPendingCodexInput(entry as Record<string, unknown>))
+    .map(([key]) => key);
+
+  let cleared = 0;
+  let failed = 0;
+  for (const key of pendingKeys) {
+    const target = resolveGatewaySessionStoreTarget({ cfg: params.cfg, key });
+    try {
+      await updateSessionStore(target.storePath, (nextStore) => {
+        const liveTarget = resolveGatewaySessionStoreTarget({
+          cfg: params.cfg,
+          key,
+          store: nextStore,
+        });
+        const storeKey =
+          [liveTarget.canonicalKey, ...liveTarget.storeKeys].find(
+            (candidate) => nextStore[candidate],
+          ) ?? liveTarget.canonicalKey;
+        const entry = nextStore[storeKey];
+        if (!entry || !isPendingCodexInputExpired(entry as Record<string, unknown>, now)) {
+          return;
+        }
+        entry.pendingUserInputRequestId = undefined;
+        entry.pendingUserInputOptions = undefined;
+        entry.pendingUserInputExpiresAt = undefined;
+        entry.pendingUserInputPromptText = undefined;
+        entry.pendingUserInputMethod = undefined;
+        entry.updatedAt = now;
+        nextStore[storeKey] = entry;
+        cleared += 1;
+      });
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return {
+    checked: pendingKeys.length,
+    cleared,
+    failed,
+  };
 }
 
 export const __testing = {

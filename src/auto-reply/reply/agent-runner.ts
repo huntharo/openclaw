@@ -485,6 +485,8 @@ export async function runReplyAgent(params: {
         activeSessionEntry.pendingUserInputRequestId = undefined;
         activeSessionEntry.pendingUserInputOptions = undefined;
         activeSessionEntry.pendingUserInputExpiresAt = undefined;
+        activeSessionEntry.pendingUserInputPromptText = undefined;
+        activeSessionEntry.pendingUserInputMethod = undefined;
         activeSessionEntry.updatedAt = Date.now();
       }
       if (sessionKey && activeSessionEntry && activeSessionStore) {
@@ -502,6 +504,8 @@ export async function runReplyAgent(params: {
             pendingUserInputRequestId: undefined,
             pendingUserInputOptions: undefined,
             pendingUserInputExpiresAt: undefined,
+            pendingUserInputPromptText: undefined,
+            pendingUserInputMethod: undefined,
           }),
         });
       }

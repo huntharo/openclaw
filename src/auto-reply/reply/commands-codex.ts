@@ -17,7 +17,7 @@ import {
   resolveThreadBindingIdleTimeoutMsForChannel,
   resolveThreadBindingMaxAgeMsForChannel,
 } from "../../channels/thread-bindings-policy.js";
-import { updateSessionStore } from "../../config/sessions.js";
+import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
@@ -40,6 +40,8 @@ type SessionMutation = {
   pendingUserInputRequestId?: string;
   pendingUserInputOptions?: string[];
   pendingUserInputExpiresAt?: number;
+  pendingUserInputPromptText?: string;
+  pendingUserInputMethod?: string;
 };
 
 type CodexTargetSession = {
@@ -87,6 +89,70 @@ function resolveHelpText(): string {
     "/codex detach",
     "/codex list [filter]",
   ].join("\n");
+}
+
+function buildCodexTelegramButtons(
+  options: string[] | undefined,
+): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
+  const trimmed = options?.map((option) => option.trim()).filter(Boolean) ?? [];
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (let index = 0; index < trimmed.length; index += 2) {
+    rows.push(
+      trimmed.slice(index, index + 2).map((option, offset) => {
+        const ordinal = index + offset + 1;
+        return {
+          text: `${ordinal}. ${option}`,
+          callback_data: String(ordinal),
+        };
+      }),
+    );
+  }
+  return rows;
+}
+
+function buildPendingInputReplay(entry: HandleCommandsParams["sessionEntry"]): string | undefined {
+  const requestId = entry?.pendingUserInputRequestId?.trim();
+  if (!requestId) {
+    return undefined;
+  }
+  const lines = [`Pending Codex input: ${requestId}`];
+  const promptText = entry?.pendingUserInputPromptText?.trim();
+  if (promptText) {
+    lines.push(promptText);
+  }
+  const options = entry?.pendingUserInputOptions?.filter(Boolean) ?? [];
+  if (options.length > 0) {
+    lines.push("", "Options:");
+    options.forEach((option, index) => {
+      lines.push(`${index + 1}. ${option}`);
+    });
+  }
+  if (typeof entry?.pendingUserInputExpiresAt === "number") {
+    const seconds = Math.max(0, Math.round((entry.pendingUserInputExpiresAt - Date.now()) / 1000));
+    lines.push(`Expires in: ${seconds}s`);
+  }
+  return lines.join("\n");
+}
+
+function buildPendingInputChannelData(
+  params: HandleCommandsParams,
+  entry: HandleCommandsParams["sessionEntry"],
+): Record<string, unknown> | undefined {
+  if (params.command.surface !== "telegram") {
+    return undefined;
+  }
+  const buttons = buildCodexTelegramButtons(entry?.pendingUserInputOptions);
+  if (!buttons) {
+    return undefined;
+  }
+  return {
+    telegram: {
+      buttons,
+    },
+  };
 }
 
 function resolveAction(tokens: string[]): CodexAction {
@@ -185,6 +251,22 @@ async function updateCodexSession(
   }
 }
 
+function resolveStoredSessionEntry(
+  params: HandleCommandsParams,
+  sessionKey: string,
+): HandleCommandsParams["sessionEntry"] | undefined {
+  const fromMemory =
+    params.sessionStore?.[sessionKey] ??
+    (sessionKey === params.sessionKey ? params.sessionEntry : undefined);
+  if (fromMemory) {
+    return fromMemory;
+  }
+  if (!params.storePath) {
+    return undefined;
+  }
+  return loadSessionStore(params.storePath)[sessionKey];
+}
+
 function applyCommandTargetSession(params: HandleCommandsParams, sessionKey: string): void {
   params.sessionKey = sessionKey;
   const mutableCtx = params.ctx as Record<string, unknown>;
@@ -249,11 +331,7 @@ async function ensureCodexBoundSession(params: {
     agentId:
       params.commandParams.agentId ?? resolveAgentIdFromSessionKey(params.commandParams.sessionKey),
   });
-  const existingEntry =
-    params.commandParams.sessionStore?.[targetSessionKey] ??
-    (targetSessionKey === params.commandParams.sessionKey
-      ? params.commandParams.sessionEntry
-      : undefined);
+  const existingEntry = resolveStoredSessionEntry(params.commandParams, targetSessionKey);
   const wasCurrentSession = targetSessionKey === params.commandParams.sessionKey;
 
   const bindingService = getSessionBindingService();
@@ -421,6 +499,9 @@ function resolveStatusText(params: HandleCommandsParams): string {
   if (entry?.pendingUserInputRequestId) {
     lines.push(`Pending input: ${entry.pendingUserInputRequestId}`);
   }
+  if (entry?.pendingUserInputPromptText) {
+    lines.push(entry.pendingUserInputPromptText);
+  }
   lines.push(`Session: ${params.sessionKey}`);
   return lines.join("\n");
 }
@@ -462,7 +543,13 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
   }
 
   if (action === "status") {
-    return stopWithText(resolveStatusText(params));
+    return {
+      shouldContinue: false,
+      reply: {
+        text: resolveStatusText(params),
+        channelData: buildPendingInputChannelData(params, params.sessionEntry),
+      },
+    };
   }
 
   if (action === "detach") {
@@ -473,6 +560,8 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
       pendingUserInputRequestId: undefined,
       pendingUserInputOptions: undefined,
       pendingUserInputExpiresAt: undefined,
+      pendingUserInputPromptText: undefined,
+      pendingUserInputMethod: undefined,
     });
     return stopWithText(
       "Codex detached from this conversation. The remote thread was left intact.",
@@ -506,6 +595,8 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
         pendingUserInputRequestId: undefined,
         pendingUserInputOptions: undefined,
         pendingUserInputExpiresAt: undefined,
+        pendingUserInputPromptText: undefined,
+        pendingUserInputMethod: undefined,
       },
       targetSession.sessionKey,
     );
@@ -590,6 +681,10 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     if ("error" in targetSession) {
       return stopWithText(`⚠️ ${targetSession.error}`);
     }
+    const existingPendingEntry = targetSession.sessionEntry;
+    const shouldPreservePendingReplay =
+      existingPendingEntry?.codexThreadId?.trim() === selected.threadId &&
+      Boolean(existingPendingEntry?.pendingUserInputRequestId?.trim());
     await updateCodexSession(
       params,
       {
@@ -597,13 +692,36 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
         codexThreadId: selected.threadId,
         codexProjectKey: selected.projectKey ?? params.workspaceDir,
         codexAutoRoute: true,
-        pendingUserInputRequestId: undefined,
-        pendingUserInputOptions: undefined,
-        pendingUserInputExpiresAt: undefined,
+        pendingUserInputRequestId: shouldPreservePendingReplay
+          ? existingPendingEntry?.pendingUserInputRequestId
+          : undefined,
+        pendingUserInputOptions: shouldPreservePendingReplay
+          ? existingPendingEntry?.pendingUserInputOptions
+          : undefined,
+        pendingUserInputExpiresAt: shouldPreservePendingReplay
+          ? existingPendingEntry?.pendingUserInputExpiresAt
+          : undefined,
+        pendingUserInputPromptText: shouldPreservePendingReplay
+          ? existingPendingEntry?.pendingUserInputPromptText
+          : undefined,
+        pendingUserInputMethod: shouldPreservePendingReplay
+          ? existingPendingEntry?.pendingUserInputMethod
+          : undefined,
       },
       targetSession.sessionKey,
     );
-    return stopWithText(`Codex thread bound.\n${summarizeThread(selected)}`);
+    const refreshedEntry =
+      params.sessionStore?.[targetSession.sessionKey] ?? targetSession.sessionEntry;
+    const pendingReplay = buildPendingInputReplay(refreshedEntry);
+    return {
+      shouldContinue: false,
+      reply: {
+        text: ["Codex thread bound.", summarizeThread(selected), pendingReplay]
+          .filter(Boolean)
+          .join("\n\n"),
+        channelData: buildPendingInputChannelData(params, refreshedEntry),
+      },
+    };
   }
 
   return stopWithText(resolveHelpText());

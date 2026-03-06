@@ -303,6 +303,100 @@ describe("handleCodexCommand", () => {
     expect(result?.reply?.text).toContain("Runtime: ready");
   });
 
+  it("replays pending Codex input on /codex join", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-456",
+        title: "Fix exec approvals",
+        projectKey: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
+    ]);
+    const params = buildParams(
+      "/codex join exec approvals",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+    const boundSessionKey = buildCodexBoundSessionKey({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "1234",
+      agentId: "main",
+    });
+    await updateSessionStore(storePath, (store) => {
+      store[boundSessionKey] = {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        pendingUserInputRequestId: "req-123",
+        pendingUserInputOptions: ["Approve", "Decline"],
+        pendingUserInputExpiresAt: Date.now() + 60_000,
+        pendingUserInputPromptText: "Approve deploy?",
+        pendingUserInputMethod: "server/requestApproval",
+      };
+    });
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Pending Codex input:");
+    expect(result?.reply?.text).toContain("Approve deploy?");
+    expect(
+      (result?.reply?.channelData as { telegram?: { buttons?: unknown[][] } } | undefined)?.telegram
+        ?.buttons,
+    ).toEqual([
+      [
+        { text: "1. Approve", callback_data: "1" },
+        { text: "2. Decline", callback_data: "2" },
+      ],
+    ]);
+  });
+
+  it("shows pending Codex input details and buttons in /codex status", async () => {
+    getCodexAppServerRuntimeStatusMock.mockReturnValue({ state: "ready" });
+    const params = buildParams(
+      "/codex status",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+      pendingUserInputRequestId: "req-123",
+      pendingUserInputOptions: ["Approve", "Decline"],
+      pendingUserInputExpiresAt: Date.now() + 60_000,
+      pendingUserInputPromptText: "Approve deploy?",
+      pendingUserInputMethod: "server/requestApproval",
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Pending input: req-123");
+    expect(result?.reply?.text).toContain("Approve deploy?");
+    expect(
+      (result?.reply?.channelData as { telegram?: { buttons?: unknown[][] } } | undefined)?.telegram
+        ?.buttons,
+    ).toEqual([
+      [
+        { text: "1. Approve", callback_data: "1" },
+        { text: "2. Decline", callback_data: "2" },
+      ],
+    ]);
+  });
+
   it("fails fast when the Codex runtime startup gate is unavailable", async () => {
     getCodexAppServerAvailabilityErrorMock.mockReturnValue(
       "Codex App Server runtime is unavailable: spawn ENOENT",

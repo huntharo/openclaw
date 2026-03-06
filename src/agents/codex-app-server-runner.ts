@@ -60,6 +60,8 @@ export type PendingCodexUserInputState = {
   requestId: string;
   options: string[];
   expiresAt: number;
+  promptText?: string;
+  method?: string;
 };
 
 export type CodexMirrorSlashSource = "codex" | "mcp" | "unknown";
@@ -102,7 +104,10 @@ type RunCodexAppServerAgentParams = {
   runId: string;
   existingThreadId?: string;
   onPartialReply?: (payload: { text?: string }) => Promise<void> | void;
-  onToolResult?: (payload: { text?: string }) => Promise<void> | void;
+  onToolResult?: (payload: {
+    text?: string;
+    channelData?: Record<string, unknown>;
+  }) => Promise<void> | void;
   onPendingUserInput?: (state: PendingCodexUserInputState | null) => Promise<void> | void;
   onInterrupted?: () => Promise<void> | void;
 };
@@ -314,6 +319,30 @@ function buildPromptText(params: {
     lines.push("", "This response will be sent to Codex as an approval decision.");
   }
   return lines.join("\n");
+}
+
+function buildCodexTelegramOptionButtons(
+  options: string[],
+): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
+  const trimmed = options
+    .map((option) => option.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (let index = 0; index < trimmed.length; index += 2) {
+    const row = trimmed.slice(index, index + 2).map((option, offset) => {
+      const ordinal = index + offset + 1;
+      return {
+        text: `${ordinal}. ${option}`,
+        callback_data: String(ordinal),
+      };
+    });
+    rows.push(row);
+  }
+  return rows;
 }
 
 function pickPendingSelectionText(value: unknown, options: string[]): string {
@@ -1136,8 +1165,26 @@ export async function runCodexAppServerAgent(
     });
 
     awaitingInput = true;
-    await params.onPendingUserInput?.({ requestId, options, expiresAt });
-    await params.onToolResult?.({ text: promptText });
+    await params.onPendingUserInput?.({
+      requestId,
+      options,
+      expiresAt,
+      promptText,
+      method,
+    });
+    const telegramButtons = buildCodexTelegramOptionButtons(options);
+    await params.onToolResult?.({
+      text: promptText,
+      ...(telegramButtons
+        ? {
+            channelData: {
+              telegram: {
+                buttons: telegramButtons,
+              },
+            },
+          }
+        : {}),
+    });
 
     let timedOut = false;
     const response = await new Promise<unknown>((resolve) => {
@@ -1261,5 +1308,6 @@ export async function runCodexAppServerAgent(
 
 export const __testing = {
   applyThreadFilter,
+  buildCodexTelegramOptionButtons,
   isMethodUnavailableError,
 };

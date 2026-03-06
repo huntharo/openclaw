@@ -1,14 +1,32 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __testing,
   getCodexAppServerAvailabilityError,
   getCodexAppServerRuntimeStatus,
   initializeCodexAppServerRuntime,
+  reconcileCodexPendingInputsOnStartup,
 } from "./codex-app-server-startup.js";
 
 describe("initializeCodexAppServerRuntime", () => {
+  let tempDir = "";
+  let storePath = "";
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-startup-"));
+    storePath = path.join(tempDir, "sessions.json");
+  });
+
   afterEach(() => {
     __testing.resetRuntimeStatus();
+  });
+
+  afterEach(async () => {
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("marks stdio runtime ready after a successful startup probe", async () => {
@@ -118,5 +136,69 @@ describe("initializeCodexAppServerRuntime", () => {
     );
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("clears expired pending codex input state during startup reconcile", async () => {
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          "agent:main:telegram:dm:1234": {
+            sessionId: "session-1",
+            updatedAt: Date.now() - 5_000,
+            providerOverride: "codex-app-server",
+            pendingUserInputRequestId: "req-expired",
+            pendingUserInputOptions: ["Approve", "Decline"],
+            pendingUserInputExpiresAt: Date.now() - 1_000,
+            pendingUserInputPromptText: "Approve deploy?",
+            pendingUserInputMethod: "server/requestApproval",
+          },
+          "agent:main:telegram:dm:5678": {
+            sessionId: "session-2",
+            updatedAt: Date.now(),
+            providerOverride: "codex-app-server",
+            pendingUserInputRequestId: "req-live",
+            pendingUserInputOptions: ["Yes", "No"],
+            pendingUserInputExpiresAt: Date.now() + 60_000,
+            pendingUserInputPromptText: "Ship it?",
+            pendingUserInputMethod: "item/tool/requestUserInput",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const result = await reconcileCodexPendingInputsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+    });
+
+    expect(result).toEqual({ checked: 2, cleared: 1, failed: 0 });
+
+    const restored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
+    expect(
+      restored["agent:main:telegram:dm:1234"] as {
+        pendingUserInputRequestId?: string;
+        pendingUserInputPromptText?: string;
+      },
+    ).not.toHaveProperty("pendingUserInputRequestId");
+    expect(
+      restored["agent:main:telegram:dm:1234"] as {
+        pendingUserInputRequestId?: string;
+        pendingUserInputPromptText?: string;
+      },
+    ).not.toHaveProperty("pendingUserInputPromptText");
+    expect(
+      restored["agent:main:telegram:dm:5678"] as { pendingUserInputRequestId?: string },
+    ).toEqual(
+      expect.objectContaining({
+        pendingUserInputRequestId: "req-live",
+      }),
+    );
   });
 });

@@ -162,6 +162,10 @@ export type SessionEntry = {
   pendingUserInputOptions?: string[];
   /** Expiry timestamp for the pending user input request. */
   pendingUserInputExpiresAt?: number;
+  /** Last rendered prompt text for a pending Codex server request. */
+  pendingUserInputPromptText?: string;
+  /** Server method name for the pending Codex request. */
+  pendingUserInputMethod?: string;
   label?: string;
   displayName?: string;
   channel?: string;

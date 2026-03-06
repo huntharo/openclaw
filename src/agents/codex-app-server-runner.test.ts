@@ -100,3 +100,15 @@ describe("applyThreadFilter", () => {
     expect(__testing.applyThreadFilter(threads, "approval")).toEqual([threads[0]]);
   });
 });
+
+describe("buildCodexTelegramOptionButtons", () => {
+  it("renders numbered Telegram buttons for pending input options", () => {
+    expect(__testing.buildCodexTelegramOptionButtons(["Approve", "Decline", "Cancel"])).toEqual([
+      [
+        { text: "1. Approve", callback_data: "1" },
+        { text: "2. Decline", callback_data: "2" },
+      ],
+      [{ text: "3. Cancel", callback_data: "3" }],
+    ]);
+  });
+});
