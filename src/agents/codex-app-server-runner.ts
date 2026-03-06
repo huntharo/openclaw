@@ -1561,6 +1561,23 @@ function isConversationNotFoundError(err: unknown): boolean {
   return text.includes("conversation not found") || text.includes("thread not found");
 }
 
+function isMethodUnavailableError(err: unknown): boolean {
+  const text = (() => {
+    if (typeof err === "string") {
+      return err;
+    }
+    if (err instanceof Error) {
+      return err.message;
+    }
+    if (err && typeof err === "object" && "message" in err) {
+      const message = (err as { message?: unknown }).message;
+      return typeof message === "string" ? message : "";
+    }
+    return "";
+  })().toLowerCase();
+  return text.includes("unknown variant") || text.includes("method not found");
+}
+
 function shouldRetryWithFreshThreadAfterNotFound(params: {
   hadExistingThreadBinding: boolean;
 }): boolean {
@@ -1824,6 +1841,43 @@ function getTurnStartRpcMethods(): string[] {
   return ["turn/start"];
 }
 
+function getThreadResumeRpcMethods(): string[] {
+  return ["thread/resume", "resumeConversation"];
+}
+
+function buildThreadResumeVariants(params: {
+  threadId: string;
+  workspaceDir: string;
+  model?: string;
+}): Array<Record<string, unknown>> {
+  return [
+    {
+      threadId: params.threadId,
+      cwd: params.workspaceDir,
+      model: params.model,
+    },
+    {
+      threadId: params.threadId,
+      cwd: params.workspaceDir,
+    },
+    {
+      threadId: params.threadId,
+    },
+    {
+      conversationId: params.threadId,
+      cwd: params.workspaceDir,
+      model: params.model,
+    },
+    {
+      conversationId: params.threadId,
+      cwd: params.workspaceDir,
+    },
+    {
+      conversationId: params.threadId,
+    },
+  ];
+}
+
 function buildTurnStartVariants(params: {
   threadId: string;
   prompt: string;
@@ -2060,6 +2114,8 @@ export async function discoverCodexAppServerThreads(params?: {
 
 export const __testing = {
   getTurnStartRpcMethods,
+  getThreadResumeRpcMethods,
+  buildThreadResumeVariants,
   buildTurnStartVariants,
   buildPromptText,
   extractApprovalPromptContext,
@@ -2478,6 +2534,29 @@ export async function runCodexAppServerAgent(
       }
     };
 
+    const ensureBoundThreadResumed = async () => {
+      if (!threadId) {
+        return;
+      }
+      await requestWithVariants({
+        client,
+        methods: getThreadResumeRpcMethods(),
+        variants: buildThreadResumeVariants({
+          threadId,
+          workspaceDir: params.workspaceDir,
+          model: params.model,
+        }),
+        timeoutMs: settings.requestTimeoutMs,
+        stopOnError: (err) => isConversationNotFoundError(err),
+      }).catch((err) => {
+        if (isMethodUnavailableError(err)) {
+          // Some server variants do not expose an explicit resume call.
+          return undefined;
+        }
+        throw err;
+      });
+    };
+
     const startTurn = async () => {
       if (!threadId) {
         throw new Error("missing thread id before turn/start");
@@ -2502,6 +2581,7 @@ export async function runCodexAppServerAgent(
     await ensureThreadStarted();
     let turnStartResult: unknown;
     try {
+      await ensureBoundThreadResumed();
       turnStartResult = await startTurn();
     } catch (err) {
       if (threadId && isConversationNotFoundError(err)) {

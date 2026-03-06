@@ -43,6 +43,27 @@ describe("codex app server rpc methods", () => {
     expect(methods).not.toContain("sendUserMessage");
   });
 
+  it("tries thread/resume before turn/start when a thread is already bound", () => {
+    const methods = __testing.getThreadResumeRpcMethods();
+    expect(methods).toContain("thread/resume");
+    expect(methods).toContain("resumeConversation");
+  });
+
+  it("builds thread resume payloads with required thread id fields", () => {
+    const variants = __testing.buildThreadResumeVariants({
+      threadId: "thread-123",
+      workspaceDir: "/tmp/workspace",
+      model: "gpt-5-codex",
+    });
+    expect(variants.length).toBeGreaterThan(0);
+    expect(
+      variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "threadId")),
+    ).toBe(true);
+    expect(
+      variants.some((variant) => Object.prototype.hasOwnProperty.call(variant, "conversationId")),
+    ).toBe(true);
+  });
+
   it("builds turn/start payloads that support thread id field variants", () => {
     const variants = __testing.buildTurnStartVariants({
       threadId: "thread-123",
