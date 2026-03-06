@@ -531,6 +531,16 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
     - OpenClaw pins the spawn confirmation message in-topic after a successful bind.
     - Requires `channels.telegram.threadBindings.spawnAcpSessions=true`.
 
+    **Thread-bound Codex App Server workflow**:
+
+    - `/codex oneshot <task>` runs a one-off Codex App Server turn for the current topic session.
+    - `/codex new|join|resume|bind|detach|status` manages topic-local Codex thread bindings.
+    - `/codex detach` only unbinds the topic session; it does not close the remote Codex thread.
+    - `/codex list` lists known bound Codex threads from session state.
+    - `/codex list commands` discovers mirrored slash commands and lists available `/codex_<name>` aliases.
+    - Approval callbacks and free-form approval replies are routed with topic binding precedence and stale request-id checks.
+    - If a bound thread is waiting for approval, `/codex join` replays the pending approval prompt in the topic.
+
     Template context includes:
 
     - `MessageThreadId`
