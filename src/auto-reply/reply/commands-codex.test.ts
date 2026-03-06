@@ -105,4 +105,26 @@ describe("handleCodexCommand", () => {
     expect(store[params.sessionKey]?.codexThreadId).toBe("thread-456");
     expect(store[params.sessionKey]?.providerOverride).toBe("codex-app-server");
   });
+
+  it("does not force the current workspace when /codex list has a filter", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-789",
+        title: "OpenClaw approvals",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams("/codex list openclaw");
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: undefined,
+        filter: "openclaw",
+      }),
+    );
+    expect(result?.reply?.text).toContain("thread-789");
+  });
 });

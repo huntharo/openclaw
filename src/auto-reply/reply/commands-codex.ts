@@ -278,10 +278,13 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
 
   if (action === "list") {
     const filter = tokens.join(" ").trim();
+    const workspaceDir = filter
+      ? undefined
+      : (params.sessionEntry?.codexProjectKey ?? params.workspaceDir);
     const threads = await discoverCodexAppServerThreads({
       config: params.cfg,
       sessionKey: params.sessionKey,
-      workspaceDir: params.sessionEntry?.codexProjectKey ?? params.workspaceDir,
+      workspaceDir,
       filter: filter || undefined,
     });
     if (threads.length === 0) {

@@ -981,7 +981,7 @@ export async function discoverCodexAppServerThreads(params?: {
     if (filter) {
       threads = threads.filter((thread) => {
         const haystack =
-          `${thread.threadId} ${thread.title ?? ""} ${thread.summary ?? ""}`.toLowerCase();
+          `${thread.threadId} ${thread.title ?? ""} ${thread.summary ?? ""} ${thread.projectKey ?? ""}`.toLowerCase();
         return haystack.includes(filter);
       });
     }
