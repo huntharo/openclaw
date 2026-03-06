@@ -2,6 +2,7 @@ import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { ACP_SESSION_IDENTITY_RENDERER_VERSION } from "../acp/runtime/session-identifiers.js";
 import {
   initializeCodexAppServerRuntime,
+  reconcileCodexBoundSessionsOnStartup,
   reconcileCodexPendingInputsOnStartup,
 } from "../agents/codex-app-server-startup.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
@@ -202,6 +203,21 @@ export async function startGatewaySidecars(params: {
     })
     .catch((err) => {
       params.log.warn(`codex startup pending-input reconcile failed: ${String(err)}`);
+    });
+
+  void reconcileCodexBoundSessionsOnStartup({
+    cfg: params.cfg,
+  })
+    .then((result) => {
+      if (result.checked === 0) {
+        return;
+      }
+      params.log.warn(
+        `codex startup binding reconcile: checked=${result.checked} repaired=${result.repaired} removed=${result.removed} failed=${result.failed}`,
+      );
+    })
+    .catch((err) => {
+      params.log.warn(`codex startup binding reconcile failed: ${String(err)}`);
     });
 
   void startGatewayMemoryBackend({ cfg: params.cfg, log: params.log }).catch((err) => {

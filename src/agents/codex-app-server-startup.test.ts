@@ -7,6 +7,7 @@ import {
   getCodexAppServerAvailabilityError,
   getCodexAppServerRuntimeStatus,
   initializeCodexAppServerRuntime,
+  reconcileCodexBoundSessionsOnStartup,
   reconcileCodexPendingInputsOnStartup,
 } from "./codex-app-server-startup.js";
 
@@ -200,5 +201,105 @@ describe("initializeCodexAppServerRuntime", () => {
         pendingUserInputRequestId: "req-live",
       }),
     );
+  });
+
+  it("repairs persisted codex bound sessions when the channel binding survives restart", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:abc123def4567890";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-1",
+            updatedAt: Date.now() - 60_000,
+            providerOverride: "openai",
+            codexAutoRoute: false,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [
+        {
+          bindingId: "telegram:1",
+          targetSessionKey: sessionKey,
+          targetKind: "session",
+          conversation: {
+            channel: "telegram",
+            accountId: "default",
+            conversationId: "1234",
+          },
+          status: "active",
+          boundAt: Date.now() - 60_000,
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 1,
+      removed: 0,
+      failed: 0,
+      staleSessionKeys: [],
+    });
+
+    const restored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
+    expect(
+      restored[sessionKey] as {
+        providerOverride?: string;
+        codexAutoRoute?: boolean;
+      },
+    ).toEqual(
+      expect.objectContaining({
+        providerOverride: "codex-app-server",
+        codexAutoRoute: true,
+      }),
+    );
+  });
+
+  it("removes stale codex bindings when the target bound session is missing", async () => {
+    const unbindBinding = vi.fn(async () => 1);
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [
+        {
+          bindingId: "discord:1",
+          targetSessionKey: "agent:main:codex:binding:discord:default:abc123def4567890",
+          targetKind: "session",
+          conversation: {
+            channel: "discord",
+            accountId: "default",
+            conversationId: "thread-1",
+            parentConversationId: "channel-1",
+          },
+          status: "active",
+          boundAt: Date.now() - 60_000,
+        },
+      ],
+      unbindBinding,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 0,
+      removed: 1,
+      failed: 0,
+      staleSessionKeys: ["agent:main:codex:binding:discord:default:abc123def4567890"],
+    });
+    expect(unbindBinding).toHaveBeenCalledWith("discord:1");
   });
 });

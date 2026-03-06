@@ -1,14 +1,20 @@
 import { spawn } from "node:child_process";
 import type { OpenClawConfig } from "../config/config.js";
 import { updateSessionStore } from "../config/sessions.js";
+import { listAllDiscordThreadBindings } from "../discord/monitor/thread-bindings.lifecycle.js";
 import {
   loadCombinedSessionStoreForGateway,
   resolveGatewaySessionStoreTarget,
 } from "../gateway/session-utils.js";
+import type { SessionBindingRecord } from "../infra/outbound/session-binding-service.js";
+import { getSessionBindingService } from "../infra/outbound/session-binding-service.js";
+import { listAllTelegramThreadBindings } from "../telegram/thread-bindings.js";
+import { isCodexBoundSessionKey } from "./codex-app-server-bindings.js";
 import {
   resolveCodexAppServerSettings,
   type CodexAppServerSettings,
 } from "./codex-app-server-config.js";
+import { normalizeProviderId } from "./model-selection.js";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
 
@@ -27,6 +33,14 @@ export type CodexPendingInputReconcileResult = {
   checked: number;
   cleared: number;
   failed: number;
+};
+
+export type CodexBoundSessionReconcileResult = {
+  checked: number;
+  repaired: number;
+  removed: number;
+  failed: number;
+  staleSessionKeys: string[];
 };
 
 let runtimeStatus: CodexAppServerRuntimeStatus = {
@@ -202,6 +216,145 @@ function isPendingCodexInputExpired(
   return (
     typeof entry?.pendingUserInputExpiresAt === "number" && entry.pendingUserInputExpiresAt <= now
   );
+}
+
+function listPersistedCodexBindingsOnStartup(): SessionBindingRecord[] {
+  const discordBindings: SessionBindingRecord[] = listAllDiscordThreadBindings().map((binding) => ({
+    bindingId: `${binding.accountId}:${binding.threadId}`,
+    targetSessionKey: binding.targetSessionKey,
+    targetKind: binding.targetKind === "subagent" ? "subagent" : "session",
+    conversation: {
+      channel: "discord",
+      accountId: binding.accountId,
+      conversationId: binding.threadId,
+      ...(binding.channelId ? { parentConversationId: binding.channelId } : {}),
+    },
+    status: "active",
+    boundAt: binding.boundAt,
+  }));
+  const telegramBindings: SessionBindingRecord[] = listAllTelegramThreadBindings().map(
+    (binding) => ({
+      bindingId: `${binding.accountId}:${binding.conversationId}`,
+      targetSessionKey: binding.targetSessionKey,
+      targetKind: binding.targetKind === "subagent" ? "subagent" : "session",
+      conversation: {
+        channel: "telegram",
+        accountId: binding.accountId,
+        conversationId: binding.conversationId,
+      },
+      status: "active",
+      boundAt: binding.boundAt,
+    }),
+  );
+  return [...discordBindings, ...telegramBindings].filter(
+    (binding) =>
+      binding.targetKind === "session" && isCodexBoundSessionKey(binding.targetSessionKey),
+  );
+}
+
+function needsCodexBoundSessionRepair(entry: Record<string, unknown> | undefined): boolean {
+  return (
+    normalizeProviderId(
+      typeof entry?.providerOverride === "string" ? entry.providerOverride : "",
+    ) !== "codex-app-server" || entry?.codexAutoRoute === false
+  );
+}
+
+async function unbindCodexStartupBinding(bindingId: string): Promise<number> {
+  const removed = await getSessionBindingService().unbind({
+    bindingId,
+    reason: "stale-session",
+  });
+  return removed.length;
+}
+
+export async function reconcileCodexBoundSessionsOnStartup(params: {
+  cfg: OpenClawConfig;
+  listBindings?: () => SessionBindingRecord[];
+  unbindBinding?: (bindingId: string) => Promise<number>;
+}): Promise<CodexBoundSessionReconcileResult> {
+  const bindings = (params.listBindings ?? listPersistedCodexBindingsOnStartup)().filter(
+    (binding) =>
+      binding.targetKind === "session" && isCodexBoundSessionKey(binding.targetSessionKey),
+  );
+  if (bindings.length === 0) {
+    return {
+      checked: 0,
+      repaired: 0,
+      removed: 0,
+      failed: 0,
+      staleSessionKeys: [],
+    };
+  }
+
+  const { store } = loadCombinedSessionStoreForGateway(params.cfg);
+  let repaired = 0;
+  let removed = 0;
+  let failed = 0;
+  const staleSessionKeys = new Set<string>();
+  const now = Date.now();
+
+  for (const binding of bindings) {
+    const sessionKey = binding.targetSessionKey.trim();
+    if (!sessionKey) {
+      continue;
+    }
+    const existing = store[sessionKey];
+    if (!existing) {
+      staleSessionKeys.add(sessionKey);
+      try {
+        removed += await (params.unbindBinding ?? unbindCodexStartupBinding)(binding.bindingId);
+      } catch {
+        failed += 1;
+      }
+      continue;
+    }
+    if (!needsCodexBoundSessionRepair(existing)) {
+      continue;
+    }
+    try {
+      const target = resolveGatewaySessionStoreTarget({
+        cfg: params.cfg,
+        key: sessionKey,
+      });
+      await updateSessionStore(target.storePath, (nextStore) => {
+        const liveTarget = resolveGatewaySessionStoreTarget({
+          cfg: params.cfg,
+          key: sessionKey,
+          store: nextStore,
+        });
+        const storeKey =
+          [liveTarget.canonicalKey, ...liveTarget.storeKeys].find(
+            (candidate) => nextStore[candidate],
+          ) ?? liveTarget.canonicalKey;
+        const entry = nextStore[storeKey];
+        if (!entry) {
+          return;
+        }
+        entry.providerOverride = "codex-app-server";
+        entry.codexAutoRoute = true;
+        entry.updatedAt = now;
+        nextStore[storeKey] = entry;
+      });
+      store[sessionKey] = {
+        ...existing,
+        providerOverride: "codex-app-server",
+        codexAutoRoute: true,
+        updatedAt: now,
+      };
+      repaired += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return {
+    checked: bindings.length,
+    repaired,
+    removed,
+    failed,
+    staleSessionKeys: [...staleSessionKeys],
+  };
 }
 
 export async function reconcileCodexPendingInputsOnStartup(params: {

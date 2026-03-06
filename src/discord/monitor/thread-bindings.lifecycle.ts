@@ -106,6 +106,11 @@ export function listThreadBindingsForAccount(accountId?: string): ThreadBindingR
   return manager.listBindings();
 }
 
+export function listAllDiscordThreadBindings(): ThreadBindingRecord[] {
+  ensureBindingsLoaded();
+  return [...BINDINGS_BY_THREAD_ID.values()];
+}
+
 export function listThreadBindingsBySessionKey(params: {
   targetSessionKey: string;
   accountId?: string;

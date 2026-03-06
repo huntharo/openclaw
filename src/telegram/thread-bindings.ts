@@ -65,6 +65,10 @@ export type TelegramThreadBindingManager = {
 const MANAGERS_BY_ACCOUNT_ID = new Map<string, TelegramThreadBindingManager>();
 const BINDINGS_BY_ACCOUNT_CONVERSATION = new Map<string, TelegramThreadBindingRecord>();
 
+export function listAllTelegramThreadBindings(): TelegramThreadBindingRecord[] {
+  return [...BINDINGS_BY_ACCOUNT_CONVERSATION.values()];
+}
+
 function normalizeDurationMs(raw: unknown, fallback: number): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) {
     return fallback;
