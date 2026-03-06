@@ -1137,7 +1137,17 @@ export async function runPreparedReply(
     if (!parsedCodexCommand.task) {
       typing.cleanup();
       return {
-        text: "✅ Started a fresh Codex session binding for this thread. Next run `/codex oneshot <task>` to begin. Setup actions (worktree/branch/env) are ask-then-apply.",
+        text: [
+          "✅ Started a fresh Codex session binding for this topic.",
+          "Bootstrap mode is ask-then-apply (no implicit worktree/branch/env mutation).",
+          "",
+          "Next step options:",
+          "1. Run `/codex oneshot <task>` directly.",
+          "2. Run `/codex new <task>` with setup intent in the task text.",
+          "",
+          "Suggested bootstrap prompt:",
+          '- "Before coding, ask me to confirm cwd, branch/worktree, and env changes."',
+        ].join("\n"),
       };
     }
   }

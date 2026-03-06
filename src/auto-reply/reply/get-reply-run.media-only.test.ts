@@ -834,6 +834,34 @@ describe("runPreparedReply media-only handling", () => {
     );
   });
 
+  it("returns bootstrap ask-then-apply guidance for /codex new without a task", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+      codexThreadId: "thread-old",
+      codexProjectKey: "/tmp/old",
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex new",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("Bootstrap mode is ask-then-apply");
+    expect(reply?.text).toContain("/codex oneshot <task>");
+    expect(sessionEntry.codexThreadId).toBeUndefined();
+    expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
   it("routes mirrored /codex_<name> commands through oneshot codex execution", async () => {
     const result = await runPreparedReply(
       baseParams({
