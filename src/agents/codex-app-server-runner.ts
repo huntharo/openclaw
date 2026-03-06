@@ -1397,15 +1397,20 @@ export async function runCodexAppServerAgent(
     const telegramButtons = buildCodexTelegramOptionButtons(options);
     await params.onToolResult?.({
       text: promptText,
-      ...(telegramButtons
-        ? {
-            channelData: {
+      channelData: {
+        codexAppServer: {
+          interactiveRequest: true,
+          method,
+          requestId,
+        },
+        ...(telegramButtons
+          ? {
               telegram: {
                 buttons: telegramButtons,
               },
-            },
-          }
-        : {}),
+            }
+          : {}),
+      },
     });
 
     let timedOut = false;
