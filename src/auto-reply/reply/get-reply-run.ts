@@ -1109,6 +1109,37 @@ export async function runPreparedReply(
       } satisfies KnownCodexThread,
     };
   };
+  const hydrateCodexThreadTargetFromDiscovery = async (entry: KnownCodexThread) => {
+    if (entry.projectKey || !entry.threadId.trim()) {
+      return entry;
+    }
+    const attempts = await Promise.all([
+      discoverCodexAppServerThreads({
+        config: cfg,
+        sessionKey,
+        workspaceDir,
+      }),
+      discoverCodexAppServerThreads({
+        config: cfg,
+        sessionKey,
+      }),
+    ]);
+    for (const discovery of attempts) {
+      if (!discovery.available || discovery.threads.length === 0) {
+        continue;
+      }
+      const exact = discovery.threads.find((candidate) => candidate.threadId === entry.threadId);
+      if (!exact) {
+        continue;
+      }
+      return {
+        ...entry,
+        runId: entry.runId || "",
+        projectKey: exact.projectKey?.trim() || entry.projectKey,
+      } satisfies KnownCodexThread;
+    }
+    return entry;
+  };
   if (command.isAuthorizedSender && parsedCodexCommand.type === "status") {
     typing.cleanup();
     return {
@@ -1187,7 +1218,7 @@ export async function runPreparedReply(
       typing.cleanup();
       return { text: `⚠️ ${lookup.error}` };
     }
-    const match = lookup.match;
+    const match = await hydrateCodexThreadTargetFromDiscovery(lookup.match);
     const shouldCarryPending =
       Boolean(match.pendingRequestId) &&
       (match.pendingExpiresAt == null || match.pendingExpiresAt > Date.now());
@@ -1214,8 +1245,9 @@ export async function runPreparedReply(
           : "Bound";
     const replay = shouldCarryPending ? buildPendingInputReplayReply(match) : undefined;
     const replayText = replay?.text ? `\n\n${replay.text}` : "";
+    const projectHint = match.projectKey ? `\nproject: ${match.projectKey}` : "";
     return {
-      text: `✅ ${verb} this session to Codex thread ${match.threadId}${bindHint}.${replayText}`,
+      text: `✅ ${verb} this session to Codex thread ${match.threadId}${bindHint}.${projectHint}${replayText}`,
       ...(replay?.channelData ? { channelData: replay.channelData } : {}),
     };
   }
@@ -1450,20 +1482,37 @@ export async function runPreparedReply(
         sessionKey &&
         /conversation not found|thread not found/i.test(errText)
       ) {
-        await clearCodexSessionState({
-          keepAutoRoute: shouldAutoRouteToCodex,
-        });
-        log.warn("cleared stale codex thread binding after not-found error", {
-          sessionKey,
-          workspaceDir: codexWorkspaceDir,
-        });
+        const isBoundCodexSession = sessionEntry.codexAutoRoute === true;
+        if (isBoundCodexSession) {
+          log.warn(
+            "codex bound thread lookup failed; preserving binding state for operator recovery",
+            {
+              sessionKey,
+              workspaceDir: codexWorkspaceDir,
+              boundThreadId: sessionEntry.codexThreadId,
+            },
+          );
+        } else {
+          await clearCodexSessionState({
+            keepAutoRoute: false,
+          });
+          log.warn("cleared stale codex thread binding after not-found error", {
+            sessionKey,
+            workspaceDir: codexWorkspaceDir,
+          });
+        }
       }
       typing.cleanup();
       log.error("failed /codex App Server run", {
         error: errText,
       });
+      const notFoundHint =
+        /conversation not found|thread not found/i.test(errText) &&
+        sessionEntry?.codexAutoRoute === true
+          ? "\nBinding was kept. Verify with `/codex status`, then reattach with `/codex resume <thread-id>` or `/codex bind <thread-id>`."
+          : "";
       return {
-        text: `Codex App Server run failed: ${errText}`,
+        text: `Codex App Server run failed: ${errText}${notFoundHint}`,
       };
     }
   }

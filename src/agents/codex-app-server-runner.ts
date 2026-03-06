@@ -1561,6 +1561,14 @@ function isConversationNotFoundError(err: unknown): boolean {
   return text.includes("conversation not found") || text.includes("thread not found");
 }
 
+function shouldRetryWithFreshThreadAfterNotFound(params: {
+  hadExistingThreadBinding: boolean;
+}): boolean {
+  // If OpenClaw is explicitly bound to a thread id, never silently recreate
+  // and continue on a different thread.
+  return !params.hadExistingThreadBinding;
+}
+
 type PendingInput = {
   requestId: string;
   method: string;
@@ -2025,6 +2033,7 @@ export const __testing = {
   buildTurnStartVariants,
   buildPromptText,
   extractApprovalPromptContext,
+  shouldRetryWithFreshThreadAfterNotFound,
   normalizeMirrorSlashName,
   extractMirrorSlashCandidates,
   dedupeMirrorSlashCandidates,
@@ -2078,6 +2087,7 @@ export async function runCodexAppServerAgent(
   let awaitingInput = false;
   let interrupted = false;
   let threadId = params.existingThreadId?.trim() || undefined;
+  const hadExistingThreadBinding = Boolean(threadId);
   let turnId: string | undefined;
   let textBuffer = "";
   let assistantText = "";
@@ -2462,6 +2472,11 @@ export async function runCodexAppServerAgent(
       turnStartResult = await startTurn();
     } catch (err) {
       if (threadId && isConversationNotFoundError(err)) {
+        if (!shouldRetryWithFreshThreadAfterNotFound({ hadExistingThreadBinding })) {
+          throw new Error(`thread not found for requested binding ${threadId}`, {
+            cause: err,
+          });
+        }
         log.warn("codex thread/conversation not found; recreating thread and retrying turn", {
           staleThreadId: threadId,
         });

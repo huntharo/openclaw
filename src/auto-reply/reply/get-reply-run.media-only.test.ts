@@ -765,6 +765,39 @@ describe("runPreparedReply media-only handling", () => {
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
 
+  it("hydrates /codex bind project context from Codex discovery when available", async () => {
+    vi.mocked(discoverCodexAppServerThreads).mockResolvedValueOnce({
+      available: true,
+      threads: [
+        {
+          threadId: "thread-abc",
+          projectKey: "/Users/huntharo/github/openclaw",
+        },
+      ],
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "/codex bind thread-abc",
+        } as never,
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("project: /Users/huntharo/github/openclaw");
+    expect(sessionEntry.codexProjectKey).toBe("/Users/huntharo/github/openclaw");
+  });
+
   it("replays pending approval prompt when /codex join attaches to a waiting thread", async () => {
     const now = Date.now();
     const sessionEntry: SessionEntry = {
@@ -864,6 +897,57 @@ describe("runPreparedReply media-only handling", () => {
     expect(codexCall?.prompt).toContain("Who are you?");
     expect(codexCall?.workspaceDir).toBe("/tmp/codex-project");
     expect(codexCall?.existingThreadId).toBe("thread-abc");
+    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("preserves bound routing state when Codex reports thread not found", async () => {
+    vi.mocked(runCodexAppServerAgent).mockRejectedValueOnce(
+      new Error("thread not found for requested binding thread-abc"),
+    );
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+      codexThreadId: "thread-abc",
+      codexProjectKey: "/tmp/codex-project",
+      codexAutoRoute: true,
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          commandBodyNormalized: "What is the CWD?",
+        } as never,
+        ctx: {
+          Body: "What is the CWD?",
+          RawBody: "What is the CWD?",
+          CommandBody: "What is the CWD?",
+          ThreadHistoryBody: "Earlier message in this thread",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "topic:123",
+          ChatType: "group",
+        },
+        sessionCtx: {
+          Body: "What is the CWD?",
+          BodyStripped: "What is the CWD?",
+          ThreadHistoryBody: "Earlier message in this thread",
+          Provider: "telegram",
+          ChatType: "group",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "topic:123",
+        },
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("thread not found for requested binding thread-abc");
+    expect(reply?.text).toContain("Binding was kept");
+    expect(sessionEntry.codexThreadId).toBe("thread-abc");
+    expect(sessionEntry.codexAutoRoute).toBe(true);
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
   });
 

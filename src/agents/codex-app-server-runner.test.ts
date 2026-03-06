@@ -57,6 +57,19 @@ describe("codex app server rpc methods", () => {
       expect(variant).not.toHaveProperty("conversationId");
     }
   });
+
+  it("does not retry with a fresh thread when an explicit binding was provided", () => {
+    expect(
+      __testing.shouldRetryWithFreshThreadAfterNotFound({
+        hadExistingThreadBinding: true,
+      }),
+    ).toBe(false);
+    expect(
+      __testing.shouldRetryWithFreshThreadAfterNotFound({
+        hadExistingThreadBinding: false,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("approval prompt context", () => {
