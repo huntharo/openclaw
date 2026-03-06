@@ -21,7 +21,9 @@ import {
   type SessionEntry,
   updateSessionStore,
 } from "../../config/sessions.js";
+import { parseDiscordTarget } from "../../discord/targets.js";
 import { logVerbose } from "../../globals.js";
+import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
@@ -53,6 +55,7 @@ import { resolveQueueSettings } from "./queue.js";
 import { routeReply } from "./route-reply.js";
 import { buildBareSessionResetPrompt } from "./session-reset-prompt.js";
 import { drainFormattedSystemEvents, ensureSkillSnapshot } from "./session-updates.js";
+import { resolveTelegramConversationId } from "./telegram-context.js";
 import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 import type { TypingController } from "./typing.js";
@@ -545,6 +548,81 @@ async function sendResetSessionNotice(params: {
   });
 }
 
+type CodexBindingContext = {
+  channel: "discord" | "telegram";
+  accountId: string;
+  conversationId: string;
+  placement: "current" | "child";
+  labelNoun: "thread" | "conversation";
+};
+
+function resolveCodexBindingContext(params: {
+  ctx: MsgContext;
+  command: ReturnType<typeof buildCommandContext>;
+}): CodexBindingContext | null {
+  const channel = (
+    params.ctx.OriginatingChannel ??
+    params.command.channel ??
+    params.ctx.Surface ??
+    params.ctx.Provider
+  )
+    ?.trim()
+    .toLowerCase();
+  const accountId =
+    typeof params.ctx.AccountId === "string" && params.ctx.AccountId.trim()
+      ? params.ctx.AccountId.trim()
+      : "default";
+  if (channel === "telegram") {
+    const conversationId = resolveTelegramConversationId({
+      ctx: params.ctx,
+      command: params.command,
+    });
+    if (!conversationId) {
+      return null;
+    }
+    return {
+      channel: "telegram",
+      accountId,
+      conversationId,
+      placement: "current",
+      labelNoun: "conversation",
+    };
+  }
+  if (channel === "discord") {
+    const currentThreadId =
+      params.ctx.MessageThreadId != null ? String(params.ctx.MessageThreadId).trim() : "";
+    const toCandidates = [
+      typeof params.ctx.OriginatingTo === "string" ? params.ctx.OriginatingTo.trim() : "",
+      typeof params.command.to === "string" ? params.command.to.trim() : "",
+      typeof params.ctx.To === "string" ? params.ctx.To.trim() : "",
+    ].filter(Boolean);
+    const parentChannelId = currentThreadId
+      ? ""
+      : toCandidates
+          .map((candidate) => {
+            try {
+              const target = parseDiscordTarget(candidate, { defaultKind: "channel" });
+              return target?.kind === "channel" ? target.id.trim() : "";
+            } catch {
+              return "";
+            }
+          })
+          .find(Boolean);
+    const conversationId = currentThreadId || parentChannelId;
+    if (!conversationId) {
+      return null;
+    }
+    return {
+      channel: "discord",
+      accountId,
+      conversationId,
+      placement: currentThreadId ? "current" : "child",
+      labelNoun: "thread",
+    };
+  }
+  return null;
+}
+
 type RunPreparedReplyParams = {
   ctx: MsgContext;
   sessionCtx: TemplateContext;
@@ -697,6 +775,18 @@ export async function runPreparedReply(
   ].filter(Boolean);
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
   const parsedCodexCommand = parseCodexCommand(command.commandBodyNormalized);
+  const sessionBindingService = getSessionBindingService();
+  const codexBindingContext = resolveCodexBindingContext({ ctx, command });
+  const codexConversationBinding = codexBindingContext
+    ? sessionBindingService.resolveByConversation({
+        channel: codexBindingContext.channel,
+        accountId: codexBindingContext.accountId,
+        conversationId: codexBindingContext.conversationId,
+      })
+    : null;
+  const isFocusedToCurrentSession =
+    codexConversationBinding?.targetSessionKey?.trim() === sessionKey &&
+    codexBindingContext?.conversationId === codexConversationBinding.conversation.conversationId;
   const explicitCodexCommandPrompt =
     parsedCodexCommand.type === "oneshot"
       ? parsedCodexCommand.prompt
@@ -706,7 +796,9 @@ export async function runPreparedReply(
           ? parsedCodexCommand.task
           : null;
   const shouldAutoRouteToCodex =
-    parsedCodexCommand.type === "none" && sessionEntry?.codexAutoRoute === true;
+    parsedCodexCommand.type === "none" &&
+    (sessionEntry?.codexAutoRoute === true ||
+      (isFocusedToCurrentSession && Boolean(sessionEntry?.codexThreadId?.trim())));
   let codexCommandPrompt = explicitCodexCommandPrompt;
   const normalizedCommandBody = (command.commandBodyNormalized ?? "").trim();
   log.debug("prepared reply command context", {
@@ -960,6 +1052,98 @@ export async function runPreparedReply(
       pendingUserInputOptions: undefined,
       pendingUserInputExpiresAt: undefined,
     });
+  const bindCurrentConversationToSession = async (label: string) => {
+    if (!codexBindingContext) {
+      return {
+        ok: true as const,
+      };
+    }
+    const capabilities = sessionBindingService.getCapabilities({
+      channel: codexBindingContext.channel,
+      accountId: codexBindingContext.accountId,
+    });
+    if (!capabilities.adapterAvailable || !capabilities.bindSupported) {
+      return {
+        ok: true as const,
+      };
+    }
+    if (!capabilities.placements.includes(codexBindingContext.placement)) {
+      return {
+        ok: false as const,
+        error: `${codexBindingContext.channel} bindings are unavailable for this ${codexBindingContext.labelNoun}.`,
+      };
+    }
+    const senderId = command.senderId?.trim() || "";
+    const existingBinding = sessionBindingService.resolveByConversation({
+      channel: codexBindingContext.channel,
+      accountId: codexBindingContext.accountId,
+      conversationId: codexBindingContext.conversationId,
+    });
+    const boundBy =
+      typeof existingBinding?.metadata?.boundBy === "string"
+        ? existingBinding.metadata.boundBy.trim()
+        : "";
+    if (existingBinding && boundBy && boundBy !== "system" && senderId && senderId !== boundBy) {
+      return {
+        ok: false as const,
+        error: `Only ${boundBy} can rebind this ${codexBindingContext.labelNoun}.`,
+      };
+    }
+    await sessionBindingService.bind({
+      targetSessionKey: sessionKey,
+      targetKind: "session",
+      conversation: {
+        channel: codexBindingContext.channel,
+        accountId: codexBindingContext.accountId,
+        conversationId: codexBindingContext.conversationId,
+      },
+      placement: codexBindingContext.placement,
+      metadata: {
+        label,
+        boundBy: senderId || "unknown",
+      },
+    });
+    return {
+      ok: true as const,
+    };
+  };
+  const unbindCurrentConversation = async () => {
+    if (!codexBindingContext) {
+      return { ok: true as const, unbound: false };
+    }
+    const capabilities = sessionBindingService.getCapabilities({
+      channel: codexBindingContext.channel,
+      accountId: codexBindingContext.accountId,
+    });
+    if (!capabilities.adapterAvailable || !capabilities.unbindSupported) {
+      return { ok: true as const, unbound: false };
+    }
+    const existingBinding = sessionBindingService.resolveByConversation({
+      channel: codexBindingContext.channel,
+      accountId: codexBindingContext.accountId,
+      conversationId: codexBindingContext.conversationId,
+    });
+    if (!existingBinding || existingBinding.targetSessionKey !== sessionKey) {
+      return { ok: true as const, unbound: false };
+    }
+    const senderId = command.senderId?.trim() || "";
+    const boundBy =
+      typeof existingBinding.metadata?.boundBy === "string"
+        ? existingBinding.metadata.boundBy.trim()
+        : "";
+    if (boundBy && boundBy !== "system" && senderId && senderId !== boundBy) {
+      return {
+        ok: false as const,
+        unbound: false as const,
+        error: `Only ${boundBy} can unbind this ${codexBindingContext.labelNoun}.`,
+      };
+    }
+    await sessionBindingService.unbind({
+      bindingId: existingBinding.bindingId,
+      reason: "manual-unfocus",
+    });
+    return { ok: true as const, unbound: true as const };
+  };
   type KnownCodexThread = {
     sessionKey: string;
     sessionId: string;
@@ -1149,6 +1333,7 @@ export async function runPreparedReply(
         `run: ${sessionEntry?.codexRunId?.trim() || "n/a"}`,
         `project: ${sessionEntry?.codexProjectKey?.trim() || "n/a"}`,
         `routing: ${sessionEntry?.codexAutoRoute === true ? "codex-bound" : "default"}`,
+        `focus binding: ${isFocusedToCurrentSession ? "active" : "inactive"}`,
         sessionEntry?.pendingUserInputRequestId
           ? `pending approval: ${sessionEntry.pendingUserInputRequestId}`
           : "pending approval: none",
@@ -1187,10 +1372,24 @@ export async function runPreparedReply(
     };
   }
   if (command.isAuthorizedSender && parsedCodexCommand.type === "detach") {
-    await clearCodexSessionState();
+    const unbind = await unbindCurrentConversation();
+    if (!unbind.ok) {
+      typing.cleanup();
+      return {
+        text: `⚠️ ${unbind.error}`,
+      };
+    }
+    await persistCodexSessionUpdate({
+      codexAutoRoute: undefined,
+      pendingUserInputRequestId: undefined,
+      pendingUserInputOptions: undefined,
+      pendingUserInputExpiresAt: undefined,
+    });
     typing.cleanup();
     return {
-      text: "✅ Detached this session from its Codex thread binding. Remote Codex thread remains active.",
+      text: unbind.unbound
+        ? "✅ Detached this conversation from Codex focus routing. Remote Codex thread remains active."
+        : "✅ Detached this session from Codex auto-routing. Remote Codex thread remains active.",
     };
   }
   if (
@@ -1232,6 +1431,13 @@ export async function runPreparedReply(
       pendingUserInputOptions: shouldCarryPending ? match.pendingOptions : undefined,
       pendingUserInputExpiresAt: shouldCarryPending ? match.pendingExpiresAt : undefined,
     });
+    const bindingAttempt = await bindCurrentConversationToSession(`codex:${match.threadId}`);
+    if (!bindingAttempt.ok) {
+      typing.cleanup();
+      return {
+        text: `⚠️ ${bindingAttempt.error}`,
+      };
+    }
     typing.cleanup();
     const bindHint =
       parsedCodexCommand.type === "bind" && parsedCodexCommand.bindHere
@@ -1256,6 +1462,13 @@ export async function runPreparedReply(
     await persistCodexSessionUpdate({
       codexAutoRoute: true,
     });
+    const bindingAttempt = await bindCurrentConversationToSession("codex:new");
+    if (!bindingAttempt.ok) {
+      typing.cleanup();
+      return {
+        text: `⚠️ ${bindingAttempt.error}`,
+      };
+    }
     if (!parsedCodexCommand.task) {
       typing.cleanup();
       return {

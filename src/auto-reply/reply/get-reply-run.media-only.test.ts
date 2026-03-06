@@ -3,6 +3,16 @@ import type { SessionEntry } from "../../config/sessions.js";
 import type { ReplyPayload } from "../types.js";
 import { runPreparedReply } from "./get-reply-run.js";
 
+const sessionBindingResolveByConversation = vi.fn().mockReturnValue(null);
+const sessionBindingGetCapabilities = vi.fn().mockReturnValue({
+  adapterAvailable: false,
+  bindSupported: false,
+  unbindSupported: false,
+  placements: [],
+});
+const sessionBindingBind = vi.fn();
+const sessionBindingUnbind = vi.fn().mockResolvedValue([]);
+
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({
   resolveSessionAuthProfileOverride: vi.fn().mockResolvedValue(undefined),
 }));
@@ -46,6 +56,17 @@ vi.mock("../../config/sessions.js", () => ({
   resolveSessionFilePath: vi.fn().mockReturnValue("/tmp/session.jsonl"),
   resolveSessionFilePathOptions: vi.fn().mockReturnValue({}),
   updateSessionStore: vi.fn(),
+}));
+
+vi.mock("../../infra/outbound/session-binding-service.js", () => ({
+  getSessionBindingService: vi.fn(() => ({
+    getCapabilities: sessionBindingGetCapabilities,
+    resolveByConversation: sessionBindingResolveByConversation,
+    bind: sessionBindingBind,
+    unbind: sessionBindingUnbind,
+    listBySession: vi.fn().mockReturnValue([]),
+    touch: vi.fn(),
+  })),
 }));
 
 vi.mock("../../globals.js", () => ({
@@ -205,6 +226,15 @@ function asSingleReply(
 describe("runPreparedReply media-only handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionBindingResolveByConversation.mockReturnValue(null);
+    sessionBindingGetCapabilities.mockReturnValue({
+      adapterAvailable: false,
+      bindSupported: false,
+      unbindSupported: false,
+      placements: [],
+    });
+    sessionBindingBind.mockResolvedValue(undefined);
+    sessionBindingUnbind.mockResolvedValue([]);
   });
 
   it("allows media-only prompts and preserves thread context in queued followups", async () => {
@@ -730,7 +760,7 @@ describe("runPreparedReply media-only handling", () => {
     expect(result).toEqual(
       expect.objectContaining({ text: expect.stringContaining("Detached this session") }),
     );
-    expect(sessionEntry.codexThreadId).toBeUndefined();
+    expect(sessionEntry.codexThreadId).toBe("thread-123");
     expect(sessionEntry.codexAutoRoute).toBeUndefined();
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
   });
@@ -763,6 +793,62 @@ describe("runPreparedReply media-only handling", () => {
     expect(sessionEntry.codexThreadId).toBe("thread-abc");
     expect(sessionEntry.codexAutoRoute).toBe(true);
     expect(vi.mocked(runCodexAppServerAgent)).not.toHaveBeenCalled();
+  });
+
+  it("uses session-binding service for telegram /codex bind like /focus routing", async () => {
+    sessionBindingGetCapabilities.mockReturnValue({
+      adapterAvailable: true,
+      bindSupported: true,
+      unbindSupported: true,
+      placements: ["current"],
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        ctx: {
+          Body: "/codex bind thread-abc",
+          RawBody: "/codex bind thread-abc",
+          CommandBody: "/codex bind thread-abc",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "telegram:-1003841603622:topic:280",
+          MessageThreadId: "280",
+          AccountId: "pwrdrvr",
+          Provider: "telegram",
+          Surface: "telegram",
+        },
+        sessionCtx: {
+          Body: "/codex bind thread-abc",
+          BodyStripped: "/codex bind thread-abc",
+          Provider: "telegram",
+        },
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          senderId: "user-1",
+          channel: "telegram",
+          to: "telegram:-1003841603622:topic:280",
+          commandBodyNormalized: "/codex bind thread-abc",
+        } as never,
+      }),
+    );
+    expect(sessionBindingBind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetSessionKey: "session-key",
+        conversation: expect.objectContaining({
+          channel: "telegram",
+          accountId: "pwrdrvr",
+          conversationId: "-1003841603622:topic:280",
+        }),
+      }),
+    );
   });
 
   it("hydrates /codex bind project context from Codex discovery when available", async () => {
@@ -898,6 +984,62 @@ describe("runPreparedReply media-only handling", () => {
     expect(codexCall?.workspaceDir).toBe("/tmp/codex-project");
     expect(codexCall?.existingThreadId).toBe("thread-abc");
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+
+  it("auto-routes plain text when topic is focused to the current session", async () => {
+    sessionBindingResolveByConversation.mockReturnValue({
+      bindingId: "binding-1",
+      targetSessionKey: "session-key",
+      targetKind: "session",
+      conversation: {
+        channel: "telegram",
+        accountId: "pwrdrvr",
+        conversationId: "-1003841603622:topic:280",
+      },
+      placement: "current",
+      metadata: {},
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "s-1",
+      updatedAt: Date.now(),
+      codexThreadId: "thread-abc",
+      codexProjectKey: "/tmp/codex-project",
+    };
+    const sessionStore = { "session-key": sessionEntry };
+    const result = await runPreparedReply(
+      baseParams({
+        sessionEntry,
+        sessionStore: sessionStore as never,
+        command: {
+          isAuthorizedSender: true,
+          abortKey: "session-key",
+          ownerList: [],
+          senderIsOwner: false,
+          channel: "telegram",
+          to: "telegram:-1003841603622:topic:280",
+          commandBodyNormalized: "Who are you?",
+        } as never,
+        ctx: {
+          Body: "Who are you?",
+          RawBody: "Who are you?",
+          CommandBody: "Who are you?",
+          OriginatingChannel: "telegram",
+          OriginatingTo: "telegram:-1003841603622:topic:280",
+          MessageThreadId: "280",
+          AccountId: "pwrdrvr",
+          Provider: "telegram",
+          Surface: "telegram",
+        },
+        sessionCtx: {
+          Body: "Who are you?",
+          BodyStripped: "Who are you?",
+          Provider: "telegram",
+        },
+      }),
+    );
+    const reply = asSingleReply(result);
+    expect(reply?.text).toContain("codex output summary");
+    expect(vi.mocked(runCodexAppServerAgent)).toHaveBeenCalledTimes(1);
   });
 
   it("preserves bound routing state when Codex reports thread not found", async () => {
