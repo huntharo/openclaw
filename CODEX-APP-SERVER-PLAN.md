@@ -34,6 +34,7 @@ This plan defines a new Codex App Server integration that follows the `/acp` mod
   - Phase 1 optimizes for `/acp` parity first.
   - Command naming is ACP-aligned hybrid: ACP-like targeting/binding semantics, Codex-native verbs where they improve clarity.
   - Guided worktree/environment bootstrap is Phase 2, not Phase 1.
+  - Codex App Server should behave like a built-in runtime, not an external plugin: it uses the system `codex` binary when present, but startup probing and readiness reporting should mirror ACPX operationally.
 
 ## Public Surface And Usage Philosophy
 
@@ -151,25 +152,28 @@ This plan defines a new Codex App Server integration that follows the `/acp` mod
 - [x] Document the chosen transport truth clearly: `stdio` supports multiple threads over one connection; it is not per-thread.
 - [x] Record command-surface decisions: ACP-aligned hybrid naming, `/codex list`, mirrored `/codex_*`, detach semantics.
 - [x] Record Phase 1 and Phase 2 boundaries explicitly.
-- [ ] Commit the plan-only change with `scripts/committer`.
+- [x] Commit the plan-only change with `scripts/committer`.
 
 ### Phase 1: ACP-Parity Core For Telegram
 
-- [ ] Before coding, identify the exact ACP integration points to mirror for targeting, binding, relay, and status.
+Current status: partially implemented. The command surface, runner foundation, deterministic `/codex list`, and startup readiness probe exist; ACP-style bindings, restart-safe rebinding, approval replay, and Telegram-specific approval UX still remain.
+
+- [x] Before coding, identify the exact ACP integration points to mirror for targeting, binding, relay, and status.
 - [ ] Write or update unit tests first where the interface is already clear:
   - command parsing and targeting resolution
   - binding persistence and restart reconciliation
   - approval state lifecycle
   - Telegram callback and free-form reply routing
-- [ ] Implement a documented-API-first Codex App Server client layer.
+- [x] Implement a documented-API-first Codex App Server client layer.
 - [ ] Implement Codex session metadata persistence and restart-safe rebinding.
-- [ ] Implement `/codex spawn|new`, `/codex join`, `/codex steer`, `/codex status`, `/codex detach`, and `/codex list`.
-- [ ] Integrate bound-topic auto-routing so follow-up messages in a focused/bound conversation go directly to Codex.
+- [x] Implement `/codex spawn|new`, `/codex join`, `/codex steer`, `/codex status`, `/codex detach`, and `/codex list`.
+- [x] Add a startup readiness gate that probes the built-in Codex runtime once at gateway boot and reports health.
+- [ ] Integrate bound-topic auto-routing so follow-up messages in a focused/bound conversation go directly to Codex through ACP-style bindings/focus.
 - [ ] Integrate interactive approval and user-input relay from the start.
 - [ ] Support replay of pending approvals when rejoining or resuming a bound thread.
-- [ ] Use `thread/unsubscribe` for cleanup of loaded threads on shared connections where applicable.
+- [x] Use `thread/unsubscribe` for cleanup of loaded threads on shared connections where applicable.
 - [ ] Add or update Telegram docs for the bound Codex workflow once behavior is stable.
-- [ ] Run focused tests for Codex command handling, runner behavior, and Telegram routing.
+- [x] Run focused tests for Codex command handling, runner behavior, and Telegram routing.
 - [ ] Commit Phase 1 with `scripts/committer`.
 
 ### Phase 2: Guided Bootstrap For New Threads
