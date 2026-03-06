@@ -540,6 +540,14 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
     - `/codex list commands` discovers mirrored slash commands and lists available `/codex_<name>` aliases.
     - Approval callbacks and free-form approval replies are routed with topic binding precedence and stale request-id checks.
     - If a bound thread is waiting for approval, `/codex join` replays the pending approval prompt in the topic.
+    - Restart behavior: Codex thread/run metadata and pending approval metadata are restored from session state; the next topic message continues the bound workflow.
+
+    Troubleshooting:
+
+    - **Stale thread id / thread not found**: the stale Codex thread binding is cleared automatically on run failure; run `/codex resume <thread-id>` or `/codex new` to reattach/start fresh.
+    - **Missing project/workspace mismatch**: if the current workspace does not match the stored bound workspace, OpenClaw starts a fresh Codex thread for that workspace and preserves the topic session.
+    - **Approval timeout**: pending approval requests expire server-side; replying to stale prompt buttons/replies is rejected safely by request-id checks.
+    - **Detach vs close**: `/codex detach` unbinds only the Telegram topic session and does not terminate the remote Codex thread.
 
     Template context includes:
 

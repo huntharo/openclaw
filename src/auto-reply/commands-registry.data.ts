@@ -568,13 +568,15 @@ function buildChatCommands(): ChatCommandDefinition[] {
     defineChatCommand({
       key: "codex",
       nativeName: "codex",
-      description: "Manage Codex App Server threads and run Codex actions.",
+      description:
+        "Manage Codex App Server threads/runs (`/codex ...`) and mirrored slash commands (`/codex_<name>`).",
       textAlias: "/codex",
       category: "session",
       args: [
         {
           name: "command",
-          description: "oneshot|new|join|resume|list|bind|detach|status",
+          description:
+            "oneshot|new|join|resume|list|bind|detach|status (use `/codex list commands` for mirrored `/codex_<name>`)",
           type: "string",
           captureRemaining: true,
         },
