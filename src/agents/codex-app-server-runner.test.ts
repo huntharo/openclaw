@@ -121,6 +121,23 @@ describe("buildCodexPendingUserInputActions", () => {
   });
 });
 
+describe("buildMarkdownCodeBlock", () => {
+  it("renders shell commands as fenced code blocks", () => {
+    expect(
+      __testing.buildMarkdownCodeBlock(
+        "/bin/zsh -lc 'npm view diver name version description'",
+        "sh",
+      ),
+    ).toBe("```sh\n/bin/zsh -lc 'npm view diver name version description'\n```");
+  });
+
+  it("extends the fence length when the command already contains backticks", () => {
+    expect(__testing.buildMarkdownCodeBlock("echo ```hello```", "sh")).toBe(
+      "````sh\necho ```hello```\n````",
+    );
+  });
+});
+
 describe("mergeAssistantReplyAndEmit", () => {
   it("emits cumulative preview text for snapshot-style partials", async () => {
     const onPartialReply = vi.fn();

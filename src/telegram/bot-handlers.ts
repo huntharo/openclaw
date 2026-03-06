@@ -1415,6 +1415,9 @@ export const registerTelegramHandlers = ({
           ? (pendingActions?.[actionIndex] ?? fallbackAction)
           : undefined;
         if (!requestTokenMatches || !action) {
+          logVerbose(
+            `telegram: codex approval callback stale conversation=${conversationId} session=${targetSessionKey} actionIndex=${actionIndex}`,
+          );
           await clearCallbackButtons().catch(() => undefined);
           await updateSessionStore(storePath, (store) => {
             const entry = store[targetSessionKey];
@@ -1429,6 +1432,9 @@ export const registerTelegramHandlers = ({
           return;
         }
         if (action.kind === "steer") {
+          logVerbose(
+            `telegram: codex approval callback steering conversation=${conversationId} session=${targetSessionKey}`,
+          );
           await clearCallbackButtons().catch(() => undefined);
           await updateSessionStore(storePath, (store) => {
             const entry = store[targetSessionKey];
@@ -1448,6 +1454,9 @@ export const registerTelegramHandlers = ({
 
         const submitted = submitAgentRunPendingInputBySessionKey(targetSessionKey, { actionIndex });
         if (!submitted) {
+          logVerbose(
+            `telegram: codex approval callback not submitted conversation=${conversationId} session=${targetSessionKey} actionIndex=${actionIndex}`,
+          );
           await clearCallbackButtons().catch(() => undefined);
           await replyToCallbackChat(
             "Codex is not currently waiting on this input. Rejoin the thread or reply again once the prompt is active.",
@@ -1478,6 +1487,9 @@ export const registerTelegramHandlers = ({
                   ? "Declined."
                   : "Cancelled."
             : `Selected: ${action.label}`;
+        logVerbose(
+          `telegram: codex approval callback submitted conversation=${conversationId} session=${targetSessionKey} actionIndex=${actionIndex}`,
+        );
         await replyToCallbackChat(ackText, replyParams);
         return;
       }

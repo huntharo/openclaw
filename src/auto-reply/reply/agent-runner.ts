@@ -119,6 +119,10 @@ export async function runReplyAgent(params: {
   } = params;
 
   let activeSessionEntry = sessionEntry;
+  const hasPendingCodexInput =
+    activeSessionEntry?.providerOverride === "codex-app-server" &&
+    typeof activeSessionEntry.pendingUserInputRequestId === "string" &&
+    activeSessionEntry.pendingUserInputRequestId.trim().length > 0;
   const activeSessionStore = sessionStore;
   let activeIsNewSession = isNewSession;
 
@@ -194,7 +198,7 @@ export async function runReplyAgent(params: {
     }
   };
 
-  if (shouldSteer && isStreaming) {
+  if ((shouldSteer || hasPendingCodexInput) && isStreaming) {
     const steerText = followupRun.summaryLine?.trim() || commandBody.trim() || followupRun.prompt;
     const steered = queueAgentRunMessage(followupRun.run.sessionId, steerText);
     if (steered && !shouldFollowup) {

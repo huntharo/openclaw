@@ -381,6 +381,18 @@ function extractOptionValues(value: unknown): string[] {
   return [];
 }
 
+function buildMarkdownCodeBlock(text: string, language = ""): string {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+  const fenceMatches = [...normalized.matchAll(/`{3,}/g)];
+  const longestFence = fenceMatches.reduce((max, match) => Math.max(max, match[0].length), 2);
+  const fence = "`".repeat(longestFence + 1);
+  const languageTag = language.trim();
+  return `${fence}${languageTag}\n${normalized}\n${fence}`;
+}
+
 function buildPromptText(params: {
   method: string;
   requestId: string;
@@ -405,7 +417,7 @@ function buildPromptText(params: {
       ? pickString(asRecord(requestRecord?.command)!, ["command", "text", "value"])
       : undefined);
   if (command) {
-    lines.push("", "Command:", command);
+    lines.push("", "Command:", "", buildMarkdownCodeBlock(command, "sh"));
   }
   const cwd =
     (requestRecord ? pickString(requestRecord, ["cwd", "workdir"]) : undefined) ??
@@ -1609,6 +1621,7 @@ export async function runCodexAppServerAgent(
 export const __testing = {
   applyThreadFilter,
   buildCodexPendingUserInputActions,
+  buildMarkdownCodeBlock,
   collectStreamingText,
   extractAssistantNotificationText,
   extractThreadReplayFromReadResult,
