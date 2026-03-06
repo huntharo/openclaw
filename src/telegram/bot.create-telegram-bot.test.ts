@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { escapeRegExp, formatEnvelopeTimestamp } from "../../test/helpers/envelope-timestamp.js";
+import { MediaFetchError } from "../media/fetch.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { useFrozenTime, useRealTime } from "../test-utils/frozen-time.js";
 import {
@@ -33,6 +34,7 @@ import {
   useSpy,
 } from "./bot.create-telegram-bot.test-harness.js";
 import { createTelegramBot, getTelegramSequentialKey } from "./bot.js";
+import * as telegramDelivery from "./bot/delivery.js";
 import { resolveTelegramFetch } from "./fetch.js";
 
 const loadConfig = getLoadConfigMock();
@@ -2114,13 +2116,19 @@ describe("createTelegramBot", () => {
       },
     });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
-      async () =>
-        new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
-          status: 200,
-          headers: { "content-type": "image/png" },
-        }),
-    );
+    const resolveMediaSpy = vi
+      .spyOn(telegramDelivery, "resolveMedia")
+      .mockImplementation(async (ctx) => {
+        const fileId = ctx.message.photo?.[ctx.message.photo.length - 1]?.file_id;
+        if (!fileId) {
+          return null;
+        }
+        return {
+          path: `/tmp/${fileId}.jpg`,
+          contentType: "image/jpeg",
+          placeholder: "<media:image>",
+        };
+      });
 
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     try {
@@ -2179,7 +2187,7 @@ describe("createTelegramBot", () => {
       expect(payload.MediaPaths).toHaveLength(2);
     } finally {
       setTimeoutSpy.mockRestore();
-      fetchSpy.mockRestore();
+      resolveMediaSpy.mockRestore();
     }
   });
   it("coalesces channel_post near-limit text fragments into one message", async () => {
@@ -2338,17 +2346,22 @@ describe("createTelegramBot", () => {
       },
     });
 
-    let fetchCallIndex = 0;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      fetchCallIndex++;
-      if (fetchCallIndex === 2) {
-        throw new Error("MediaFetchError: Failed to fetch media");
-      }
-      return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
-        status: 200,
-        headers: { "content-type": "image/png" },
+    const resolveMediaSpy = vi
+      .spyOn(telegramDelivery, "resolveMedia")
+      .mockImplementation(async (ctx) => {
+        const fileId = ctx.message.photo?.[ctx.message.photo.length - 1]?.file_id;
+        if (!fileId) {
+          return null;
+        }
+        if (fileId === "p2") {
+          throw new MediaFetchError("fetch_failed", "Failed to fetch media");
+        }
+        return {
+          path: `/tmp/${fileId}.jpg`,
+          contentType: "image/jpeg",
+          placeholder: "<media:image>",
+        };
       });
-    });
 
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     try {
@@ -2407,7 +2420,7 @@ describe("createTelegramBot", () => {
       expect(payload.MediaPaths).toHaveLength(1);
     } finally {
       setTimeoutSpy.mockRestore();
-      fetchSpy.mockRestore();
+      resolveMediaSpy.mockRestore();
     }
   });
   it("drops the media group when a non-recoverable media error occurs", async () => {
