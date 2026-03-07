@@ -29,6 +29,7 @@ import { resolveTelegramReplyId, type TelegramThreadSpec } from "./helpers.js";
 
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
 const CAPTION_TOO_LONG_RE = /caption is too long/i;
+const EDIT_TOPIC_RIGHTS_RE = /not enough rights to edit the topic/i;
 
 type DeliveryProgress = {
   hasReplied: boolean;
@@ -93,6 +94,16 @@ function markReplyApplied(progress: DeliveryProgress, replyToId?: number): void 
 function markDelivered(progress: DeliveryProgress): void {
   progress.hasDelivered = true;
   progress.deliveredCount += 1;
+}
+
+function buildTelegramTopicRenameFailureNotice(errorText: string): string | undefined {
+  if (EDIT_TOPIC_RIGHTS_RE.test(errorText)) {
+    return [
+      "Topic rename sync failed.",
+      'This Telegram bot does not have the "Manage Topics" admin permission, so I could not rename the topic.',
+    ].join(" ");
+  }
+  return undefined;
 }
 
 async function deliverTextReply(params: {
@@ -590,7 +601,15 @@ export async function deliverReplies(params: {
             name: renameTopicTo,
           });
         } catch (error) {
-          logVerbose(`telegram topic rename failed: ${formatErrorMessage(error)}`);
+          const errorText = formatErrorMessage(error);
+          params.runtime.log?.(danger(`[telegram] Topic rename sync failed: ${errorText}`));
+          const notice = buildTelegramTopicRenameFailureNotice(errorText);
+          if (notice) {
+            reply = {
+              ...reply,
+              text: reply.text ? `${reply.text}\n\n${notice}` : notice,
+            };
+          }
         }
       }
       let firstDeliveredMessageId: number | undefined;

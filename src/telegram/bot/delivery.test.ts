@@ -768,6 +768,37 @@ describe("deliverReplies", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('logs and warns when forum topic rename lacks "Manage Topics" rights', async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 302, chat: { id: "123" } });
+    const editForumTopic = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Call to 'editForumTopic' failed! (400: Bad Request: not enough rights to edit the topic)",
+        ),
+      );
+    const bot = createBot({ sendMessage, editForumTopic });
+
+    await deliverReplies({
+      replies: [{ text: "renamed", channelData: { telegram: { renameTopicTo: "Better topic" } } }],
+      chatId: "123",
+      token: "tok",
+      runtime,
+      bot,
+      replyToMode: "off",
+      textLimit: 4000,
+      thread: { scope: "forum", id: 99 },
+    });
+
+    expect(runtime.log).toHaveBeenCalledWith(
+      expect.stringContaining("[telegram] Topic rename sync failed:"),
+    );
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("Topic rename sync failed.");
+    expect(sendMessage.mock.calls[0]?.[1]).toContain('"Manage Topics" admin permission');
+  });
+
   it("rethrows VOICE_MESSAGES_FORBIDDEN when no text fallback is available", async () => {
     const { runtime, sendVoice, sendMessage, bot } = createVoiceFailureHarness({
       voiceError: createVoiceMessagesForbiddenError(),
