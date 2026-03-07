@@ -190,10 +190,10 @@ Current status: functionally complete for the current Phase 1 scope. The command
 ### Phase 3: Mirrored Slash Commands And Discovery Hardening
 
 - [ ] Replace heuristic discovery with documented discovery/read flows as the primary path.
-- [ ] Add mirrored `/codex_<name>` command registration from discovered Codex and MCP slash commands.
-- [ ] Add collision handling and stable fallback behavior when names conflict or discovery is unavailable.
-- [ ] Add tests for slash command discovery, caching, refresh, and prefixed command dispatch.
-- [ ] Document mirrored slash command behavior and limits.
+- [x] Add mirrored `/codex_<name>` command registration from discovered Codex and MCP slash commands.
+- [x] Add collision handling and stable fallback behavior when names conflict or discovery is unavailable.
+- [x] Add tests for slash command discovery, caching, refresh, and prefixed command dispatch.
+- [x] Document mirrored slash command behavior and limits.
 - [ ] Commit Phase 3 with `scripts/committer`.
 
 ### Phase 4: Hardening And Cross-Channel Readiness
