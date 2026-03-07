@@ -132,6 +132,15 @@ export type CodexAppServerSkillSummary = {
   enabled?: boolean;
 };
 
+export type CodexAppServerExperimentalFeatureSummary = {
+  name: string;
+  stage?: string;
+  displayName?: string;
+  description?: string;
+  enabled?: boolean;
+  defaultEnabled?: boolean;
+};
+
 export type CodexAppServerThreadState = {
   threadId: string;
   model?: string;
@@ -1502,6 +1511,36 @@ function extractSkillSummaries(value: unknown): CodexAppServerSkillSummary[] {
   return items.toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+function extractExperimentalFeatureSummaries(
+  value: unknown,
+): CodexAppServerExperimentalFeatureSummary[] {
+  const items: CodexAppServerExperimentalFeatureSummary[] = [];
+  const entries = Array.isArray(asRecord(value)?.data)
+    ? (asRecord(value)?.data as unknown[])
+    : Array.isArray(value)
+      ? value
+      : [];
+  for (const entryValue of entries) {
+    const entry = asRecord(entryValue);
+    if (!entry) {
+      continue;
+    }
+    const name = pickString(entry, ["name", "id", "key"]);
+    if (!name) {
+      continue;
+    }
+    items.push({
+      name,
+      stage: pickString(entry, ["stage", "status"]),
+      displayName: pickString(entry, ["displayName", "display_name", "title"]),
+      description: pickString(entry, ["description", "summary", "announcement"]),
+      enabled: pickBoolean(entry, ["enabled", "active", "isEnabled", "is_enabled"]),
+      defaultEnabled: pickBoolean(entry, ["defaultEnabled", "default_enabled", "enabledByDefault"]),
+    });
+  }
+  return items.toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
 function summarizeSandboxPolicy(value: unknown): string | undefined {
   if (typeof value === "string") {
     return value.trim() || undefined;
@@ -1813,6 +1852,22 @@ export async function readCodexAppServerSkills(params?: {
       timeoutMs: settings.requestTimeoutMs,
     });
     return extractSkillSummaries(result);
+  });
+}
+
+export async function readCodexAppServerExperimentalFeatures(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+}): Promise<CodexAppServerExperimentalFeatureSummary[]> {
+  return await withInitializedCodexClient(params ?? {}, async ({ client, settings }) => {
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["experimentalFeature/list"],
+      payloads: [{ limit: 100 }, {}],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    return extractExperimentalFeatureSummaries(result);
   });
 }
 
@@ -2451,6 +2506,7 @@ export const __testing = {
   extractAccountSummary,
   extractOptionValues,
   extractAssistantNotificationText,
+  extractExperimentalFeatureSummaries,
   extractRateLimitSummaries,
   extractSkillSummaries,
   extractThreadState,

@@ -15,6 +15,7 @@ import {
   startCodexAppServerThreadCompaction,
   runCodexAppServerAgent,
   readCodexAppServerAccount,
+  readCodexAppServerExperimentalFeatures,
   readCodexAppServerModels,
   readCodexAppServerRateLimits,
   readCodexAppServerSkills,
@@ -24,6 +25,7 @@ import {
   isCodexAppServerProvider,
   readCodexAppServerThreadContext,
   type CodexAppServerAccountSummary,
+  type CodexAppServerExperimentalFeatureSummary,
   type CodexAppServerRateLimitSummary,
   type CodexAppServerSkillSummary,
   type CodexAppServerThreadState,
@@ -873,6 +875,48 @@ function formatCodexSkillSummaryLines(params: {
   return lines;
 }
 
+function formatCodexExperimentalFeatureLines(params: {
+  features: CodexAppServerExperimentalFeatureSummary[];
+  filter?: string;
+}): string[] {
+  const filter = params.filter?.trim().toLowerCase();
+  const features = filter
+    ? params.features.filter((feature) => {
+        const haystack = [feature.name, feature.displayName, feature.description, feature.stage]
+          .filter(Boolean)
+          .join("\n");
+        return haystack.toLowerCase().includes(filter);
+      })
+    : params.features;
+  const lines = ["Codex experimental features:"];
+  if (features.length === 0) {
+    lines.push(
+      filter
+        ? `No experimental features matched "${params.filter?.trim()}".`
+        : "No experimental features reported.",
+    );
+    return lines;
+  }
+  for (const feature of features.slice(0, 20)) {
+    const bits = [
+      feature.name,
+      feature.stage ? `stage=${feature.stage}` : undefined,
+      feature.enabled === true ? "enabled" : feature.enabled === false ? "disabled" : undefined,
+      feature.defaultEnabled === true
+        ? "default-on"
+        : feature.defaultEnabled === false
+          ? "default-off"
+          : undefined,
+    ].filter(Boolean);
+    const description = feature.displayName ?? feature.description;
+    lines.push(`- ${bits.join(" · ")}${description ? ` - ${description}` : ""}`);
+  }
+  if (features.length > 20) {
+    lines.push(`- …and ${features.length - 20} more`);
+  }
+  return lines;
+}
+
 async function sendCodexReplies(params: {
   commandParams: HandleCommandsParams;
   sessionKey: string;
@@ -1293,6 +1337,30 @@ async function handleCodexSkillsCommand(
   );
 }
 
+async function handleCodexExperimentalCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const features = await readCodexAppServerExperimentalFeatures({
+    config: params.cfg,
+    sessionKey: target.sessionKey,
+    workspaceDir,
+  });
+  return stopWithText(
+    formatCodexExperimentalFeatureLines({
+      features,
+      filter: argsText,
+    }).join("\n"),
+  );
+}
+
 function pickBestThread(
   threads: CodexAppServerThreadSummary[],
   token: string,
@@ -1345,6 +1413,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "skills") {
       return await handleCodexSkillsCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "experimental") {
+      return await handleCodexExperimentalCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();

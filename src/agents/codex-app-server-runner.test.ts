@@ -250,6 +250,33 @@ describe("extractSkillSummaries", () => {
   });
 });
 
+describe("extractExperimentalFeatureSummaries", () => {
+  it("parses experimentalFeature/list responses into local summaries", () => {
+    expect(
+      __testing.extractExperimentalFeatureSummaries({
+        data: [
+          {
+            name: "fancy_feature",
+            stage: "beta",
+            displayName: "Fancy Feature",
+            enabled: true,
+            defaultEnabled: false,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        name: "fancy_feature",
+        stage: "beta",
+        displayName: "Fancy Feature",
+        description: undefined,
+        enabled: true,
+        defaultEnabled: false,
+      },
+    ]);
+  });
+});
+
 describe("buildCodexPendingUserInputActions", () => {
   it("renders typed approval actions and a steer affordance", () => {
     expect(

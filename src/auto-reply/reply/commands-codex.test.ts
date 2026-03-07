@@ -11,6 +11,7 @@ const discoverCodexAppServerThreadsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerThreadContextMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerThreadStateMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerAccountMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerExperimentalFeaturesMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerRateLimitsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerSkillsMock = vi.hoisted(() => vi.fn());
@@ -41,6 +42,8 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
     readCodexAppServerThreadContextMock(...args),
   readCodexAppServerThreadState: (...args: unknown[]) => readCodexAppServerThreadStateMock(...args),
   readCodexAppServerAccount: (...args: unknown[]) => readCodexAppServerAccountMock(...args),
+  readCodexAppServerExperimentalFeatures: (...args: unknown[]) =>
+    readCodexAppServerExperimentalFeaturesMock(...args),
   readCodexAppServerModels: (...args: unknown[]) => readCodexAppServerModelsMock(...args),
   readCodexAppServerRateLimits: (...args: unknown[]) => readCodexAppServerRateLimitsMock(...args),
   readCodexAppServerSkills: (...args: unknown[]) => readCodexAppServerSkillsMock(...args),
@@ -91,6 +94,7 @@ describe("handleCodexCommand", () => {
       planType: "pro",
       requiresOpenaiAuth: true,
     });
+    readCodexAppServerExperimentalFeaturesMock.mockReset().mockResolvedValue([]);
     readCodexAppServerModelsMock.mockReset().mockResolvedValue([]);
     readCodexAppServerRateLimitsMock.mockReset().mockResolvedValue([
       {
@@ -763,6 +767,36 @@ describe("handleCodexCommand", () => {
         workspaceDir: "/repo/openclaw",
       }),
     );
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("renders /codex_experimental from App Server feature discovery", async () => {
+    const params = buildParams("/codex_experimental");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerExperimentalFeaturesMock.mockResolvedValue([
+      {
+        name: "fancy_feature",
+        stage: "beta",
+        displayName: "Fancy Feature",
+        enabled: true,
+        defaultEnabled: false,
+      },
+    ]);
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Codex experimental features:");
+    expect(result?.reply?.text).toContain(
+      "fancy_feature · stage=beta · enabled · default-off - Fancy Feature",
+    );
+    expect(readCodexAppServerExperimentalFeaturesMock).toHaveBeenCalled();
     expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
 
