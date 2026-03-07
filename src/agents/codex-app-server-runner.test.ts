@@ -130,6 +130,57 @@ describe("applyThreadFilter", () => {
   });
 });
 
+describe("extractThreadsFromValue", () => {
+  it("normalizes mixed second and millisecond timestamps before sorting recent threads", () => {
+    expect(
+      __testing.extractThreadsFromValue({
+        threads: [
+          {
+            id: "older-ms",
+            title: "Older thread",
+            cwd: "/repo/openclaw",
+            updatedAt: 1_700_000_000_000,
+          },
+          {
+            id: "newer-sec",
+            title: "Newest thread",
+            cwd: "/repo/openclaw",
+            updatedAt: 1_800_000_000,
+          },
+          {
+            id: "middle-sec",
+            title: "Middle thread",
+            cwd: "/repo/openclaw",
+            updatedAt: 1_750_000_000,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        threadId: "newer-sec",
+        title: "Newest thread",
+        summary: "",
+        projectKey: "/repo/openclaw",
+        updatedAt: 1_800_000_000_000,
+      },
+      {
+        threadId: "middle-sec",
+        title: "Middle thread",
+        summary: "",
+        projectKey: "/repo/openclaw",
+        updatedAt: 1_750_000_000_000,
+      },
+      {
+        threadId: "older-ms",
+        title: "Older thread",
+        summary: "",
+        projectKey: "/repo/openclaw",
+        updatedAt: 1_700_000_000_000,
+      },
+    ]);
+  });
+});
+
 describe("extractThreadState", () => {
   it("pulls model, cwd, permissions, and service tier from thread/resume responses", () => {
     expect(
@@ -247,6 +298,22 @@ describe("buildThreadDiscoveryFilter", () => {
       },
       {
         filter: undefined,
+        cwd: "/repo/openclaw",
+        limit: 50,
+      },
+      {},
+    ]);
+  });
+
+  it("passes the search term through to the app server request payloads", () => {
+    expect(__testing.buildThreadDiscoveryFilter("openclaw", "/repo/openclaw")).toEqual([
+      {
+        query: "openclaw",
+        cwd: "/repo/openclaw",
+        limit: 50,
+      },
+      {
+        filter: "openclaw",
         cwd: "/repo/openclaw",
         limit: 50,
       },

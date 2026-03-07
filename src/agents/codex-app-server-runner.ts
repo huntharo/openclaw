@@ -1669,6 +1669,13 @@ function applyThreadFilter(
   return threads.filter((thread) => matchesAllTokens(thread.summary, tokens));
 }
 
+function normalizeEpochTimestamp(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return value < 1_000_000_000_000 ? value * 1000 : value;
+}
+
 function extractThreadsFromValue(value: unknown): CodexAppServerThreadSummary[] {
   const items = extractThreadRecords(value);
   const summaries = new Map<string, CodexAppServerThreadSummary>();
@@ -1691,9 +1698,10 @@ function extractThreadsFromValue(value: unknown): CodexAppServerThreadSummary[] 
       projectKey:
         pickString(record, ["projectKey", "project_key", "cwd"]) ??
         pickString(sessionRecord ?? {}, ["cwd", "projectKey", "project_key"]),
-      updatedAt:
+      updatedAt: normalizeEpochTimestamp(
         pickNumber(record, ["updatedAt", "updated_at", "lastActivityAt", "createdAt"]) ??
-        pickNumber(sessionRecord ?? {}, ["updatedAt", "updated_at", "lastActivityAt"]),
+          pickNumber(sessionRecord ?? {}, ["updatedAt", "updated_at", "lastActivityAt"]),
+      ),
     });
   }
   return [...summaries.values()].toSorted(
@@ -2242,7 +2250,7 @@ export async function discoverCodexAppServerThreads(params?: {
     const result = await requestWithFallbacks({
       client,
       methods: ["thread/list", "thread/loaded/list"],
-      payloads: buildThreadDiscoveryFilter(undefined, params?.workspaceDir),
+      payloads: buildThreadDiscoveryFilter(params?.filter, params?.workspaceDir),
       timeoutMs: settings.requestTimeoutMs,
     });
     let threads = extractThreadsFromValue(result);
@@ -3390,6 +3398,7 @@ export const __testing = {
   extractMcpServerSummaries,
   extractRateLimitSummaries,
   extractSkillSummaries,
+  extractThreadsFromValue,
   extractThreadState,
   extractThreadReplayFromReadResult,
   formatRateLimitWindowName,
