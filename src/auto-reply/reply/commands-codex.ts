@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
 import {
   CODEX_BUILT_IN_MIRRORED_COMMANDS,
@@ -49,7 +50,9 @@ import {
 import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
+import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { shortenHomePath } from "../../utils.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveAcpCommandBindingContext } from "./commands-acp/context.js";
 import type {
@@ -777,17 +780,83 @@ function formatCodexRateLimitLine(limit: CodexAppServerRateLimitSummary): string
   return `${prefix}unavailable`;
 }
 
+function splitCodexRateLimitName(name: string): {
+  prefix: string;
+  label: string;
+  labelOrder: number;
+} {
+  const trimmed = name.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower.endsWith("5h limit")) {
+    const prefix = trimmed.slice(0, Math.max(0, trimmed.length - "5h limit".length)).trim();
+    return { prefix, label: "5h limit", labelOrder: 0 };
+  }
+  if (lower.endsWith("weekly limit")) {
+    const prefix = trimmed.slice(0, Math.max(0, trimmed.length - "weekly limit".length)).trim();
+    return { prefix, label: "Weekly limit", labelOrder: 1 };
+  }
+  return { prefix: "", label: trimmed, labelOrder: 99 };
+}
+
+function normalizeCodexModelKey(value: string | undefined): string {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  const withoutProvider = trimmed.includes("/") ? (trimmed.split("/").at(-1) ?? trimmed) : trimmed;
+  return withoutProvider.replace(/[^a-z0-9]+/g, "");
+}
+
+function selectVisibleCodexRateLimits(params: {
+  rateLimits: CodexAppServerRateLimitSummary[];
+  currentModel?: string;
+}): CodexAppServerRateLimitSummary[] {
+  const currentModelKey = normalizeCodexModelKey(params.currentModel);
+  return [...params.rateLimits]
+    .filter((limit) => {
+      const { prefix } = splitCodexRateLimitName(limit.name);
+      if (!prefix) {
+        return true;
+      }
+      if (!currentModelKey) {
+        return false;
+      }
+      return normalizeCodexModelKey(prefix) === currentModelKey;
+    })
+    .toSorted((left, right) => {
+      const leftName = splitCodexRateLimitName(left.name);
+      const rightName = splitCodexRateLimitName(right.name);
+      const leftPrefixBlank = leftName.prefix ? 1 : 0;
+      const rightPrefixBlank = rightName.prefix ? 1 : 0;
+      if (leftPrefixBlank !== rightPrefixBlank) {
+        return leftPrefixBlank - rightPrefixBlank;
+      }
+      const prefixCompare = leftName.prefix.localeCompare(rightName.prefix);
+      if (prefixCompare !== 0) {
+        return prefixCompare;
+      }
+      if (leftName.labelOrder !== rightName.labelOrder) {
+        return leftName.labelOrder - rightName.labelOrder;
+      }
+      return left.name.localeCompare(right.name);
+    });
+}
+
 function formatCodexMirroredStatusText(params: {
   threadState?: CodexAppServerThreadState;
   account?: CodexAppServerAccountSummary;
   rateLimits: CodexAppServerRateLimitSummary[];
   entry: HandleCommandsParams["sessionEntry"];
   errors: string[];
+  projectFolder?: string;
 }): string {
   const lines = ["OpenAI Codex"];
+  if (params.threadState?.threadName?.trim()) {
+    lines.push(`Thread: ${params.threadState.threadName.trim()}`);
+  }
   lines.push(`Model: ${formatCodexModelText(params.threadState)}`);
+  lines.push(`Project folder: ${params.projectFolder ?? "unknown"}`);
   lines.push(
-    `Directory: ${params.threadState?.cwd?.trim() || params.entry?.codexProjectKey?.trim() || "unknown"}`,
+    `Worktree folder: ${shortenHomePath(
+      params.threadState?.cwd?.trim() || params.entry?.codexProjectKey?.trim() || "unknown",
+    )}`,
   );
   lines.push(
     `Fast mode: ${formatCodexFastModeValue(
@@ -805,9 +874,13 @@ function formatCodexMirroredStatusText(params: {
   lines.push(
     `Session: ${params.threadState?.threadId?.trim() || params.entry?.codexThreadId?.trim() || "unknown"}`,
   );
-  if (params.rateLimits.length > 0) {
+  const visibleRateLimits = selectVisibleCodexRateLimits({
+    rateLimits: params.rateLimits,
+    currentModel: params.threadState?.model,
+  });
+  if (visibleRateLimits.length > 0) {
     lines.push("");
-    for (const limit of params.rateLimits) {
+    for (const limit of visibleRateLimits) {
       lines.push(formatCodexRateLimitLine(limit));
     }
   }
@@ -818,6 +891,29 @@ function formatCodexMirroredStatusText(params: {
     }
   }
   return lines.join("\n");
+}
+
+async function resolveCodexProjectFolder(worktreeFolder?: string): Promise<string | undefined> {
+  const cwd = worktreeFolder?.trim();
+  if (!cwd) {
+    return undefined;
+  }
+  try {
+    const result = await runCommandWithTimeout(
+      ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { timeoutMs: 5_000, cwd },
+    );
+    if (result.code !== 0) {
+      return shortenHomePath(cwd);
+    }
+    const commonDir = result.stdout.trim();
+    if (!commonDir) {
+      return shortenHomePath(cwd);
+    }
+    return shortenHomePath(path.dirname(commonDir));
+  } catch {
+    return shortenHomePath(cwd);
+  }
 }
 
 function formatModelSummaryLines(params: {
@@ -1269,6 +1365,7 @@ async function handleCodexMirroredStatusCommand(
       return [] as CodexAppServerRateLimitSummary[];
     }),
   ]);
+  const projectFolder = await resolveCodexProjectFolder(threadState?.cwd ?? workspaceDir);
   await updateCodexSession(
     params,
     {
@@ -1287,6 +1384,7 @@ async function handleCodexMirroredStatusCommand(
       rateLimits,
       entry: sessionEntry,
       errors,
+      projectFolder,
     }),
   );
 }

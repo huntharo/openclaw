@@ -151,6 +151,7 @@ export type CodexAppServerMcpServerSummary = {
 
 export type CodexAppServerThreadState = {
   threadId: string;
+  threadName?: string;
   model?: string;
   modelProvider?: string;
   serviceTier?: string;
@@ -1621,6 +1622,7 @@ function extractThreadState(value: unknown): CodexAppServerThreadState {
       extractIds(value).threadId ??
       findFirstNestedString(value, ["threadId", "thread_id", "id", "conversationId"]) ??
       "",
+    threadName: findFirstNestedString(value, ["threadName", "thread_name", "name", "title"]),
     model: findFirstNestedString(value, ["model", "modelId", "model_id"]),
     modelProvider: findFirstNestedString(value, [
       "modelProvider",

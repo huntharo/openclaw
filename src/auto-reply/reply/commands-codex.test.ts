@@ -25,6 +25,7 @@ const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
   vi.fn<() => string | null>(() => null),
 );
 const routeReplyMock = vi.hoisted(() => vi.fn());
+const runCommandWithTimeoutMock = vi.hoisted(() => vi.fn());
 const sessionBindingServiceMock = vi.hoisted(() => ({
   bind: vi.fn(),
   getCapabilities: vi.fn(),
@@ -64,6 +65,10 @@ vi.mock("../../infra/outbound/session-binding-service.js", () => ({
   getSessionBindingService: () => sessionBindingServiceMock,
 }));
 
+vi.mock("../../process/exec.js", () => ({
+  runCommandWithTimeout: (...args: unknown[]) => runCommandWithTimeoutMock(...args),
+}));
+
 vi.mock("./route-reply.js", () => ({
   isRoutableChannel: (channel: string | undefined) => Boolean(channel && channel !== "webchat"),
   routeReply: (...args: unknown[]) => routeReplyMock(...args),
@@ -82,6 +87,7 @@ describe("handleCodexCommand", () => {
     readCodexAppServerThreadContextMock.mockReset().mockResolvedValue({});
     readCodexAppServerThreadStateMock.mockReset().mockResolvedValue({
       threadId: "thread-123",
+      threadName: "Plan TASKS doc refresh",
       model: "gpt-5.4",
       modelProvider: "openai",
       serviceTier: undefined,
@@ -126,6 +132,13 @@ describe("handleCodexCommand", () => {
     getCodexAppServerAvailabilityErrorMock.mockReset().mockReturnValue(null);
     getCodexAppServerRuntimeStatusMock.mockReset().mockReturnValue({ state: "unknown" });
     routeReplyMock.mockReset().mockResolvedValue({ ok: true, messageId: "m-1" });
+    runCommandWithTimeoutMock.mockReset().mockResolvedValue({
+      code: 0,
+      stdout: "/repo/openclaw/.git\n",
+      stderr: "",
+      signal: null,
+      timedOut: false,
+    });
     sessionBindingServiceMock.bind.mockReset().mockImplementation(async (input: unknown) => {
       const record = input as {
         targetSessionKey: string;
@@ -847,17 +860,90 @@ describe("handleCodexCommand", () => {
     const result = await handleCodexCommand(params, true);
 
     expect(result?.reply?.text).toContain("OpenAI Codex");
+    expect(result?.reply?.text).toContain("Thread: Plan TASKS doc refresh");
     expect(result?.reply?.text).toContain("Model: openai/gpt-5.4 · reasoning high");
-    expect(result?.reply?.text).toContain("Directory: /repo/openclaw");
+    expect(result?.reply?.text).toContain("Project folder: /repo/openclaw");
+    expect(result?.reply?.text).toContain("Worktree folder: /repo/openclaw");
     expect(result?.reply?.text).toContain("Fast mode: off");
     expect(result?.reply?.text).toContain("Permissions: Default");
     expect(result?.reply?.text).toContain("Account: user@example.com (pro)");
     expect(result?.reply?.text).toContain("Session: thread-123");
     expect(result?.reply?.text).toContain("5h limit: 96% left");
+    expect(runCommandWithTimeoutMock).toHaveBeenCalledWith(
+      ["git", "-C", "/repo/openclaw", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      expect.objectContaining({ cwd: "/repo/openclaw", timeoutMs: 5_000 }),
+    );
     expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
     expect(readCodexAppServerThreadStateMock).toHaveBeenCalled();
     expect(readCodexAppServerAccountMock).toHaveBeenCalled();
     expect(readCodexAppServerRateLimitsMock).toHaveBeenCalled();
+  });
+
+  it("hides non-matching model-specific usage rows in /codex_status", async () => {
+    const params = buildParams("/codex_status");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerRateLimitsMock.mockResolvedValue([
+      { name: "5h limit", usedPercent: 4 },
+      { name: "Weekly limit", usedPercent: 17 },
+      { name: "GPT-5.3-Codex-Spark 5h limit", usedPercent: 0 },
+      { name: "GPT-5.3-Codex-Spark Weekly limit", usedPercent: 0 },
+    ]);
+
+    const result = await handleCodexCommand(params, true);
+    const text = result?.reply?.text ?? "";
+
+    expect(text).toContain("5h limit: 96% left");
+    expect(text).toContain("Weekly limit: 83% left");
+    expect(text).not.toContain("GPT-5.3-Codex-Spark 5h limit");
+    expect(text).not.toContain("GPT-5.3-Codex-Spark Weekly limit");
+  });
+
+  it("groups model-specific usage rows after generic rows in /codex_status", async () => {
+    const params = buildParams("/codex_status");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerThreadStateMock.mockResolvedValueOnce({
+      threadId: "thread-123",
+      threadName: "Plan TASKS doc refresh",
+      model: "gpt-5.3-codex-spark",
+      modelProvider: "openai",
+      serviceTier: undefined,
+      cwd: "/repo/openclaw",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      reasoningEffort: "high",
+    });
+    readCodexAppServerRateLimitsMock.mockResolvedValue([
+      { name: "GPT-5.3-Codex-Spark Weekly limit", usedPercent: 0 },
+      { name: "Weekly limit", usedPercent: 17 },
+      { name: "GPT-5.3-Codex-Spark 5h limit", usedPercent: 0 },
+      { name: "5h limit", usedPercent: 4 },
+    ]);
+
+    const result = await handleCodexCommand(params, true);
+    const text = result?.reply?.text ?? "";
+    const genericFiveHourIndex = text.indexOf("5h limit: 96% left");
+    const genericWeeklyIndex = text.indexOf("Weekly limit: 83% left");
+    const sparkFiveHourIndex = text.indexOf("GPT-5.3-Codex-Spark 5h limit: 100% left");
+    const sparkWeeklyIndex = text.indexOf("GPT-5.3-Codex-Spark Weekly limit: 100% left");
+
+    expect(genericFiveHourIndex).toBeGreaterThan(-1);
+    expect(genericWeeklyIndex).toBeGreaterThan(genericFiveHourIndex);
+    expect(sparkFiveHourIndex).toBeGreaterThan(genericWeeklyIndex);
+    expect(sparkWeeklyIndex).toBeGreaterThan(sparkFiveHourIndex);
   });
 
   it("summarizes models for /codex_model with no args", async () => {

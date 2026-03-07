@@ -252,15 +252,15 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [x] Reimplement `/codex_fast` as a client-side `serviceTier` control instead of relayed slash text.
 - [ ] Reimplement `/codex_model` as a client-side model selection and summary flow backed by App Server state.
 - [ ] Reimplement `/codex_permissions` as a client-side permissions or approval-policy control instead of relayed slash text.
-- [ ] Reimplement `/codex_experimental` as a client-side experimental-feature view or toggle backed by structured runtime state.
-- [ ] Reimplement `/codex_skills` as a client-side skills discovery view backed by App Server skill APIs.
+- [x] Reimplement `/codex_experimental` as a client-side experimental-feature view or toggle backed by structured runtime state.
+- [x] Reimplement `/codex_skills` as a client-side skills discovery view backed by App Server skill APIs.
 - [ ] Reimplement `/codex_review` using `review/start` instead of relayed slash text.
-- [ ] Reimplement `/codex_rename` using `thread/name/set` instead of relayed slash text.
+- [x] Reimplement `/codex_rename` using `thread/name/set` instead of relayed slash text.
 - [ ] Reimplement `/codex_init` as the verified relayed turn-start path for Codex thread bootstrapping.
-- [ ] Reimplement `/codex_compact` using `thread/compact/start` instead of relayed slash text.
+- [x] Reimplement `/codex_compact` using `thread/compact/start` instead of relayed slash text.
 - [ ] Reimplement `/codex_plan` as a client-side collaboration-mode or planning-state control instead of relayed slash text.
 - [ ] Reimplement `/codex_diff` as a client-side diff view instead of relayed slash text.
-- [ ] Reimplement `/codex_mcp` as a client-side MCP status or tool listing backed by structured discovery.
+- [x] Reimplement `/codex_mcp` as a client-side MCP status or tool listing backed by structured discovery.
 - [ ] Commit Phase 3 with `scripts/committer`.
 
 ### Phase 4: Hardening And Cross-Channel Readiness

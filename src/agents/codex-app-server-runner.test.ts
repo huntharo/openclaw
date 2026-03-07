@@ -119,7 +119,7 @@ describe("extractThreadState", () => {
   it("pulls model, cwd, permissions, and service tier from thread/resume responses", () => {
     expect(
       __testing.extractThreadState({
-        thread: { id: "thread-123" },
+        thread: { id: "thread-123", name: "Plan TASKS doc refresh" },
         model: "gpt-5.4",
         modelProvider: "openai",
         serviceTier: "fast",
@@ -134,6 +134,7 @@ describe("extractThreadState", () => {
       }),
     ).toEqual({
       threadId: "thread-123",
+      threadName: "Plan TASKS doc refresh",
       model: "gpt-5.4",
       modelProvider: "openai",
       serviceTier: "fast",
