@@ -182,3 +182,79 @@ Protocol assumptions reflected in current code:
 - Run control API is session-key keyed; correct binding resolution is mandatory for approval callbacks.
 - Approval rendering and callback encoding are deterministic and strongly typed in code paths; they should not depend on model interpretation.
 - Thread replay shown by `/codex join` is extracted from structured thread/read data, not synthesized by LLM summarization.
+
+## Next-Iteration Design Hooks
+
+This section maps the refined March 6, 2026 requirements into concrete code seams.
+
+### 1) `/codex list --cwd` with home expansion
+
+- Command parse and dispatch seam:
+  - [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - `handleCodexCommand` in the `action === "list"` branch
+- Thread filter seam:
+  - [src/agents/codex-app-server-runner.ts](src/agents/codex-app-server-runner.ts)
+  - `discoverCodexAppServerThreads`
+  - `buildThreadDiscoveryFilter`
+- Design intent:
+  - expand `~/...` to home before discovery
+  - validate directory existence before exact-path filtering
+  - keep filtering deterministic and avoid LLM-mediated path matching in the critical path
+
+### 2) Approval replay de-duplication on join and restart
+
+- Replay emit seam:
+  - [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - `buildPendingInputReplay`
+  - join payload routing in `handleCodexCommand` in the `action === "join"` branch
+- Startup reconciliation seam:
+  - [src/agents/codex-app-server-startup.ts](src/agents/codex-app-server-startup.ts)
+  - `reconcileCodexPendingInputsOnStartup`
+- Callback token seam:
+  - [src/agents/codex-app-server-pending-input.ts](src/agents/codex-app-server-pending-input.ts)
+  - `buildCodexPendingInputCallbackData`
+  - `matchesCodexPendingInputRequestToken`
+- Design intent:
+  - replay pending approvals once per unresolved request id
+  - if an existing dialog is still actionable for the same request id, do not duplicate it
+
+### 3) Monitoring across threads
+
+- Existing data sources:
+  - [src/agents/codex-app-server-runner.ts](src/agents/codex-app-server-runner.ts)
+  - `discoverCodexAppServerThreads`
+  - `readCodexAppServerThreadContext`
+  - [src/infra/outbound/session-binding-service.ts](src/infra/outbound/session-binding-service.ts)
+  - binding records resolved via `resolveByConversation`
+  - [src/config/sessions/types.ts](src/config/sessions/types.ts)
+  - persisted Codex thread and pending-input fields
+- Design intent:
+  - add a monitor aggregator that merges recent thread activity, pending approvals, binding metadata, and workspace or branch status
+  - support poll mode for non-active thread visibility if App Server does not push enough events to passive clients
+
+### 4) Telegram handler boundary cleanup
+
+- Current heavy integration point:
+  - [src/telegram/bot-handlers.ts](src/telegram/bot-handlers.ts)
+  - `bot.on("callback_query", ...)`
+  - `bot.on("message", ...)`
+- Existing shared control seam:
+  - [src/agents/run-control.ts](src/agents/run-control.ts)
+  - `submitAgentRunPendingInputBySessionKey`
+  - `queueAgentRunMessageBySessionKey`
+- Design intent:
+  - extract Codex pending-input callback and free-form routing into dedicated adapter module(s)
+  - keep `bot-handlers.ts` focused on Telegram transport and event normalization
+
+### 5) Focus and unfocus safety for Codex bindings
+
+- Binding behavior seams:
+  - [src/infra/outbound/session-binding-service.ts](src/infra/outbound/session-binding-service.ts)
+  - [src/telegram/thread-bindings.ts](src/telegram/thread-bindings.ts)
+  - [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - `shouldPinCodexBindingNotice`
+  - bind and unbind flows in `ensureCodexBoundSession` and `unbindCodexConversation`
+- Design intent:
+  - preserve Codex binding correctness when `/focus` and `/unfocus` are used
+  - avoid orphaning codex-bound session entries
+  - keep pinned bind notice behavior consistent for topic conversations
