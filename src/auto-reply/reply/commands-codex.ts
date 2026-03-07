@@ -12,9 +12,14 @@ import {
   type CodexPendingUserInputAction,
 } from "../../agents/codex-app-server-pending-input.js";
 import {
+  buildCodexReviewActionCallbackData,
+  type CodexReviewAction,
+} from "../../agents/codex-app-server-review-actions.js";
+import {
   discoverCodexAppServerThreads,
   startCodexAppServerThreadCompaction,
   runCodexAppServerAgent,
+  startCodexAppServerReview,
   readCodexAppServerAccount,
   readCodexAppServerExperimentalFeatures,
   readCodexAppServerMcpServers,
@@ -84,6 +89,8 @@ type SessionMutation = {
   pendingUserInputPromptText?: string;
   pendingUserInputMethod?: string;
   pendingUserInputAwaitingSteer?: boolean;
+  codexReviewActionRequestId?: string;
+  codexReviewActions?: CodexReviewAction[];
 };
 
 type CodexTargetSession = {
@@ -1124,6 +1131,142 @@ function formatCodexMcpServerLines(params: {
   return lines;
 }
 
+type ParsedCodexReviewFinding = {
+  priorityLabel?: string;
+  title: string;
+  location?: string;
+  body?: string;
+};
+
+type ParsedCodexReviewOutput = {
+  summary?: string;
+  findings: ParsedCodexReviewFinding[];
+};
+
+function parseCodexReviewOutput(reviewText: string): ParsedCodexReviewOutput {
+  const normalized = reviewText.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return { findings: [] };
+  }
+  const lines = normalized.split("\n");
+  const markerIndex = lines.findIndex(
+    (line) => line.trim() === "Review comment:" || line.trim() === "Full review comments:",
+  );
+  const summary =
+    markerIndex <= 0 ? undefined : lines.slice(0, markerIndex).join("\n").trim() || undefined;
+  const findingLines = markerIndex >= 0 ? lines.slice(markerIndex + 1) : lines;
+  const findings: ParsedCodexReviewFinding[] = [];
+  let current: ParsedCodexReviewFinding | null = null;
+  for (const rawLine of findingLines) {
+    const line = rawLine.trimEnd();
+    const findingMatch = line.match(/^- (?:\[[x ]\] )?(?<title>.+?)(?:\s+—\s+(?<location>.+))?$/);
+    if (findingMatch?.groups?.title) {
+      if (current) {
+        findings.push(current);
+      }
+      const rawTitle = findingMatch.groups.title.trim();
+      const priorityMatch = rawTitle.match(/^\[(P\d)\]\s*(.+)$/i);
+      current = {
+        priorityLabel: priorityMatch?.[1]?.toUpperCase(),
+        title: (priorityMatch?.[2] ?? rawTitle).trim(),
+        location: findingMatch.groups.location?.trim() || undefined,
+      };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    const bodyLine = line.replace(/^\s{2}/, "").trimEnd();
+    current.body = current.body ? `${current.body}\n${bodyLine}` : bodyLine;
+  }
+  if (current) {
+    findings.push(current);
+  }
+  return {
+    summary,
+    findings,
+  };
+}
+
+function formatCodexReviewFindingMessage(params: {
+  finding: ParsedCodexReviewFinding;
+  index: number;
+}): string {
+  const heading = params.finding.priorityLabel ?? `Finding ${params.index + 1}`;
+  const lines = [heading, params.finding.title];
+  if (params.finding.location) {
+    lines.push(`Location: ${params.finding.location}`);
+  }
+  if (params.finding.body?.trim()) {
+    lines.push("", params.finding.body.trim());
+  }
+  return lines.join("\n");
+}
+
+function buildCodexReviewActionPrompt(params: {
+  finding: ParsedCodexReviewFinding;
+  index: number;
+}): string {
+  return [
+    "Please implement this Codex review finding:",
+    "",
+    formatCodexReviewFindingMessage(params),
+  ].join("\n");
+}
+
+function buildCodexReviewAllActionPrompt(findings: ParsedCodexReviewFinding[]): string {
+  const lines = ["Please implement fixes for all of these Codex review findings:", ""];
+  findings.forEach((finding, index) => {
+    lines.push(
+      `${index + 1}. ${finding.priorityLabel ? `[${finding.priorityLabel}] ` : ""}${finding.title}`,
+    );
+    if (finding.location) {
+      lines.push(`   ${finding.location}`);
+    }
+    if (finding.body?.trim()) {
+      for (const bodyLine of finding.body.trim().split("\n")) {
+        lines.push(`   ${bodyLine}`);
+      }
+    }
+  });
+  return lines.join("\n");
+}
+
+function buildCodexReviewActions(findings: ParsedCodexReviewFinding[]): CodexReviewAction[] {
+  const singleActions = findings.slice(0, 6).map((finding, index) => ({
+    label: finding.priorityLabel ? `Implement ${finding.priorityLabel}` : `Implement #${index + 1}`,
+    prompt: buildCodexReviewActionPrompt({ finding, index }),
+  }));
+  if (findings.length === 0) {
+    return [];
+  }
+  return [
+    ...singleActions,
+    {
+      label: "Implement All Fixes",
+      prompt: buildCodexReviewAllActionPrompt(findings),
+    },
+  ];
+}
+
+function buildCodexReviewActionButtons(params: {
+  requestId: string;
+  actions: CodexReviewAction[];
+}): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
+  if (params.actions.length === 0) {
+    return undefined;
+  }
+  return params.actions.map((action, actionIndex) => [
+    {
+      text: action.label,
+      callback_data: buildCodexReviewActionCallbackData({
+        requestId: params.requestId,
+        actionIndex,
+      }),
+    },
+  ]);
+}
+
 async function sendCodexReplies(params: {
   commandParams: HandleCommandsParams;
   sessionKey: string;
@@ -1244,6 +1387,22 @@ async function updateCodexPendingInputState(params: {
       pendingUserInputPromptText: params.pending?.promptText,
       pendingUserInputMethod: params.pending?.method,
       pendingUserInputAwaitingSteer: false,
+    },
+    params.sessionKey,
+  );
+}
+
+async function updateCodexReviewActionState(params: {
+  commandParams: HandleCommandsParams;
+  sessionKey: string;
+  requestId?: string;
+  actions?: CodexReviewAction[];
+}): Promise<void> {
+  await updateCodexSession(
+    params.commandParams,
+    {
+      codexReviewActionRequestId: params.requestId,
+      codexReviewActions: params.actions,
     },
     params.sessionKey,
   );
@@ -1603,6 +1762,106 @@ async function handleCodexMcpCommand(
   );
 }
 
+async function handleCodexReviewCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const threadId = sessionEntry?.codexThreadId?.trim();
+  if (!threadId) {
+    return stopWithText(
+      "Codex review is unavailable until a Codex thread is started or joined in this conversation.",
+    );
+  }
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const reviewResult = await startCodexAppServerReview({
+    sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
+    sessionKey: target.sessionKey,
+    workspaceDir,
+    config: params.cfg,
+    timeoutMs: 30_000,
+    runId: crypto.randomUUID(),
+    threadId,
+    target: argsText.trim()
+      ? { type: "custom", instructions: argsText.trim() }
+      : { type: "uncommittedChanges" },
+    onToolResult: async (payload) => {
+      if (!payload.text?.trim() && !payload.channelData) {
+        return;
+      }
+      await sendCodexReplies({
+        commandParams: params,
+        sessionKey: target.sessionKey,
+        payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+      });
+    },
+    onPendingUserInput: async (pending) => {
+      await updateCodexPendingInputState({
+        commandParams: params,
+        sessionKey: target.sessionKey,
+        pending,
+      });
+    },
+  });
+  const parsed = parseCodexReviewOutput(reviewResult.reviewText);
+  const reviewRequestId = crypto.randomUUID();
+  const reviewActions = buildCodexReviewActions(parsed.findings);
+  await updateCodexReviewActionState({
+    commandParams: params,
+    sessionKey: target.sessionKey,
+    requestId: reviewActions.length > 0 ? reviewRequestId : undefined,
+    actions: reviewActions.length > 0 ? reviewActions : undefined,
+  });
+
+  const payloads: ReplyPayload[] = [];
+  if (parsed.summary) {
+    payloads.push({ text: parsed.summary });
+  }
+  if (parsed.findings.length === 0) {
+    payloads.push({ text: "No review findings." });
+  } else {
+    parsed.findings.forEach((finding, index) => {
+      payloads.push({
+        text: formatCodexReviewFindingMessage({
+          finding,
+          index,
+        }),
+      });
+    });
+    const buttons = buildCodexReviewActionButtons({
+      requestId: reviewRequestId,
+      actions: reviewActions,
+    });
+    payloads.push({
+      text: "Choose a review finding to implement, or implement them all.",
+      channelData: buttons ? { telegram: { buttons } } : undefined,
+    });
+  }
+
+  const routed = await sendCodexReplies({
+    commandParams: params,
+    sessionKey: target.sessionKey,
+    payloads,
+  }).catch((error) => {
+    logVerbose(`Failed to route Codex review output: ${String(error)}`);
+    return false;
+  });
+  if (routed) {
+    return { shouldContinue: false };
+  }
+  return stopWithText(
+    payloads
+      .map((payload) => payload.text)
+      .filter(Boolean)
+      .join("\n\n"),
+  );
+}
+
 function pickBestThread(
   threads: CodexAppServerThreadSummary[],
   token: string,
@@ -1661,6 +1920,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "mcp") {
       return await handleCodexMcpCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "review") {
+      return await handleCodexReviewCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();

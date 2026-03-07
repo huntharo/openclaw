@@ -1437,6 +1437,21 @@ function extractThreadReplayFromReadResult(value: unknown): CodexAppServerThread
   };
 }
 
+function extractReviewTextFromNotification(method: string, params: unknown): string | undefined {
+  const methodLower = method.trim().toLowerCase();
+  if (methodLower !== "item/completed" && methodLower !== "item/started") {
+    return undefined;
+  }
+  const item = asRecord(asRecord(params)?.item);
+  const itemType = pickString(item ?? {}, ["type"])
+    ?.trim()
+    .toLowerCase();
+  if (itemType !== "exitedreviewmode") {
+    return undefined;
+  }
+  return pickString(item ?? {}, ["review"]);
+}
+
 function extractModelSummaries(value: unknown): CodexAppServerModelSummary[] {
   const out = new Map<string, CodexAppServerModelSummary>();
   const visit = (node: unknown) => {
@@ -2177,6 +2192,328 @@ export async function readCodexAppServerThreadContext(params: {
     });
     return extractThreadReplayFromReadResult(result);
   } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+export async function startCodexAppServerReview(params: {
+  sessionId: string;
+  sessionKey?: string;
+  workspaceDir: string;
+  config?: OpenClawConfig;
+  timeoutMs: number;
+  runId: string;
+  threadId: string;
+  target: CodexAppServerReviewTarget;
+  onToolResult?: (payload: {
+    text?: string;
+    channelData?: Record<string, unknown>;
+  }) => Promise<void> | void;
+  onPendingUserInput?: (state: PendingCodexUserInputState | null) => Promise<void> | void;
+  onInterrupted?: () => Promise<void> | void;
+}): Promise<CodexAppServerReviewResult> {
+  const settings = resolveCodexAppServerSettings(params.config);
+  if (!settings.enabled) {
+    throw new Error('Provider "codex-app-server" is disabled.');
+  }
+
+  const client = createJsonRpcClient(settings);
+  let reviewThreadId = params.threadId.trim();
+  let turnId = "";
+  let reviewText = "";
+  let assistantText = "";
+  let awaitingInput = false;
+  let interrupted = false;
+  let completed = false;
+  let notificationQueue = Promise.resolve();
+  let pendingInput: {
+    requestId: string;
+    methodLower: string;
+    options: string[];
+    actions: CodexPendingUserInputAction[];
+    expiresAt: number;
+    resolve: (value: unknown) => void;
+  } | null = null;
+  let completeTurn: (() => void) | null = null;
+  const completion = new Promise<void>((resolve) => {
+    completeTurn = () => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      resolve();
+    };
+  });
+
+  const queueHandle: CodexAppServerQueueHandle = {
+    queueMessage: async (text) => {
+      const trimmed = text.trim();
+      if (!trimmed || !pendingInput) {
+        return false;
+      }
+      const actionSelectionCount =
+        pendingInput.actions.filter((action) => action.kind !== "steer").length ||
+        pendingInput.options.length;
+      const parsed = parseCodexUserInput(trimmed, actionSelectionCount);
+      if (parsed.kind === "option") {
+        const action = pendingInput.actions[parsed.index];
+        if (action?.kind === "steer") {
+          pendingInput.resolve({ steerText: "" });
+        } else {
+          pendingInput.resolve({
+            index: parsed.index,
+            option: pendingInput.options[parsed.index] ?? "",
+          });
+        }
+      } else if (pendingInput.methodLower.includes("requestapproval")) {
+        pendingInput.resolve({ steerText: parsed.text });
+      } else {
+        pendingInput.resolve({ text: parsed.text });
+      }
+      return true;
+    },
+    submitPendingInput: async ({ actionIndex }) => {
+      if (!pendingInput) {
+        return false;
+      }
+      const action = pendingInput.actions[actionIndex];
+      if (!action || action.kind === "steer") {
+        return false;
+      }
+      pendingInput.resolve({
+        index: actionIndex,
+        option: pendingInput.options[actionIndex] ?? "",
+      });
+      return true;
+    },
+    interrupt: async () => {
+      interrupted = true;
+      await params.onInterrupted?.();
+      if (reviewThreadId) {
+        await requestWithFallbacks({
+          client,
+          methods: ["turn/interrupt"],
+          payloads: [
+            { threadId: reviewThreadId, turnId: turnId || undefined },
+            { thread_id: reviewThreadId, turn_id: turnId || undefined },
+          ],
+          timeoutMs: settings.requestTimeoutMs,
+        }).catch(() => undefined);
+      }
+      completeTurn?.();
+    },
+    isStreaming: () => !completed,
+    isAwaitingInput: () => awaitingInput,
+  };
+
+  const handleNotification = async (method: string, notificationParams: unknown) => {
+    const ids = extractIds(notificationParams);
+    reviewThreadId ||= ids.threadId ?? "";
+    turnId ||= ids.runId ?? "";
+    const methodLower = method.trim().toLowerCase();
+
+    if (methodLower === "serverrequest/resolved") {
+      pendingInput = null;
+      awaitingInput = false;
+      await params.onPendingUserInput?.(null);
+      return;
+    }
+
+    const maybeReviewText = extractReviewTextFromNotification(method, notificationParams);
+    if (maybeReviewText?.trim()) {
+      reviewText = maybeReviewText.trim();
+    }
+
+    const assistantNotification = extractAssistantNotificationText(methodLower, notificationParams);
+    if (assistantNotification.mode === "snapshot" && assistantNotification.text.trim()) {
+      assistantText = assistantNotification.text.trim();
+    }
+
+    if (
+      methodLower === "turn/completed" ||
+      methodLower === "turn/failed" ||
+      methodLower === "turn/cancelled"
+    ) {
+      completeTurn?.();
+    }
+  };
+
+  client.setNotificationHandler((method, notificationParams) => {
+    const next = notificationQueue.then(() => handleNotification(method, notificationParams));
+    notificationQueue = next.catch((error) => {
+      log.debug(`codex app server review notification handling failed: ${String(error)}`);
+    });
+    return next;
+  });
+
+  client.setRequestHandler(async (method, requestParams) => {
+    const methodLower = method.trim().toLowerCase();
+    if (!isInteractiveServerRequest(method)) {
+      return {};
+    }
+    const ids = extractIds(requestParams);
+    reviewThreadId ||= ids.threadId ?? "";
+    turnId ||= ids.runId ?? "";
+    const options = extractOptionValues(requestParams);
+    const actions = buildCodexPendingUserInputActions({
+      method,
+      requestParams,
+      options,
+    });
+    log.debug(`codex review interactive request payload: ${stableStringify(requestParams)}`);
+    const question = dedupeJoinedText(collectText(requestParams));
+    const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
+    const expiresAt = Date.now() + settings.inputTimeoutMs;
+    const promptText = buildPromptText({
+      method,
+      requestId,
+      options,
+      actions,
+      question,
+      expiresAt,
+      requestParams,
+    });
+
+    awaitingInput = true;
+    await params.onPendingUserInput?.({
+      requestId,
+      options,
+      actions,
+      expiresAt,
+      promptText,
+      method,
+    });
+    const telegramButtons = buildCodexPendingInputButtons({
+      requestId,
+      actions,
+    });
+    await params.onToolResult?.({
+      text: promptText,
+      channelData: telegramButtons
+        ? {
+            telegram: {
+              buttons: telegramButtons,
+            },
+          }
+        : undefined,
+    });
+
+    let timedOut = false;
+    const response = await new Promise<unknown>((resolve) => {
+      pendingInput = {
+        requestId,
+        methodLower,
+        options,
+        actions,
+        expiresAt,
+        resolve,
+      };
+      setTimeout(() => {
+        if (!pendingInput || pendingInput.requestId !== requestId) {
+          return;
+        }
+        timedOut = true;
+        pendingInput = null;
+        resolve({ text: "" });
+      }, settings.inputTimeoutMs);
+    });
+
+    awaitingInput = false;
+    pendingInput = null;
+    await params.onPendingUserInput?.(null);
+    const mappedResponse = mapPendingInputResponse({
+      methodLower,
+      requestParams,
+      response,
+      options,
+      actions,
+      timedOut,
+    });
+    const responseRecord = asRecord(response);
+    const steerText =
+      methodLower.includes("requestapproval") && typeof responseRecord?.steerText === "string"
+        ? responseRecord.steerText.trim()
+        : "";
+    if (steerText && reviewThreadId) {
+      await requestWithFallbacks({
+        client,
+        methods: [...TURN_STEER_METHODS],
+        payloads: [
+          { threadId: reviewThreadId, turnId: turnId || undefined, text: steerText },
+          { thread_id: reviewThreadId, turn_id: turnId || undefined, text: steerText },
+        ],
+        timeoutMs: settings.requestTimeoutMs,
+      });
+    }
+    return mappedResponse;
+  });
+
+  setActiveCodexAppServerRun(params.sessionId, queueHandle, params.sessionKey);
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params.sessionKey ?? params.sessionId,
+      workspaceDir: params.workspaceDir,
+    });
+    await requestWithFallbacks({
+      client,
+      methods: ["thread/resume"],
+      payloads: [{ threadId: reviewThreadId }, { thread_id: reviewThreadId }],
+      timeoutMs: settings.requestTimeoutMs,
+    }).catch(() => undefined);
+
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["review/start"],
+      payloads: [
+        {
+          threadId: reviewThreadId,
+          target: params.target,
+          delivery: "inline",
+        },
+        {
+          thread_id: reviewThreadId,
+          target: params.target,
+          delivery: "inline",
+        },
+      ],
+      timeoutMs: Math.max(params.timeoutMs, settings.requestTimeoutMs),
+    });
+    const resultRecord = asRecord(result);
+    reviewThreadId =
+      pickString(resultRecord, ["reviewThreadId", "review_thread_id"]) ?? reviewThreadId;
+    turnId ||= extractIds(result)?.runId ?? "";
+
+    await Promise.race([
+      completion,
+      new Promise<void>((resolve) => setTimeout(resolve, Math.max(1_000, params.timeoutMs))),
+    ]);
+    if (completed && !interrupted) {
+      await new Promise<void>((resolve) => setTimeout(resolve, TRAILING_NOTIFICATION_SETTLE_MS));
+      await notificationQueue;
+    }
+
+    const resolvedReviewText = reviewText || assistantText;
+    if (!resolvedReviewText.trim()) {
+      throw new Error("Codex review completed without review text.");
+    }
+    return {
+      reviewText: resolvedReviewText.trim(),
+      reviewThreadId: reviewThreadId || undefined,
+      turnId: turnId || undefined,
+    };
+  } finally {
+    if (reviewThreadId) {
+      await requestWithFallbacks({
+        client,
+        methods: ["thread/unsubscribe"],
+        payloads: [{ threadId: reviewThreadId }, { thread_id: reviewThreadId }],
+        timeoutMs: settings.requestTimeoutMs,
+      }).catch(() => undefined);
+    }
+    clearActiveCodexAppServerRun(params.sessionId, queueHandle, params.sessionKey);
     await client.close().catch(() => undefined);
   }
 }

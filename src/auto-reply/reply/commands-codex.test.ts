@@ -19,6 +19,7 @@ const readCodexAppServerSkillsMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadNameMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadServiceTierMock = vi.hoisted(() => vi.fn());
 const startCodexAppServerThreadCompactionMock = vi.hoisted(() => vi.fn());
+const startCodexAppServerReviewMock = vi.hoisted(() => vi.fn());
 const runCodexAppServerAgentMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
 const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
@@ -53,6 +54,7 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   setCodexAppServerThreadName: (...args: unknown[]) => setCodexAppServerThreadNameMock(...args),
   setCodexAppServerThreadServiceTier: (...args: unknown[]) =>
     setCodexAppServerThreadServiceTierMock(...args),
+  startCodexAppServerReview: (...args: unknown[]) => startCodexAppServerReviewMock(...args),
   runCodexAppServerAgent: (...args: unknown[]) => runCodexAppServerAgentMock(...args),
 }));
 
@@ -121,6 +123,12 @@ describe("handleCodexCommand", () => {
       cwd: "/repo/openclaw",
     });
     startCodexAppServerThreadCompactionMock.mockReset().mockResolvedValue(undefined);
+    startCodexAppServerReviewMock.mockReset().mockResolvedValue({
+      reviewText:
+        "Looks solid overall.\n\nFull review comments:\n\n- [P1] Prefer Stylize helpers — /tmp/file.rs:10-20\n  Use .dim()/.bold() chaining instead of manual Style.\n\n- [P2] Keep helper names consistent — /tmp/file.rs:30-35\n  Rename the helper to match the surrounding naming pattern.",
+      reviewThreadId: "thread-123",
+      turnId: "turn-123",
+    });
     runCodexAppServerAgentMock.mockReset().mockResolvedValue({
       payloads: [{ text: "Codex reply" }],
       meta: {
@@ -683,6 +691,88 @@ describe("handleCodexCommand", () => {
         workspaceDir: "/repo/openclaw",
       }),
     );
+  });
+
+  it("routes /codex_review through review/start and sends finding actions", async () => {
+    const params = buildParams(
+      "/codex_review",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: false });
+    expect(startCodexAppServerReviewMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-123",
+        workspaceDir: "/repo/openclaw",
+        target: { type: "uncommittedChanges" },
+      }),
+    );
+    expect(routeReplyMock).toHaveBeenCalledTimes(4);
+    expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
+      payload: { text: "Looks solid overall." },
+    });
+    expect(routeReplyMock.mock.calls[1]?.[0]).toMatchObject({
+      payload: {
+        text: "P1\nPrefer Stylize helpers\nLocation: /tmp/file.rs:10-20\n\nUse .dim()/.bold() chaining instead of manual Style.",
+      },
+    });
+    expect(routeReplyMock.mock.calls[2]?.[0]).toMatchObject({
+      payload: {
+        text: "P2\nKeep helper names consistent\nLocation: /tmp/file.rs:30-35\n\nRename the helper to match the surrounding naming pattern.",
+      },
+    });
+    expect(routeReplyMock.mock.calls[3]?.[0]).toMatchObject({
+      payload: {
+        text: "Choose a review finding to implement, or implement them all.",
+        channelData: {
+          telegram: {
+            buttons: [
+              [
+                {
+                  text: "Implement P1",
+                  callback_data: expect.stringMatching(/^cdxrv:/),
+                },
+              ],
+              [
+                {
+                  text: "Implement P2",
+                  callback_data: expect.stringMatching(/^cdxrv:/),
+                },
+              ],
+              [
+                {
+                  text: "Implement All Fixes",
+                  callback_data: expect.stringMatching(/^cdxrv:/),
+                },
+              ],
+            ],
+          },
+        },
+      },
+    });
+    const store = loadSessionStore(storePath);
+    expect(store[params.sessionKey]?.codexReviewActions?.map((action) => action.label)).toEqual([
+      "Implement P1",
+      "Implement P2",
+      "Implement All Fixes",
+    ]);
+    expect(store[params.sessionKey]?.codexReviewActionRequestId).toBeTruthy();
   });
 
   it("renames the bound Codex thread through thread/name/set", async () => {

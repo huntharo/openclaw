@@ -9,6 +9,10 @@ import {
   parseCodexPendingInputCallbackData,
   buildCodexPendingUserInputActions,
 } from "../agents/codex-app-server-pending-input.js";
+import {
+  matchesCodexReviewActionRequestToken,
+  parseCodexReviewActionCallbackData,
+} from "../agents/codex-app-server-review-actions.js";
 import { submitAgentRunPendingInputBySessionKey } from "../agents/run-control.js";
 import {
   createInboundDebouncer,
@@ -1347,6 +1351,73 @@ export const registerTelegramHandlers = ({
           return;
         }
 
+        return;
+      }
+
+      const codexReviewCallback = parseCodexReviewActionCallbackData(data);
+      if (codexReviewCallback) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex review is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex review is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        const storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
+        const sessionStore = loadSessionStore(storePath);
+        const reviewEntry = sessionStore[targetSessionKey];
+        const requestId = reviewEntry?.codexReviewActionRequestId?.trim();
+        const requestTokenMatches =
+          requestId != null &&
+          matchesCodexReviewActionRequestToken(requestId, codexReviewCallback.requestToken);
+        const action = requestTokenMatches
+          ? reviewEntry?.codexReviewActions?.[codexReviewCallback.actionIndex]
+          : undefined;
+        if (!action?.prompt?.trim()) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex review is no longer active.");
+          return;
+        }
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          const entry = store[targetSessionKey];
+          if (!entry) {
+            return;
+          }
+          delete entry.codexReviewActionRequestId;
+          delete entry.codexReviewActions;
+          entry.updatedAt = Date.now();
+          store[targetSessionKey] = entry;
+        }).catch(() => undefined);
+        const syntheticMessage = buildSyntheticTextMessage({
+          base: callbackMessage,
+          from: callback.from,
+          text: action.prompt,
+        });
+        await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
+          forceWasMentioned: true,
+          messageIdOverride: callback.id,
+        });
         return;
       }
 
