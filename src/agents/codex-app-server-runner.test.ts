@@ -60,6 +60,21 @@ describe("isMethodUnavailableError", () => {
   });
 });
 
+describe("thread-scoped rpc guards", () => {
+  it("marks turn/steer as requiring a thread id", () => {
+    expect(__testing.methodRequiresThreadId("turn/steer")).toBe(true);
+    expect(__testing.methodRequiresThreadId("thread/read")).toBe(true);
+    expect(__testing.methodRequiresThreadId("thread/list")).toBe(false);
+  });
+
+  it("detects thread id fields in camelCase and snake_case payloads", () => {
+    expect(__testing.payloadHasThreadId({ threadId: "thread-123" })).toBe(true);
+    expect(__testing.payloadHasThreadId({ thread_id: "thread-123" })).toBe(true);
+    expect(__testing.payloadHasThreadId({ turnId: "turn-123" })).toBe(false);
+    expect(__testing.payloadHasThreadId({})).toBe(false);
+  });
+});
+
 describe("isTransportClosedError", () => {
   it("recognizes stdio disconnect write failures", () => {
     expect(

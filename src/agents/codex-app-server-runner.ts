@@ -1105,6 +1105,41 @@ function isMethodUnavailableError(error: unknown, method?: string): boolean {
   return normalized.includes(`unknown variant \`${method.toLowerCase()}\``);
 }
 
+const RPC_METHODS_REQUIRING_THREAD_ID = new Set([
+  "thread/resume",
+  "thread/unsubscribe",
+  "thread/name/set",
+  "thread/metadata/update",
+  "thread/unarchive",
+  "thread/compact/start",
+  "thread/backgroundterminals/clean",
+  "thread/rollback",
+  "thread/read",
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "thread/realtime/start",
+  "thread/realtime/appendaudio",
+  "thread/realtime/appendtext",
+  "thread/realtime/stop",
+  "review/start",
+]);
+
+function methodRequiresThreadId(method: string): boolean {
+  return RPC_METHODS_REQUIRING_THREAD_ID.has(method.trim().toLowerCase());
+}
+
+function payloadHasThreadId(payload: unknown): boolean {
+  const record = asRecord(payload);
+  if (!record) {
+    return false;
+  }
+  return Boolean(
+    pickString(record, ["threadId", "thread_id"]) ??
+    findFirstNestedString(record, ["threadId", "thread_id"]),
+  );
+}
+
 class WsJsonRpcClient implements JsonRpcClient {
   private socket: WebSocket | null = null;
   private readonly pending = new Map<string, PendingRequest>();
@@ -1406,6 +1441,9 @@ async function dispatchJsonRpcEnvelope(
       }
     }
   } catch (error) {
+    log.info(
+      `codex app server request handler failed: method=${method} params=${stableStringify(payload.params)} error=${error instanceof Error ? error.message : String(error)}`,
+    );
     const response: JsonRpcEnvelope = {
       jsonrpc: "2.0",
       id: payload.id,
@@ -1474,10 +1512,25 @@ async function requestWithFallbacks(params: {
   let lastError: unknown;
   for (const method of params.methods) {
     for (const payload of params.payloads) {
+      if (methodRequiresThreadId(method) && !payloadHasThreadId(payload)) {
+        const error = new Error(
+          `codex app server request missing threadId: ${method} ${stableStringify(payload)}`,
+        );
+        log.info(error.message);
+        throw error;
+      }
       try {
         return await params.client.request(method, payload, params.timeoutMs);
       } catch (error) {
         lastError = error;
+        if (
+          error instanceof Error &&
+          error.message.toLowerCase().includes("codex app server rpc error")
+        ) {
+          log.info(
+            `codex app server rpc request failed: ${method} ${stableStringify(payload)} :: ${error.message}`,
+          );
+        }
         if (!isMethodUnavailableError(error, method)) {
           continue;
         }
@@ -2623,7 +2676,7 @@ export async function startCodexAppServerReview(params: {
           pendingInput.actions = next.actions;
           pendingInput.options = next.options;
           pendingInput.promptText = next.promptText;
-          await emitPendingInputState(pendingInput, methodLower);
+          await emitPendingInputState(pendingInput, pendingInput.methodLower);
         }
       } else if (parsed.kind === "option") {
         const action = pendingInput.actions[parsed.index];
@@ -2664,7 +2717,7 @@ export async function startCodexAppServerReview(params: {
           pendingInput.actions = next.actions;
           pendingInput.options = next.options;
           pendingInput.promptText = next.promptText;
-          await emitPendingInputState(pendingInput, methodLower);
+          await emitPendingInputState(pendingInput, pendingInput.methodLower);
         }
       } else {
         pendingInput.resolve({
@@ -2858,7 +2911,7 @@ export async function startCodexAppServerReview(params: {
     });
     const resultRecord = asRecord(result);
     reviewThreadId =
-      pickString(resultRecord, ["reviewThreadId", "review_thread_id"]) ?? reviewThreadId;
+      pickString(resultRecord ?? {}, ["reviewThreadId", "review_thread_id"]) ?? reviewThreadId;
     turnId ||= extractIds(result)?.runId ?? "";
 
     await completion;
@@ -3347,6 +3400,8 @@ export const __testing = {
   formatRateLimitWindowName,
   isTransportClosedError,
   isMethodUnavailableError,
+  methodRequiresThreadId,
+  payloadHasThreadId,
   mergeAssistantReplyAndEmit,
   mapPendingInputResponse,
   turnSteerMethods: [...TURN_STEER_METHODS],
