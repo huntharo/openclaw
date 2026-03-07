@@ -1911,6 +1911,22 @@ export async function setCodexAppServerThreadName(params: {
   });
 }
 
+export async function startCodexAppServerThreadCompaction(params: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+  threadId: string;
+}): Promise<void> {
+  await withInitializedCodexClient(params, async ({ client, settings }) => {
+    await requestWithFallbacks({
+      client,
+      methods: ["thread/compact/start"],
+      payloads: [{ threadId: params.threadId }, { thread_id: params.threadId }],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+  });
+}
+
 export async function readCodexAppServerAccount(params?: {
   config?: OpenClawConfig;
   sessionKey?: string;

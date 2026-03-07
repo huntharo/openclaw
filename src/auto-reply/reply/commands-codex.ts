@@ -12,6 +12,7 @@ import {
 } from "../../agents/codex-app-server-pending-input.js";
 import {
   discoverCodexAppServerThreads,
+  startCodexAppServerThreadCompaction,
   runCodexAppServerAgent,
   readCodexAppServerAccount,
   readCodexAppServerModels,
@@ -1209,6 +1210,31 @@ async function handleCodexRenameCommand(
   return stopWithText(`Renamed Codex thread to: ${name}`);
 }
 
+async function handleCodexCompactCommand(
+  params: HandleCommandsParams,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const threadId = sessionEntry?.codexThreadId?.trim();
+  if (!threadId) {
+    return stopWithText(
+      "Codex compact is unavailable until a Codex thread is started or joined in this conversation.",
+    );
+  }
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  await startCodexAppServerThreadCompaction({
+    config: params.cfg,
+    sessionKey: target.sessionKey,
+    workspaceDir,
+    threadId,
+  });
+  return stopWithText("Started Codex thread compaction.");
+}
+
 function pickBestThread(
   threads: CodexAppServerThreadSummary[],
   token: string,
@@ -1255,6 +1281,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "rename") {
       return await handleCodexRenameCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "compact") {
+      return await handleCodexCompactCommand(params);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();

@@ -15,6 +15,7 @@ const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerRateLimitsMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadNameMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadServiceTierMock = vi.hoisted(() => vi.fn());
+const startCodexAppServerThreadCompactionMock = vi.hoisted(() => vi.fn());
 const runCodexAppServerAgentMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
 const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
@@ -33,6 +34,8 @@ const sessionBindingServiceMock = vi.hoisted(() => ({
 vi.mock("../../agents/codex-app-server-runner.js", () => ({
   discoverCodexAppServerThreads: (...args: unknown[]) => discoverCodexAppServerThreadsMock(...args),
   isCodexAppServerProvider: (provider: string) => provider === "codex-app-server",
+  startCodexAppServerThreadCompaction: (...args: unknown[]) =>
+    startCodexAppServerThreadCompactionMock(...args),
   readCodexAppServerThreadContext: (...args: unknown[]) =>
     readCodexAppServerThreadContextMock(...args),
   readCodexAppServerThreadState: (...args: unknown[]) => readCodexAppServerThreadStateMock(...args),
@@ -101,6 +104,7 @@ describe("handleCodexCommand", () => {
       serviceTier: "fast",
       cwd: "/repo/openclaw",
     });
+    startCodexAppServerThreadCompactionMock.mockReset().mockResolvedValue(undefined);
     runCodexAppServerAgentMock.mockReset().mockResolvedValue({
       payloads: [{ text: "Codex reply" }],
       meta: {
@@ -696,6 +700,29 @@ describe("handleCodexCommand", () => {
 
     expect(result?.reply?.text).toBe("Usage: /codex_rename <new thread name>");
     expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
+  });
+
+  it("starts Codex compaction through thread/compact/start", async () => {
+    const params = buildParams("/codex_compact");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Started Codex thread compaction.");
+    expect(startCodexAppServerThreadCompactionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-123",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
 
   it("renders /codex_status locally from App Server state", async () => {
