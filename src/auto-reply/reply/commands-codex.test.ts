@@ -13,6 +13,7 @@ const readCodexAppServerThreadStateMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerAccountMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerRateLimitsMock = vi.hoisted(() => vi.fn());
+const setCodexAppServerThreadNameMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadServiceTierMock = vi.hoisted(() => vi.fn());
 const runCodexAppServerAgentMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
@@ -38,6 +39,7 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   readCodexAppServerAccount: (...args: unknown[]) => readCodexAppServerAccountMock(...args),
   readCodexAppServerModels: (...args: unknown[]) => readCodexAppServerModelsMock(...args),
   readCodexAppServerRateLimits: (...args: unknown[]) => readCodexAppServerRateLimitsMock(...args),
+  setCodexAppServerThreadName: (...args: unknown[]) => setCodexAppServerThreadNameMock(...args),
   setCodexAppServerThreadServiceTier: (...args: unknown[]) =>
     setCodexAppServerThreadServiceTierMock(...args),
   runCodexAppServerAgent: (...args: unknown[]) => runCodexAppServerAgentMock(...args),
@@ -93,6 +95,7 @@ describe("handleCodexCommand", () => {
         resetAt: Date.now() + 3_600_000,
       },
     ]);
+    setCodexAppServerThreadNameMock.mockReset().mockResolvedValue(undefined);
     setCodexAppServerThreadServiceTierMock.mockReset().mockResolvedValue({
       threadId: "thread-123",
       serviceTier: "fast",
@@ -652,6 +655,47 @@ describe("handleCodexCommand", () => {
         workspaceDir: "/repo/openclaw",
       }),
     );
+  });
+
+  it("renames the bound Codex thread through thread/name/set", async () => {
+    const params = buildParams("/codex_rename Better thread title");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Renamed Codex thread to: Better thread title");
+    expect(setCodexAppServerThreadNameMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-123",
+        workspaceDir: "/repo/openclaw",
+        name: "Better thread title",
+      }),
+    );
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("requires a name for /codex_rename", async () => {
+    const params = buildParams("/codex_rename");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Usage: /codex_rename <new thread name>");
+    expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
   });
 
   it("renders /codex_status locally from App Server state", async () => {

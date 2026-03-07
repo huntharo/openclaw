@@ -17,6 +17,7 @@ import {
   readCodexAppServerModels,
   readCodexAppServerRateLimits,
   readCodexAppServerThreadState,
+  setCodexAppServerThreadName,
   setCodexAppServerThreadServiceTier,
   isCodexAppServerProvider,
   readCodexAppServerThreadContext,
@@ -1177,6 +1178,37 @@ async function handleCodexMirroredStatusCommand(
   );
 }
 
+async function handleCodexRenameCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const name = argsText.trim();
+  if (!name) {
+    return stopWithText("Usage: /codex_rename <new thread name>");
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const threadId = sessionEntry?.codexThreadId?.trim();
+  if (!threadId) {
+    return stopWithText(
+      "Codex rename is unavailable until a Codex thread is started or joined in this conversation.",
+    );
+  }
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  await setCodexAppServerThreadName({
+    config: params.cfg,
+    sessionKey: target.sessionKey,
+    workspaceDir,
+    threadId,
+    name,
+  });
+  return stopWithText(`Renamed Codex thread to: ${name}`);
+}
+
 function pickBestThread(
   threads: CodexAppServerThreadSummary[],
   token: string,
@@ -1220,6 +1252,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "fast") {
       return await handleCodexFastCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "rename") {
+      return await handleCodexRenameCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();
