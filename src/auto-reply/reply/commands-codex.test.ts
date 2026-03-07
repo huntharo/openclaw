@@ -169,6 +169,7 @@ describe("handleCodexCommand", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -892,6 +893,9 @@ describe("handleCodexCommand", () => {
     expect(result?.reply?.text).toContain("Permissions: Default");
     expect(result?.reply?.text).toContain("Account: user@example.com (pro)");
     expect(result?.reply?.text).toContain("Session: thread-123");
+    expect(result?.reply?.text).toContain(
+      `Rate limits timezone: ${new Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+    );
     expect(result?.reply?.text).toContain("5h limit: 96% left");
     expect(runCommandWithTimeoutMock).toHaveBeenCalledWith(
       ["git", "-C", "/repo/openclaw", "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -968,6 +972,45 @@ describe("handleCodexCommand", () => {
     expect(genericWeeklyIndex).toBeGreaterThan(genericFiveHourIndex);
     expect(sparkFiveHourIndex).toBeGreaterThan(genericWeeklyIndex);
     expect(sparkWeeklyIndex).toBeGreaterThan(sparkFiveHourIndex);
+  });
+
+  it("formats /codex_status reset windows in local time and rolls stale anchors forward", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-07T12:00:00-05:00"));
+
+    const params = buildParams("/codex_status");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerRateLimitsMock.mockResolvedValue([
+      {
+        name: "5h limit",
+        usedPercent: 11,
+        resetAt: new Date("2026-01-21T07:28:00-05:00").getTime(),
+        windowSeconds: 18_000,
+      },
+      {
+        name: "Weekly limit",
+        usedPercent: 20,
+        resetAt: new Date("2026-01-21T07:34:00-05:00").getTime(),
+        windowSeconds: 604_800,
+      },
+    ]);
+
+    const result = await handleCodexCommand(params, true);
+    const text = result?.reply?.text ?? "";
+
+    expect(text).toContain(
+      `Rate limits timezone: ${new Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+    );
+    expect(text).toContain("5h limit: 89% left (resets 12:28 PM)");
+    expect(text).toContain("Weekly limit: 80% left (resets Mar 11)");
+    expect(text).not.toContain("Jan 21");
   });
 
   it("summarizes models for /codex_model with no args", async () => {

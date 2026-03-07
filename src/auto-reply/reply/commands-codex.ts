@@ -771,36 +771,82 @@ function formatCodexModelText(threadState: CodexAppServerThreadState | undefined
   return parts.join(" · ") || "unknown";
 }
 
-function formatCodexRateLimitReset(resetAt: number | undefined): string | undefined {
+function advanceCodexResetAtToNextWindow(params: {
+  resetAt: number | undefined;
+  windowSeconds?: number;
+  nowMs: number;
+}): number | undefined {
+  const resetAt = params.resetAt;
   if (!resetAt || !Number.isFinite(resetAt)) {
     return undefined;
   }
-  const now = new Date();
-  const date = new Date(resetAt);
-  const sameDay = now.toDateString() === date.toDateString();
-  const timeText = new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-  if (sameDay) {
-    return timeText;
+  if (
+    !params.windowSeconds ||
+    !Number.isFinite(params.windowSeconds) ||
+    params.windowSeconds <= 0
+  ) {
+    return resetAt;
   }
-  const dateText = new Intl.DateTimeFormat(undefined, {
+  const windowMs = Math.round(params.windowSeconds * 1_000);
+  if (windowMs <= 0 || resetAt >= params.nowMs) {
+    return resetAt;
+  }
+  const missedWindows = Math.floor((params.nowMs - resetAt) / windowMs) + 1;
+  return resetAt + missedWindows * windowMs;
+}
+
+function getCodexStatusTimeZoneLabel(): string | undefined {
+  const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone?.trim();
+  return timeZone || undefined;
+}
+
+function formatCodexRateLimitReset(params: {
+  resetAt: number | undefined;
+  windowSeconds?: number;
+  nowMs?: number;
+}): string | undefined {
+  const nowMs = params.nowMs ?? Date.now();
+  const normalizedResetAt = advanceCodexResetAtToNextWindow({
+    resetAt: params.resetAt,
+    windowSeconds: params.windowSeconds,
+    nowMs,
+  });
+  if (!normalizedResetAt || !Number.isFinite(normalizedResetAt)) {
+    return undefined;
+  }
+  const now = new Date(nowMs);
+  const date = new Date(normalizedResetAt);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  const sameDay = now.toDateString() === date.toDateString();
+  if (sameDay) {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+  }
+  return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
   }).format(date);
-  return `${dateText}, ${timeText}`;
 }
 
-function formatCodexRateLimitLine(limit: CodexAppServerRateLimitSummary): string {
+function formatCodexRateLimitLine(
+  limit: CodexAppServerRateLimitSummary,
+  nowMs = Date.now(),
+): string {
   const prefix = `${limit.name}: `;
+  const resetText = formatCodexRateLimitReset({
+    resetAt: limit.resetAt,
+    windowSeconds: limit.windowSeconds,
+    nowMs,
+  });
   if (typeof limit.usedPercent === "number") {
     const remaining = Math.max(0, Math.round(100 - limit.usedPercent));
-    const resetText = formatCodexRateLimitReset(limit.resetAt);
     return `${prefix}${remaining}% left${resetText ? ` (resets ${resetText})` : ""}`;
   }
   if (typeof limit.remaining === "number" && typeof limit.limit === "number") {
-    const resetText = formatCodexRateLimitReset(limit.resetAt);
     return `${prefix}${limit.remaining}/${limit.limit} remaining${resetText ? ` (resets ${resetText})` : ""}`;
   }
   return `${prefix}unavailable`;
@@ -905,7 +951,11 @@ function formatCodexMirroredStatusText(params: {
     currentModel: params.threadState?.model,
   });
   if (visibleRateLimits.length > 0) {
+    const timeZoneLabel = getCodexStatusTimeZoneLabel();
     lines.push("");
+    if (timeZoneLabel) {
+      lines.push(`Rate limits timezone: ${timeZoneLabel}`);
+    }
     for (const limit of visibleRateLimits) {
       lines.push(formatCodexRateLimitLine(limit));
     }

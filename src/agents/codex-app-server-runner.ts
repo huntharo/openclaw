@@ -175,6 +175,7 @@ export type CodexAppServerRateLimitSummary = {
   limit?: number;
   used?: number;
   usedPercent?: number;
+  // Epoch milliseconds normalized from the App Server rate-limit payload.
   resetAt?: number;
   windowSeconds?: number;
   windowMinutes?: number;
@@ -1685,6 +1686,20 @@ function formatRateLimitWindowName(params: {
   return `${rawName ?? rawId} ${windowLabel}`.trim();
 }
 
+function normalizeEpochMilliseconds(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const abs = Math.abs(value);
+  if (abs < 100_000_000_000) {
+    return Math.round(value * 1_000);
+  }
+  if (abs > 100_000_000_000_000) {
+    return Math.round(value / 1_000);
+  }
+  return Math.round(value);
+}
+
 function extractRateLimitSummaries(value: unknown): CodexAppServerRateLimitSummary[] {
   const out = new Map<string, CodexAppServerRateLimitSummary>();
   const addWindow = (
@@ -1714,7 +1729,9 @@ function extractRateLimitSummaries(value: unknown): CodexAppServerRateLimitSumma
       usedPercent,
       remaining:
         typeof usedPercent === "number" ? Math.max(0, Math.round(100 - usedPercent)) : undefined,
-      resetAt: pickNumber(window, ["resetsAt", "resets_at", "resetAt", "reset_at"]),
+      resetAt: normalizeEpochMilliseconds(
+        pickNumber(window, ["resetsAt", "resets_at", "resetAt", "reset_at"]),
+      ),
       windowSeconds: typeof windowMinutes === "number" ? Math.round(windowMinutes * 60) : undefined,
       windowMinutes,
     });
@@ -1783,7 +1800,7 @@ function extractRateLimitSummaries(value: unknown): CodexAppServerRateLimitSumma
         limit: limit ?? existing?.limit,
         used: used ?? existing?.used,
         usedPercent: existing?.usedPercent,
-        resetAt: resetAt ?? existing?.resetAt,
+        resetAt: normalizeEpochMilliseconds(resetAt) ?? existing?.resetAt,
         windowSeconds: windowSeconds ?? existing?.windowSeconds,
         windowMinutes: existing?.windowMinutes,
       });

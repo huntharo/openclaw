@@ -174,12 +174,12 @@ describe("extractRateLimitSummaries", () => {
           primary: {
             usedPercent: 4,
             windowDurationMins: 300,
-            resetsAt: 1_700_000_000_000,
+            resetsAt: 1_700_000_000,
           },
           secondary: {
             usedPercent: 17,
             windowDurationMins: 10080,
-            resetsAt: 1_700_100_000_000,
+            resetsAt: 1_700_100_000,
           },
         },
       }),

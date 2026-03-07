@@ -212,6 +212,19 @@ Design note:
 - these commands should stop flowing through `runCodexSlashCommandDirectly(...)` as slash-text prompts
 - they need dedicated handlers that read or mutate local Codex session state using structured App Server methods and stored session metadata
 
+Current implementation notes:
+
+- `/codex_fast`
+  - handled locally in [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - persists the selected service tier in session metadata so future Codex turns carry the same fast-mode intent
+  - uses thread state reads instead of relaying `/fast` as turn text
+- `/codex_status`
+  - handled locally in [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - reads structured App Server state through [src/agents/codex-app-server-runner.ts](src/agents/codex-app-server-runner.ts)
+  - renders thread name, project folder, and worktree folder separately
+  - derives the project folder from `git rev-parse --path-format=absolute --git-common-dir` against the worktree folder
+  - filters and sorts usage rows by model prefix so generic limits render first and model-specific limits only appear for the active model
+
 ### 2) Structured App Server operations
 
 These commands should map to explicit protocol methods rather than conversational turn text:
@@ -228,6 +241,16 @@ Primary seams:
 Design note:
 
 - these handlers should become method-specific runner entry points instead of piggybacking on mirrored slash text dispatch
+
+Current implementation notes:
+
+- `/codex_rename`
+  - handled in [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts) via `thread/name/set`
+  - supports `--sync` and normalizes Unicode dash variants that Telegram clients may send instead of ASCII `--`
+  - when `--sync` is used in a Telegram forum topic, the handler emits channel data consumed by [src/telegram/bot/delivery.replies.ts](src/telegram/bot/delivery.replies.ts)
+  - Telegram delivery then calls `editForumTopic(...)` so the topic title matches the Codex thread title after the rename succeeds
+- `/codex_compact`
+  - handled in [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts) via `thread/compact/start`
 
 ### 3) Relayed turn commands
 
