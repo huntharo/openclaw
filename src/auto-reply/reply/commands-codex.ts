@@ -37,6 +37,7 @@ import {
   type CodexAppServerRateLimitSummary,
   type CodexAppServerSkillSummary,
   type CodexAppServerThreadState,
+  type CodexAppServerCollaborationMode,
   type PendingCodexUserInputState,
   type CodexAppServerThreadSummary,
 } from "../../agents/codex-app-server-runner.js";
@@ -1762,6 +1763,106 @@ async function handleCodexMcpCommand(
   );
 }
 
+function resolveCodexPlanCollaborationMode(params: {
+  sessionEntry: HandleCommandsParams["sessionEntry"];
+  threadState?: CodexAppServerThreadState;
+  fallbackModel?: string;
+}): CodexAppServerCollaborationMode {
+  return {
+    mode: "plan",
+    settings: {
+      model:
+        params.threadState?.model?.trim() ||
+        resolveStoredCodexModel(params.sessionEntry) ||
+        params.fallbackModel,
+      reasoningEffort:
+        params.threadState?.reasoningEffort?.trim() ||
+        params.sessionEntry?.reasoningLevel?.trim() ||
+        undefined,
+      developerInstructions: null,
+    },
+  };
+}
+
+async function handleCodexPlanCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const trimmedArgs = argsText.trim();
+  if (!trimmedArgs) {
+    return stopWithText("Usage: /codex_plan <planning request>");
+  }
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const threadId = sessionEntry?.codexThreadId?.trim();
+  const threadState = threadId
+    ? await readCodexAppServerThreadState({
+        config: params.cfg,
+        sessionKey: target.sessionKey,
+        workspaceDir,
+        threadId,
+      }).catch(() => undefined)
+    : undefined;
+  const result = await runCodexAppServerAgent({
+    sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
+    sessionKey: target.sessionKey,
+    prompt: trimmedArgs,
+    model: resolveStoredCodexModel(sessionEntry) || params.model,
+    workspaceDir,
+    config: params.cfg,
+    timeoutMs: 30_000,
+    runId: crypto.randomUUID(),
+    existingThreadId: threadId,
+    collaborationMode: resolveCodexPlanCollaborationMode({
+      sessionEntry,
+      threadState,
+      fallbackModel: params.model,
+    }),
+    onToolResult: async (payload) => {
+      if (!payload.text?.trim() && !payload.channelData) {
+        return;
+      }
+      await sendCodexReplies({
+        commandParams: params,
+        sessionKey: target.sessionKey,
+        payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+      });
+    },
+    onPendingUserInput: async (pending) => {
+      await updateCodexPendingInputState({
+        commandParams: params,
+        sessionKey: target.sessionKey,
+        pending,
+      });
+    },
+  });
+  const resolvedThreadId = result.meta?.agentMeta?.sessionId?.trim();
+  if (resolvedThreadId) {
+    await updateCodexSession(
+      params,
+      {
+        providerOverride: "codex-app-server",
+        codexAutoRoute: true,
+        codexThreadId: resolvedThreadId,
+        codexProjectKey: workspaceDir,
+      },
+      target.sessionKey,
+    );
+  }
+  const reply = result.payloads?.find(
+    (payload) => payload.text?.trim() || payload.mediaUrl || payload.mediaUrls?.length,
+  );
+  if (!reply) {
+    return { shouldContinue: false };
+  }
+  return { shouldContinue: false, reply };
+}
+
 async function handleCodexReviewCommand(
   params: HandleCommandsParams,
   argsText: string,
@@ -1923,6 +2024,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "review") {
       return await handleCodexReviewCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "plan") {
+      return await handleCodexPlanCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();

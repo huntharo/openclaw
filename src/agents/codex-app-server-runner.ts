@@ -192,6 +192,7 @@ type RunCodexAppServerAgentParams = {
   timeoutMs: number;
   runId: string;
   existingThreadId?: string;
+  collaborationMode?: CodexAppServerCollaborationMode;
   onPartialReply?: (payload: { text?: string }) => Promise<void> | void;
   onToolResult?: (payload: {
     text?: string;
@@ -614,6 +615,55 @@ function extractOptionValues(value: unknown): string[] {
     .filter(Boolean);
 }
 
+type CodexUserInputQuestionSummary = {
+  id: string;
+  header?: string;
+  question?: string;
+  isOther?: boolean;
+  options: Array<{
+    label: string;
+    description?: string;
+    recommended?: boolean;
+  }>;
+};
+
+function extractUserInputQuestionSummaries(value: unknown): CodexUserInputQuestionSummary[] {
+  const record = asRecord(value);
+  const rawQuestions = Array.isArray(record?.questions) ? record.questions : [];
+  return rawQuestions
+    .map((entry, index) => {
+      const question = asRecord(entry);
+      if (!question) {
+        return null;
+      }
+      const rawOptions = Array.isArray(question.options) ? question.options : [];
+      return {
+        id: pickString(question, ["id"]) ?? `q${index + 1}`,
+        header: pickString(question, ["header"]),
+        question: pickString(question, ["question"]),
+        isOther: question.isOther === true || question.is_other === true,
+        options: rawOptions
+          .map((option) => {
+            const record = asRecord(option);
+            if (!record) {
+              return null;
+            }
+            const label = pickString(record, ["label", "title", "text"]);
+            if (!label) {
+              return null;
+            }
+            return {
+              label,
+              description: pickString(record, ["description", "details", "summary"]),
+              recommended: /\(recommended\)/i.test(label),
+            };
+          })
+          .filter(Boolean) as CodexUserInputQuestionSummary["options"],
+      };
+    })
+    .filter(Boolean) as CodexUserInputQuestionSummary[];
+}
+
 function buildMarkdownCodeBlock(text: string, language = ""): string {
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
@@ -635,12 +685,13 @@ function buildPromptText(params: {
   expiresAt: number;
   requestParams: unknown;
 }): string {
+  const questions = extractUserInputQuestionSummaries(params.requestParams);
   const lines = [
     /requestapproval/i.test(params.method)
       ? `🧭 Codex approval requested (${params.requestId})`
       : `🧭 Codex input requested (${params.requestId})`,
   ];
-  if (params.question) {
+  if (params.question && (/requestapproval/i.test(params.method) || questions.length === 0)) {
     lines.push(params.question);
   }
   const requestRecord = asRecord(params.requestParams);
@@ -685,7 +736,31 @@ function buildPromptText(params: {
   if (approvalSessionAction?.kind === "approval" && approvalSessionAction.sessionPrefix) {
     lines.push("", `Session Prefix: ${approvalSessionAction.sessionPrefix}`);
   }
-  if (params.actions.length > 0) {
+  if (!/requestapproval/i.test(params.method) && questions.length > 0) {
+    lines.push("", questions.length > 1 ? "Questions:" : "Question:");
+    for (const [questionIndex, question] of questions.entries()) {
+      if (questionIndex > 0) {
+        lines.push("");
+      }
+      const heading =
+        question.header && question.question
+          ? `${question.header}: ${question.question}`
+          : (question.header ?? question.question ?? `Question ${questionIndex + 1}`);
+      lines.push(heading);
+      if (question.options.length > 0) {
+        question.options.forEach((option, optionIndex) => {
+          lines.push(`${optionIndex + 1}. ${option.label}`);
+          if (option.description) {
+            lines.push(`   ${option.description}`);
+          }
+        });
+      }
+      if (question.isOther) {
+        lines.push("   Other: You can reply with free text.");
+      }
+    }
+    lines.push("", 'Reply with "1", "2", "option 1", etc., or use a button.');
+  } else if (params.actions.length > 0) {
     const numberedActions = params.actions.filter((action) => action.kind !== "steer");
     lines.push("", "Choices:");
     numberedActions.forEach((action, index) => {
@@ -706,7 +781,10 @@ function buildPromptText(params: {
   }
   const seconds = Math.max(1, Math.round((params.expiresAt - Date.now()) / 1000));
   lines.push(`Expires in: ${seconds}s`);
-  const requestText = dedupeJoinedText(collectText(params.requestParams));
+  const requestText =
+    /requestapproval/i.test(params.method) || questions.length === 0
+      ? dedupeJoinedText(collectText(params.requestParams))
+      : "";
   if (requestText && !lines.includes(requestText)) {
     lines.push("", requestText);
   }
@@ -760,17 +838,19 @@ function buildToolRequestUserInputResponse(
   response: unknown,
   actions: CodexPendingUserInputAction[],
 ): unknown {
-  const record = asRecord(requestParams);
-  const questions = Array.isArray(record?.questions) ? record.questions : [];
+  const questions = extractUserInputQuestionSummaries(requestParams);
   if (questions.length === 0) {
     return response;
   }
-  const firstQuestion = asRecord(questions[0]);
-  const firstQuestionId = pickString(firstQuestion ?? {}, ["id"]) ?? "q1";
-  const selected = pickPendingSelectionText(response, extractOptionValues(firstQuestion), actions);
+  const firstQuestion = questions[0];
+  const selected = pickPendingSelectionText(
+    response,
+    firstQuestion?.options.map((option) => option.label) ?? [],
+    actions,
+  );
   return {
     answers: {
-      [firstQuestionId]: {
+      [firstQuestion.id]: {
         answers: selected ? [selected] : [],
       },
     },
@@ -1230,6 +1310,68 @@ function buildTurnInput(prompt: string): unknown[] {
       },
     ],
   ];
+}
+
+function buildTurnStartPayloads(params: {
+  threadId: string;
+  prompt: string;
+  workspaceDir: string;
+  model?: string;
+  collaborationMode?: CodexAppServerCollaborationMode;
+}): unknown[] {
+  return buildTurnInput(params.prompt).flatMap((input) => {
+    const base: Record<string, unknown> = {
+      threadId: params.threadId,
+      input,
+      cwd: params.workspaceDir,
+    };
+    const snake: Record<string, unknown> = {
+      thread_id: params.threadId,
+      input,
+      cwd: params.workspaceDir,
+    };
+    if (params.model) {
+      base.model = params.model;
+      snake.model = params.model;
+    }
+    if (params.collaborationMode) {
+      const collaborationMode = {
+        mode: params.collaborationMode.mode,
+        settings: {
+          ...(params.collaborationMode.settings?.model
+            ? { model: params.collaborationMode.settings.model }
+            : {}),
+          ...(params.collaborationMode.settings?.reasoningEffort
+            ? { reasoningEffort: params.collaborationMode.settings.reasoningEffort }
+            : {}),
+          ...(Object.hasOwn(params.collaborationMode.settings ?? {}, "developerInstructions")
+            ? {
+                developerInstructions:
+                  params.collaborationMode.settings?.developerInstructions ?? null,
+              }
+            : {}),
+        },
+      };
+      base.collaborationMode = collaborationMode;
+      snake.collaboration_mode = {
+        mode: collaborationMode.mode,
+        settings: {
+          ...(typeof collaborationMode.settings.model === "string"
+            ? { model: collaborationMode.settings.model }
+            : {}),
+          ...(typeof collaborationMode.settings.reasoningEffort === "string"
+            ? { reasoning_effort: collaborationMode.settings.reasoningEffort }
+            : {}),
+          ...(Object.hasOwn(collaborationMode.settings, "developerInstructions")
+            ? {
+                developer_instructions: collaborationMode.settings.developerInstructions ?? null,
+              }
+            : {}),
+        },
+      };
+    }
+    return [base, snake];
+  });
 }
 
 function buildThreadDiscoveryFilter(filter?: string, workspaceDir?: string): unknown[] {
@@ -2862,13 +3004,13 @@ export async function runCodexAppServerAgent(
     const started = await requestWithFallbacks({
       client,
       methods: ["turn/start"],
-      payloads: buildTurnInput(params.prompt).map((input) => ({
+      payloads: buildTurnStartPayloads({
         threadId,
-        thread_id: threadId,
-        input,
-        cwd: params.workspaceDir,
+        prompt: params.prompt,
+        workspaceDir: params.workspaceDir,
         model: params.model,
-      })),
+        collaborationMode: params.collaborationMode,
+      }),
       timeoutMs: Math.max(params.timeoutMs, settings.requestTimeoutMs),
     });
     const startedIds = extractIds(started);

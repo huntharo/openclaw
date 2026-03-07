@@ -670,7 +670,7 @@ describe("handleCodexCommand", () => {
     ]);
   });
 
-  it("routes /codex_plan into the bound Codex session", async () => {
+  it("runs /codex_plan as a plan-mode Codex turn", async () => {
     const params = buildParams("/codex_plan break this into phases");
     params.sessionEntry = {
       sessionId: "session-1",
@@ -686,9 +686,17 @@ describe("handleCodexCommand", () => {
     expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
     expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        prompt: "/plan break this into phases",
+        prompt: "break this into phases",
         existingThreadId: "thread-123",
         workspaceDir: "/repo/openclaw",
+        collaborationMode: expect.objectContaining({
+          mode: "plan",
+          settings: expect.objectContaining({
+            model: "gpt-5.4",
+            reasoningEffort: "high",
+            developerInstructions: null,
+          }),
+        }),
       }),
     );
   });

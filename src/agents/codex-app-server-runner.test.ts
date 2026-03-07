@@ -251,6 +251,55 @@ describe("extractSkillSummaries", () => {
   });
 });
 
+describe("buildPromptText", () => {
+  it("renders request_user_input questions with descriptions and recommended labels", () => {
+    const text = __testing.buildPromptText({
+      method: "item/tool/requestUserInput",
+      requestId: "req-plan-1",
+      options: ["Use checkboxes", "Use numbered phases (Recommended)"],
+      actions: [
+        { kind: "option", label: "Use checkboxes", value: "Use checkboxes" },
+        {
+          kind: "option",
+          label: "Use numbered phases (Recommended)",
+          value: "Use numbered phases (Recommended)",
+        },
+      ],
+      question: "How should the final plan be organized?",
+      expiresAt: Date.now() + 120_000,
+      requestParams: {
+        questions: [
+          {
+            id: "plan_shape",
+            header: "Plan Shape",
+            question: "How should the final plan be organized?",
+            isOther: true,
+            options: [
+              {
+                label: "Use checkboxes",
+                description: "Track progress inside each phase with checkboxes.",
+              },
+              {
+                label: "Use numbered phases (Recommended)",
+                description: "Keep the plan concise and phase-oriented.",
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(text).toContain("Question:");
+    expect(text).toContain("Plan Shape: How should the final plan be organized?");
+    expect(text).toContain("1. Use checkboxes");
+    expect(text).toContain("Track progress inside each phase with checkboxes.");
+    expect(text).toContain("2. Use numbered phases (Recommended)");
+    expect(text).toContain("Keep the plan concise and phase-oriented.");
+    expect(text).toContain("Other: You can reply with free text.");
+    expect(text).toContain('Reply with "1", "2", "option 1", etc., or use a button.');
+  });
+});
+
 describe("extractExperimentalFeatureSummaries", () => {
   it("parses experimentalFeature/list responses into local summaries", () => {
     expect(
