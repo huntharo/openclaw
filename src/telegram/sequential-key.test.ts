@@ -1,5 +1,10 @@
 import type { Chat, Message } from "@grammyjs/types";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  clearActiveCodexAppServerRun,
+  setActiveCodexAppServerRun,
+} from "../agents/codex-app-server-runs.js";
+import { getSessionBindingService } from "../infra/outbound/session-binding-service.js";
 import { getTelegramSequentialKey } from "./sequential-key.js";
 
 const mockChat = (chat: Pick<Chat, "id"> & Partial<Pick<Chat, "type" | "is_forum">>): Chat =>
@@ -12,6 +17,10 @@ const mockMessage = (message: Pick<Message, "chat"> & Partial<Message>): Message
   }) as Message;
 
 describe("getTelegramSequentialKey", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each([
     [{ message: mockMessage({ chat: mockChat({ id: 123 }) }) }, "telegram:123"],
     [
@@ -88,5 +97,67 @@ describe("getTelegramSequentialKey", () => {
     ],
   ])("resolves key %#", (input, expected) => {
     expect(getTelegramSequentialKey(input)).toBe(expected);
+  });
+
+  it("routes Codex callback approvals through a control lane", () => {
+    expect(
+      getTelegramSequentialKey({
+        update: {
+          callback_query: {
+            data: "cdxui:aa:0:abc1234567",
+            message: mockMessage({
+              chat: mockChat({ id: -1003841603622, type: "supergroup", is_forum: true }),
+              message_thread_id: 1364,
+            }),
+          },
+        },
+      }),
+    ).toBe("telegram:-1003841603622:topic:1364:control");
+  });
+
+  it("routes bound Codex pending-input replies through a control lane", () => {
+    const handle = {
+      queueMessage: vi.fn().mockResolvedValue(true),
+      submitPendingInput: vi.fn().mockResolvedValue(true),
+      interrupt: vi.fn().mockResolvedValue(undefined),
+      isStreaming: () => false,
+      isAwaitingInput: () => true,
+    };
+    setActiveCodexAppServerRun(
+      "codex-run-1",
+      handle,
+      "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+    );
+    vi.spyOn(getSessionBindingService(), "resolveByConversation").mockReturnValue({
+      bindingId: "binding-1",
+      targetSessionKey: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+      targetKind: "session",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "-1003841603622:topic:1364",
+      },
+      status: "active",
+      boundAt: Date.now(),
+    });
+
+    expect(
+      getTelegramSequentialKey(
+        {
+          message: mockMessage({
+            chat: mockChat({ id: -1003841603622, type: "supergroup", is_forum: true }),
+            message_thread_id: 1364,
+            text: "1",
+          }),
+        },
+        { accountId: "default" },
+      ),
+    ).toBe("telegram:-1003841603622:topic:1364:control");
+
+    clearActiveCodexAppServerRun(
+      "codex-run-1",
+      handle,
+      "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+    );
   });
 });

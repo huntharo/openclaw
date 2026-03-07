@@ -53,6 +53,14 @@ export function submitCodexAppServerPendingInputBySessionKey(
   return true;
 }
 
+export function isCodexAppServerAwaitingInputBySessionKey(sessionKey: string): boolean {
+  const handle = ACTIVE_CODEX_RUNS_BY_SESSION_KEY.get(sessionKey);
+  if (!handle) {
+    return false;
+  }
+  return handle.isAwaitingInput();
+}
+
 export function interruptCodexAppServerRun(sessionId: string): boolean {
   const handle = ACTIVE_CODEX_RUNS.get(sessionId);
   if (!handle) {

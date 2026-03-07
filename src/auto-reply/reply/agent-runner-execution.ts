@@ -19,6 +19,7 @@ import {
 } from "../../agents/pi-embedded-helpers.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import {
+  loadSessionStore,
   resolveGroupSessionKey,
   resolveSessionTranscriptPath,
   type SessionEntry,
@@ -228,17 +229,26 @@ export async function runAgentTurnWithFallback(params: {
               let lifecycleTerminalEmitted = false;
               try {
                 const activeSessionEntry = params.getActiveSessionEntry();
-                const storedCodexProjectKey = activeSessionEntry?.codexProjectKey?.trim();
+                const persistedSessionEntry =
+                  params.sessionKey && params.storePath
+                    ? loadSessionStore(params.storePath)[params.sessionKey]
+                    : undefined;
+                const codexSessionEntry =
+                  activeSessionEntry?.codexProjectKey?.trim() ||
+                  activeSessionEntry?.codexThreadId?.trim()
+                    ? activeSessionEntry
+                    : persistedSessionEntry;
+                const storedCodexProjectKey = codexSessionEntry?.codexProjectKey?.trim();
                 const workspaceDir = storedCodexProjectKey || params.followupRun.run.workspaceDir;
                 if (
                   !storedCodexProjectKey &&
-                  activeSessionEntry?.providerOverride === "codex-app-server"
+                  codexSessionEntry?.providerOverride === "codex-app-server"
                 ) {
                   logVerbose(
                     `codex run missing bound project key; falling back to run workspace ${workspaceDir}`,
                   );
                 }
-                const existingThreadId = activeSessionEntry?.codexThreadId;
+                const existingThreadId = codexSessionEntry?.codexThreadId;
                 const result = await runCodexAppServerAgent({
                   sessionId: params.followupRun.run.sessionId,
                   sessionKey: params.sessionKey,
