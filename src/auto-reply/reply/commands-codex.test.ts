@@ -879,21 +879,26 @@ describe("handleCodexCommand", () => {
       }),
     );
     expect(startCodexAppServerReviewMock.mock.calls[0]?.[0]).not.toHaveProperty("timeoutMs");
-    expect(routeReplyMock).toHaveBeenCalledTimes(4);
+    expect(routeReplyMock).toHaveBeenCalledTimes(5);
     expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
-      payload: { text: "Looks solid overall." },
+      payload: {
+        text: "Starting Codex review of the current changes. I’ll send the findings when the review finishes.",
+      },
     });
     expect(routeReplyMock.mock.calls[1]?.[0]).toMatchObject({
+      payload: { text: "Looks solid overall." },
+    });
+    expect(routeReplyMock.mock.calls[2]?.[0]).toMatchObject({
       payload: {
         text: "P1\nPrefer Stylize helpers\nLocation: /tmp/file.rs:10-20\n\nUse .dim()/.bold() chaining instead of manual Style.",
       },
     });
-    expect(routeReplyMock.mock.calls[2]?.[0]).toMatchObject({
+    expect(routeReplyMock.mock.calls[3]?.[0]).toMatchObject({
       payload: {
         text: "P2\nKeep helper names consistent\nLocation: /tmp/file.rs:30-35\n\nRename the helper to match the surrounding naming pattern.",
       },
     });
-    expect(routeReplyMock.mock.calls[3]?.[0]).toMatchObject({
+    expect(routeReplyMock.mock.calls[4]?.[0]).toMatchObject({
       payload: {
         text: "Choose a review finding to implement, or implement them all.",
         channelData: {

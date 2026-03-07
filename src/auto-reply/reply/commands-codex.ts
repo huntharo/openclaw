@@ -2012,6 +2012,19 @@ async function handleCodexReviewCommand(
   }
   const workspaceDir =
     sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  await sendCodexReplies({
+    commandParams: params,
+    sessionKey: target.sessionKey,
+    payloads: [
+      {
+        text: argsText.trim()
+          ? "Starting Codex review with your custom focus. I’ll send the findings when the review finishes."
+          : "Starting Codex review of the current changes. I’ll send the findings when the review finishes.",
+      },
+    ],
+  }).catch((error) => {
+    logVerbose(`Failed to send Codex review start message: ${String(error)}`);
+  });
   const reviewResult = await startCodexAppServerReview({
     sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
     sessionKey: target.sessionKey,
