@@ -1445,7 +1445,6 @@ async function runCodexSlashCommandDirectly(params: {
     model,
     workspaceDir,
     config: params.commandParams.cfg,
-    timeoutMs: 30_000,
     runId: crypto.randomUUID(),
     existingThreadId: sessionEntry?.codexThreadId?.trim(),
     onToolResult: async (payload) => {
@@ -1815,7 +1814,6 @@ async function handleCodexPlanCommand(
     model: resolveStoredCodexModel(sessionEntry) || params.model,
     workspaceDir,
     config: params.cfg,
-    timeoutMs: 30_000,
     runId: crypto.randomUUID(),
     existingThreadId: threadId,
     collaborationMode: resolveCodexPlanCollaborationMode({
@@ -1885,7 +1883,6 @@ async function handleCodexReviewCommand(
     sessionKey: target.sessionKey,
     workspaceDir,
     config: params.cfg,
-    timeoutMs: 30_000,
     runId: crypto.randomUUID(),
     threadId,
     target: argsText.trim()

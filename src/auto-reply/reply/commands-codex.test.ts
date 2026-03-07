@@ -699,6 +699,7 @@ describe("handleCodexCommand", () => {
         }),
       }),
     );
+    expect(runCodexAppServerAgentMock.mock.calls[0]?.[0]).not.toHaveProperty("timeoutMs");
   });
 
   it("routes /codex_review through review/start and sends finding actions", async () => {
@@ -731,6 +732,7 @@ describe("handleCodexCommand", () => {
         target: { type: "uncommittedChanges" },
       }),
     );
+    expect(startCodexAppServerReviewMock.mock.calls[0]?.[0]).not.toHaveProperty("timeoutMs");
     expect(routeReplyMock).toHaveBeenCalledTimes(4);
     expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
       payload: { text: "Looks solid overall." },
@@ -1154,6 +1156,7 @@ describe("handleCodexCommand", () => {
         model: "gpt-5.2-codex",
       }),
     );
+    expect(runCodexAppServerAgentMock.mock.calls[0]?.[0]).not.toHaveProperty("timeoutMs");
     expect(loadSessionStore(storePath)[params.sessionKey]?.modelOverride).toBe("gpt-5.2-codex");
   });
 

@@ -189,7 +189,7 @@ type RunCodexAppServerAgentParams = {
   model?: string;
   workspaceDir: string;
   config?: OpenClawConfig;
-  timeoutMs: number;
+  timeoutMs?: number;
   runId: string;
   existingThreadId?: string;
   collaborationMode?: CodexAppServerCollaborationMode;
@@ -2343,7 +2343,7 @@ export async function startCodexAppServerReview(params: {
   sessionKey?: string;
   workspaceDir: string;
   config?: OpenClawConfig;
-  timeoutMs: number;
+  timeoutMs?: number;
   runId: string;
   threadId: string;
   target: CodexAppServerReviewTarget;
@@ -2621,17 +2621,14 @@ export async function startCodexAppServerReview(params: {
           delivery: "inline",
         },
       ],
-      timeoutMs: Math.max(params.timeoutMs, settings.requestTimeoutMs),
+      timeoutMs: Math.max(params.timeoutMs ?? 0, settings.requestTimeoutMs),
     });
     const resultRecord = asRecord(result);
     reviewThreadId =
       pickString(resultRecord, ["reviewThreadId", "review_thread_id"]) ?? reviewThreadId;
     turnId ||= extractIds(result)?.runId ?? "";
 
-    await Promise.race([
-      completion,
-      new Promise<void>((resolve) => setTimeout(resolve, Math.max(1_000, params.timeoutMs))),
-    ]);
+    await completion;
     if (completed && !interrupted) {
       await new Promise<void>((resolve) => setTimeout(resolve, TRAILING_NOTIFICATION_SETTLE_MS));
       await notificationQueue;
@@ -3011,7 +3008,7 @@ export async function runCodexAppServerAgent(
         model: params.model,
         collaborationMode: params.collaborationMode,
       }),
-      timeoutMs: Math.max(params.timeoutMs, settings.requestTimeoutMs),
+      timeoutMs: Math.max(params.timeoutMs ?? 0, settings.requestTimeoutMs),
     });
     const startedIds = extractIds(started);
     threadId ||= startedIds.threadId ?? "";
@@ -3019,10 +3016,7 @@ export async function runCodexAppServerAgent(
     // `turn/start` responses can echo request input and metadata; assistant text
     // should come from turn lifecycle notifications instead.
 
-    await Promise.race([
-      completion,
-      new Promise<void>((resolve) => setTimeout(resolve, Math.max(1_000, params.timeoutMs))),
-    ]);
+    await completion;
     if (completed && !interrupted) {
       await new Promise<void>((resolve) => setTimeout(resolve, TRAILING_NOTIFICATION_SETTLE_MS));
       await notificationQueue;

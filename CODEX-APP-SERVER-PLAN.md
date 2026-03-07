@@ -256,11 +256,15 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [x] Reimplement `/codex_experimental` as a client-side experimental-feature view or toggle backed by structured runtime state.
 - [x] Reimplement `/codex_skills` as a client-side skills discovery view backed by App Server skill APIs.
 - [ ] Extend `/codex_skills` so discovered skills can be invoked cleanly, likely via `/codex_skills [skillname]`, bound `$[skillname]` routing, or both.
-- [ ] Reimplement `/codex_review` using `review/start` instead of relayed slash text.
+- [x] Reimplement `/codex_review` using `review/start` instead of relayed slash text.
+  - shipped shape: structured `review/start`, parsed finding blocks, and Telegram action buttons that synthesize deterministic "implement this finding" follow-ups
 - [x] Reimplement `/codex_rename` using `thread/name/set` instead of relayed slash text.
 - [ ] Reimplement `/codex_init` as the verified relayed turn-start path for Codex thread bootstrapping.
 - [x] Reimplement `/codex_compact` using `thread/compact/start` instead of relayed slash text.
-- [ ] Reimplement `/codex_plan` as a client-side collaboration-mode or planning-state control instead of relayed slash text.
+- [x] Reimplement `/codex_plan` as a client-side collaboration-mode or planning-state control instead of relayed slash text.
+  - shipped shape: `turn/start` with `collaborationMode=plan` plus richer `request_user_input` prompt rendering for labels, descriptions, and recommended options
+- [ ] Harden `/codex_plan` long-output delivery for Telegram, likely by falling back to a Markdown attachment when the final plan is too large for a clean chat message.
+- [ ] Harden `/codex_plan` multi-question answer composition if Codex emits batched `request_user_input` prompts instead of one question at a time.
 - [ ] Reimplement `/codex_diff` as a client-side diff view instead of relayed slash text.
 - [x] Reimplement `/codex_mcp` as a client-side MCP status or tool listing backed by structured discovery.
 - [ ] Commit Phase 3 with `scripts/committer`.
