@@ -593,6 +593,8 @@ function isInteractiveServerRequest(method: string): boolean {
   return normalized.includes("requestuserinput") || normalized.includes("requestapproval");
 }
 
+const TRAILING_NOTIFICATION_SETTLE_MS = 250;
+
 function isMethodUnavailableError(error: unknown, method?: string): boolean {
   const text = error instanceof Error ? error.message : String(error);
   const normalized = text.toLowerCase();
@@ -1371,6 +1373,7 @@ export async function runCodexAppServerAgent(
   let awaitingInput = false;
   let interrupted = false;
   let completed = false;
+  let notificationQueue = Promise.resolve();
   let pendingInput: {
     requestId: string;
     methodLower: string;
@@ -1471,7 +1474,7 @@ export async function runCodexAppServerAgent(
     isAwaitingInput: () => awaitingInput,
   };
 
-  client.setNotificationHandler(async (method, notificationParams) => {
+  const handleNotification = async (method: string, notificationParams: unknown) => {
     const methodLower = method.trim().toLowerCase();
     const ids = extractIds(notificationParams);
     threadId ||= ids.threadId ?? "";
@@ -1516,6 +1519,14 @@ export async function runCodexAppServerAgent(
     ) {
       completeTurn?.();
     }
+  };
+
+  client.setNotificationHandler((method, notificationParams) => {
+    const next = notificationQueue.then(() => handleNotification(method, notificationParams));
+    notificationQueue = next.catch((error) => {
+      log.debug(`codex app server notification handling failed: ${String(error)}`);
+    });
+    return next;
   });
 
   client.setRequestHandler(async (method, requestParams) => {
@@ -1708,6 +1719,10 @@ export async function runCodexAppServerAgent(
       completion,
       new Promise<void>((resolve) => setTimeout(resolve, Math.max(1_000, params.timeoutMs))),
     ]);
+    if (completed && !interrupted) {
+      await new Promise<void>((resolve) => setTimeout(resolve, TRAILING_NOTIFICATION_SETTLE_MS));
+      await notificationQueue;
+    }
 
     return {
       payloads: assistantText ? [{ text: assistantText }] : undefined,
