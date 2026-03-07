@@ -280,6 +280,38 @@ export const dispatchTelegramMessage = async ({
     lane.lastPartialText = "";
     lane.hasStreamedMessage = false;
   };
+  const isInteractiveCodexToolPayload = (payload: ReplyPayload): boolean => {
+    const telegramChannelData =
+      payload.channelData != null && typeof payload.channelData === "object"
+        ? payload.channelData
+        : undefined;
+    const codexAppServer =
+      telegramChannelData?.codexAppServer != null &&
+      typeof telegramChannelData.codexAppServer === "object"
+        ? (telegramChannelData.codexAppServer as Record<string, unknown>)
+        : undefined;
+    return codexAppServer?.interactiveRequest === true;
+  };
+  const sealAnswerLaneForInteractiveTool = async () => {
+    if (!answerLane.stream) {
+      return;
+    }
+    const hasExistingAnswerPreview =
+      answerLane.hasStreamedMessage ||
+      answerLane.lastPartialText.length > 0 ||
+      typeof answerLane.stream.messageId() === "number";
+    if (!hasExistingAnswerPreview) {
+      return;
+    }
+    await answerLane.stream.stop();
+    answerLane.stream.forceNewMessage();
+    resetDraftLaneState(answerLane);
+    // The next answer after an interactive tool prompt must not reuse the
+    // previous assistant message slot, even if the provider resumes without an
+    // explicit assistant-message boundary callback.
+    finalizedPreviewByLane.answer = true;
+    skipNextAnswerMessageStartRotation = false;
+  };
   const rotateAnswerLaneForNewAssistantMessage = async () => {
     let didForceNewMessage = false;
     if (answerLane.hasStreamedMessage) {
@@ -522,6 +554,9 @@ export const dispatchTelegramMessage = async ({
             // Assistant callbacks are fire-and-forget; ensure queued boundary
             // rotations/partials are applied before final delivery mapping.
             await enqueueDraftLaneEvent(async () => {});
+          }
+          if (isInteractiveCodexToolPayload(payload)) {
+            await sealAnswerLaneForInteractiveTool();
           }
           const previewButtons = (
             payload.channelData?.telegram as { buttons?: TelegramInlineButtons } | undefined

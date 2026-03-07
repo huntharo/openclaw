@@ -378,6 +378,73 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(draftStream.stop).toHaveBeenCalled();
   });
 
+  it("sends post-approval Codex results as a new message after an interactive tool prompt", async () => {
+    const answerDraftStream = createSequencedDraftStream(1001);
+    const reasoningDraftStream = createDraftStream();
+    createTelegramDraftStream
+      .mockImplementationOnce(() => answerDraftStream)
+      .mockImplementationOnce(() => reasoningDraftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({
+          text: "Running the npm registry query now with escalation for network access.",
+        });
+        await dispatcherOptions.deliver(
+          { text: "Running the npm registry query now with escalation for network access." },
+          { kind: "final" },
+        );
+        await dispatcherOptions.deliver(
+          {
+            text: "Codex approval requested",
+            channelData: {
+              codexAppServer: {
+                interactiveRequest: true,
+              },
+              telegram: {
+                buttons: [[{ text: "Approve Once", callback_data: "cdxui:aa:0:token123" }]],
+              },
+            },
+          },
+          { kind: "tool" },
+        );
+        await dispatcherOptions.deliver(
+          { text: "Checked with npm view:\n\n- name: diver\n- version: 1.1.1" },
+          { kind: "final" },
+        );
+        return { queuedFinal: true };
+      },
+    );
+    deliverReplies.mockResolvedValue({ delivered: true });
+    editMessageTelegram.mockResolvedValue({ ok: true, chatId: "123", messageId: "1001" });
+
+    await dispatchWithContext({ context: createContext(), streamMode: "partial" });
+
+    expect(editMessageTelegram).toHaveBeenCalledTimes(1);
+    expect(editMessageTelegram).toHaveBeenCalledWith(
+      123,
+      1001,
+      "Running the npm registry query now with escalation for network access.",
+      expect.any(Object),
+    );
+    expect(deliverReplies).toHaveBeenCalledTimes(2);
+    expect(deliverReplies).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        replies: [expect.objectContaining({ text: "Codex approval requested" })],
+      }),
+    );
+    expect(deliverReplies).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        replies: [
+          expect.objectContaining({
+            text: "Checked with npm view:\n\n- name: diver\n- version: 1.1.1",
+          }),
+        ],
+      }),
+    );
+  });
+
   it.each([
     { label: "default account config", telegramCfg: {} },
     { label: "account blockStreaming override", telegramCfg: { blockStreaming: true } },
