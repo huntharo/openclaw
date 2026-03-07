@@ -153,6 +153,9 @@ The local Codex source review on March 7, 2026 changed the implementation direct
 - `/codex_review`
   - classification: structured App Server operation
   - implementation note: use `review/start`, not a relayed conversational turn
+- `/codex_stop`
+  - classification: structured App Server operation
+  - implementation note: use the same interrupt semantics as the Codex Desktop stop button, via `turn/interrupt`, and preserve any partial/final assistant output that arrives after interruption
 - `/codex_rename`
   - classification: structured App Server operation
   - implementation note: use `thread/name/set`, not a relayed conversational turn
@@ -165,6 +168,9 @@ The local Codex source review on March 7, 2026 changed the implementation direct
 - `/codex_plan`
   - classification: client-side command
   - implementation note: switch collaboration mode or plan-state client-side; do not assume `/plan` is a conversational turn command
+- `/codex_steer`
+  - classification: structured App Server operation
+  - implementation note: send a clarifying or corrective instruction through `turn/steer`, typically against the currently active run, so Codex continues with the new guidance
 - `/codex_diff`
   - classification: client-side command
   - implementation note: compute and render local git diff output rather than forwarding `/diff` as turn text
@@ -258,6 +264,7 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [ ] Extend `/codex_skills` so discovered skills can be invoked cleanly, likely via `/codex_skills [skillname]`, bound `$[skillname]` routing, or both.
 - [x] Reimplement `/codex_review` using `review/start` instead of relayed slash text.
   - shipped shape: structured `review/start`, parsed finding blocks, and Telegram action buttons that synthesize deterministic "implement this finding" follow-ups
+- [ ] Reimplement `/codex_stop` as a structured interrupt flow backed by `turn/interrupt`, with correct operator-visible stop acknowledgements and any final Codex output that lands after interruption.
 - [x] Reimplement `/codex_rename` using `thread/name/set` instead of relayed slash text.
 - [ ] Reimplement `/codex_init` as the verified relayed turn-start path for Codex thread bootstrapping.
 - [x] Reimplement `/codex_compact` using `thread/compact/start` instead of relayed slash text.
@@ -267,6 +274,7 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [ ] Harden `/codex_plan` long-output delivery for Telegram, likely by falling back to a Markdown attachment when the final plan is too large for a clean chat message.
 - [x] Harden `/codex_plan` multi-question answer composition if Codex emits batched `request_user_input` prompts instead of one question at a time.
   - shipped shape: walk one active question at a time, persist the current prompt/actions in session state, and assemble the final `answers` payload only after the operator answers the full batch
+- [ ] Reimplement `/codex_steer` as a structured steer flow backed by `turn/steer`, suitable for mid-run clarifications or corrections without abandoning the bound Codex turn.
 - [ ] Reimplement `/codex_diff` as a client-side diff view instead of relayed slash text.
 - [x] Reimplement `/codex_mcp` as a client-side MCP status or tool listing backed by structured discovery.
 - [ ] Commit Phase 3 with `scripts/committer`.
