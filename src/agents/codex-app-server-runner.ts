@@ -58,6 +58,19 @@ type PendingRequest = {
   timer: NodeJS.Timeout;
 };
 
+function isTransportClosedError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized.includes("stdio not connected") ||
+    normalized.includes("websocket not connected") ||
+    normalized.includes("stdio closed") ||
+    normalized.includes("websocket closed") ||
+    normalized.includes("socket closed") ||
+    normalized.includes("broken pipe")
+  );
+}
+
 export type ParsedCodexUserInput =
   | { kind: "option"; index: number }
   | { kind: "text"; text: string };
@@ -589,7 +602,11 @@ class WsJsonRpcClient implements JsonRpcClient {
       socket.once("error", (error) => reject(error));
     });
     this.socket.on("message", (data) => {
-      void this.handleMessage(rawDataToString(data));
+      void this.handleMessage(rawDataToString(data)).catch((error) => {
+        if (!isTransportClosedError(error)) {
+          log.debug(`codex app server websocket message handling failed: ${String(error)}`);
+        }
+      });
     });
     this.socket.on("close", () => {
       this.flushPending(new Error("codex app server websocket closed"));
@@ -705,7 +722,11 @@ class StdioJsonRpcClient implements JsonRpcClient {
     this.process = child;
     const lineReader = readline.createInterface({ input: child.stdout });
     lineReader.on("line", (line) => {
-      void this.handleLine(line);
+      void this.handleLine(line).catch((error) => {
+        if (!isTransportClosedError(error)) {
+          log.debug(`codex app server stdio message handling failed: ${String(error)}`);
+        }
+      });
     });
     child.stderr.on("data", (chunk) => {
       const text = String(chunk).trim();
@@ -837,12 +858,36 @@ async function dispatchJsonRpcEnvelope(
     await params.onNotification(method, payload.params);
     return;
   }
-  const result = await params.onRequest(method, payload.params);
-  params.respond({
-    jsonrpc: "2.0",
-    id: payload.id,
-    result: result ?? {},
-  });
+  try {
+    const result = await params.onRequest(method, payload.params);
+    try {
+      params.respond({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: result ?? {},
+      });
+    } catch (error) {
+      if (!isTransportClosedError(error)) {
+        throw error;
+      }
+    }
+  } catch (error) {
+    const response: JsonRpcEnvelope = {
+      jsonrpc: "2.0",
+      id: payload.id,
+      error: {
+        code: -32603,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+    try {
+      params.respond(response);
+    } catch (respondError) {
+      if (!isTransportClosedError(respondError)) {
+        throw respondError;
+      }
+    }
+  }
 }
 
 function createJsonRpcClient(settings: CodexAppServerSettings): JsonRpcClient {
@@ -1623,8 +1668,10 @@ export const __testing = {
   buildCodexPendingUserInputActions,
   buildMarkdownCodeBlock,
   collectStreamingText,
+  dispatchJsonRpcEnvelope,
   extractAssistantNotificationText,
   extractThreadReplayFromReadResult,
+  isTransportClosedError,
   isMethodUnavailableError,
   mergeAssistantReplyAndEmit,
   mapPendingInputResponse,

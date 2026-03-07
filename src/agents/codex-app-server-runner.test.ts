@@ -60,6 +60,20 @@ describe("isMethodUnavailableError", () => {
   });
 });
 
+describe("isTransportClosedError", () => {
+  it("recognizes stdio disconnect write failures", () => {
+    expect(
+      __testing.isTransportClosedError(new Error("codex app server stdio not connected")),
+    ).toBe(true);
+  });
+
+  it("does not hide unrelated transport errors", () => {
+    expect(
+      __testing.isTransportClosedError(new Error("codex app server timeout: turn/start")),
+    ).toBe(false);
+  });
+});
+
 describe("applyThreadFilter", () => {
   it("prefers project path matches over summary text matches", () => {
     const threads = [
@@ -494,6 +508,59 @@ describe("mapPendingInputResponse", () => {
         approval: {
           answers: ["Decline"],
         },
+      },
+    });
+  });
+});
+
+describe("dispatchJsonRpcEnvelope", () => {
+  it("swallows transport-closed errors while responding to app-server requests", async () => {
+    await expect(
+      __testing.dispatchJsonRpcEnvelope(
+        {
+          jsonrpc: "2.0",
+          id: "req-1",
+          method: "server/requestApproval",
+          params: {},
+        },
+        {
+          pending: new Map(),
+          onNotification: vi.fn(),
+          onRequest: vi.fn(async () => ({ decision: "accept" })),
+          respond: () => {
+            throw new Error("codex app server stdio not connected");
+          },
+        },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("responds with an rpc error when the request handler throws", async () => {
+    const respond = vi.fn();
+
+    await __testing.dispatchJsonRpcEnvelope(
+      {
+        jsonrpc: "2.0",
+        id: "req-2",
+        method: "server/requestApproval",
+        params: {},
+      },
+      {
+        pending: new Map(),
+        onNotification: vi.fn(),
+        onRequest: vi.fn(async () => {
+          throw new Error("boom");
+        }),
+        respond,
+      },
+    );
+
+    expect(respond).toHaveBeenCalledWith({
+      jsonrpc: "2.0",
+      id: "req-2",
+      error: {
+        code: -32603,
+        message: "boom",
       },
     });
   });
