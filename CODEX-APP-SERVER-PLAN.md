@@ -149,6 +149,7 @@ The local Codex source review on March 7, 2026 changed the implementation direct
 - `/codex_skills`
   - classification: client-side command
   - implementation note: list or surface skills from App Server skill discovery rather than asking Codex to "answer `/skills`"
+  - follow-up note: add skill invocation affordances, likely via `/codex_skills [skillname]`, bound-conversation `$[skillname]` routing, or both
 - `/codex_review`
   - classification: structured App Server operation
   - implementation note: use `review/start`, not a relayed conversational turn
@@ -254,6 +255,7 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [ ] Reimplement `/codex_permissions` as a client-side permissions or approval-policy control instead of relayed slash text.
 - [x] Reimplement `/codex_experimental` as a client-side experimental-feature view or toggle backed by structured runtime state.
 - [x] Reimplement `/codex_skills` as a client-side skills discovery view backed by App Server skill APIs.
+- [ ] Extend `/codex_skills` so discovered skills can be invoked cleanly, likely via `/codex_skills [skillname]`, bound `$[skillname]` routing, or both.
 - [ ] Reimplement `/codex_review` using `review/start` instead of relayed slash text.
 - [x] Reimplement `/codex_rename` using `thread/name/set` instead of relayed slash text.
 - [ ] Reimplement `/codex_init` as the verified relayed turn-start path for Codex thread bootstrapping.
