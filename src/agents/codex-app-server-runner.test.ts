@@ -161,6 +161,100 @@ describe("extractThreadState", () => {
   });
 });
 
+describe("buildTurnStartPayloads", () => {
+  it("does not resend cwd on resumed-thread turn/start payloads", () => {
+    expect(
+      __testing.buildTurnStartPayloads({
+        threadId: "thread-123",
+        prompt: "ship it",
+        model: "gpt-5.4",
+      }),
+    ).toEqual([
+      {
+        threadId: "thread-123",
+        input: [{ type: "text", text: "ship it" }],
+        model: "gpt-5.4",
+      },
+      {
+        thread_id: "thread-123",
+        input: [{ type: "text", text: "ship it" }],
+        model: "gpt-5.4",
+      },
+      {
+        threadId: "thread-123",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "ship it" }],
+          },
+        ],
+        model: "gpt-5.4",
+      },
+      {
+        thread_id: "thread-123",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "ship it" }],
+          },
+        ],
+        model: "gpt-5.4",
+      },
+    ]);
+  });
+});
+
+describe("buildSessionUpdatePayload", () => {
+  it("does not include cwd in session metadata updates", () => {
+    expect(__testing.buildSessionUpdatePayload("session-123")).toEqual({
+      sessionKey: "session-123",
+      session_key: "session-123",
+    });
+  });
+});
+
+describe("buildThreadResumePayloads", () => {
+  it("omits cwd for nominal thread resume requests", () => {
+    expect(
+      __testing.buildThreadResumePayloads({
+        threadId: "thread-123",
+      }),
+    ).toEqual([{ threadId: "thread-123" }, { thread_id: "thread-123" }]);
+  });
+
+  it("does not add cwd when changing service tier on an existing thread", () => {
+    expect(
+      __testing.buildThreadResumePayloads({
+        threadId: "thread-123",
+        serviceTier: "fast",
+      }),
+    ).toEqual([
+      { threadId: "thread-123", serviceTier: "fast" },
+      { thread_id: "thread-123", serviceTier: "fast", service_tier: "fast" },
+    ]);
+  });
+});
+
+describe("buildThreadDiscoveryFilter", () => {
+  it("keeps cwd only for explicit thread list filtering", () => {
+    expect(__testing.buildThreadDiscoveryFilter(undefined, "/repo/openclaw")).toEqual([
+      {
+        query: undefined,
+        cwd: "/repo/openclaw",
+        limit: 50,
+      },
+      {
+        filter: undefined,
+        cwd: "/repo/openclaw",
+        limit: 50,
+      },
+      {},
+    ]);
+  });
+});
+
 describe("extractAccountSummary", () => {
   it("parses chatgpt account/read responses", () => {
     expect(

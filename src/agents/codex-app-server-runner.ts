@@ -1478,7 +1478,6 @@ async function initializeCodexAppServerClient(params: {
   client: JsonRpcClient;
   settings: CodexAppServerSettings;
   sessionKey?: string;
-  workspaceDir?: string;
 }): Promise<void> {
   await params.client.request("initialize", {
     protocolVersion: DEFAULT_PROTOCOL_VERSION,
@@ -1488,19 +1487,22 @@ async function initializeCodexAppServerClient(params: {
     },
   });
   await params.client.notify("initialized", {});
-  if (params.sessionKey || params.workspaceDir) {
+  if (params.sessionKey) {
     await params.client
-      .request("session/update", {
-        sessionKey: params.sessionKey ?? "openclaw",
-        session_key: params.sessionKey ?? "openclaw",
-        cwd: params.workspaceDir,
-      })
+      .request("session/update", buildSessionUpdatePayload(params.sessionKey))
       .catch((error) => {
         if (!isMethodUnavailableError(error, "session/update")) {
           throw error;
         }
       });
   }
+}
+
+function buildSessionUpdatePayload(sessionKey: string): Record<string, unknown> {
+  return {
+    sessionKey,
+    session_key: sessionKey,
+  };
 }
 
 async function requestWithFallbacks(params: {
@@ -1556,7 +1558,6 @@ function buildTurnInput(prompt: string): unknown[] {
 function buildTurnStartPayloads(params: {
   threadId: string;
   prompt: string;
-  workspaceDir: string;
   model?: string;
   collaborationMode?: CodexAppServerCollaborationMode;
 }): unknown[] {
@@ -1564,12 +1565,10 @@ function buildTurnStartPayloads(params: {
     const base: Record<string, unknown> = {
       threadId: params.threadId,
       input,
-      cwd: params.workspaceDir,
     };
     const snake: Record<string, unknown> = {
       thread_id: params.threadId,
       input,
-      cwd: params.workspaceDir,
     };
     if (params.model) {
       base.model = params.model;
@@ -2239,7 +2238,6 @@ export async function discoverCodexAppServerThreads(params?: {
       client,
       settings,
       sessionKey: params?.sessionKey,
-      workspaceDir: params?.workspaceDir,
     });
     const result = await requestWithFallbacks({
       client,
@@ -2276,7 +2274,6 @@ export async function readCodexAppServerModels(params?: {
       client,
       settings,
       sessionKey: params?.sessionKey,
-      workspaceDir: params?.workspaceDir,
     });
     const result = await requestWithFallbacks({
       client,
@@ -2364,7 +2361,6 @@ export async function readCodexAppServerRateLimits(params?: {
       client,
       settings,
       sessionKey: params?.sessionKey,
-      workspaceDir: params?.workspaceDir,
     });
     const result = await requestWithFallbacks({
       client,
@@ -2427,7 +2423,6 @@ async function withInitializedCodexClient<T>(
       client,
       settings,
       sessionKey: params.sessionKey,
-      workspaceDir: params.workspaceDir,
     });
     return await callback({ client, settings });
   } finally {
@@ -2562,7 +2557,6 @@ export async function readCodexAppServerThreadContext(params: {
       client,
       settings,
       sessionKey: params.sessionKey,
-      workspaceDir: params.workspaceDir,
     });
     const result = await requestWithFallbacks({
       client,
@@ -2883,7 +2877,6 @@ export async function startCodexAppServerReview(params: {
       client,
       settings,
       sessionKey: params.sessionKey ?? params.sessionId,
-      workspaceDir: params.workspaceDir,
     });
     await requestWithFallbacks({
       client,
@@ -3302,7 +3295,6 @@ export async function runCodexAppServerAgent(
       client,
       settings,
       sessionKey: params.sessionKey ?? params.sessionId,
-      workspaceDir: params.workspaceDir,
     });
 
     if (!threadId) {
@@ -3335,7 +3327,6 @@ export async function runCodexAppServerAgent(
       payloads: buildTurnStartPayloads({
         threadId,
         prompt: params.prompt,
-        workspaceDir: params.workspaceDir,
         model: params.model,
         collaborationMode: params.collaborationMode,
       }),
@@ -3383,6 +3374,10 @@ export const __testing = {
   advancePendingQuestionnaire,
   applyThreadFilter,
   buildInteractiveRequestPresentation,
+  buildSessionUpdatePayload,
+  buildThreadDiscoveryFilter,
+  buildThreadResumePayloads,
+  buildTurnStartPayloads,
   buildCodexPendingUserInputActions,
   buildMarkdownCodeBlock,
   buildPromptText,
