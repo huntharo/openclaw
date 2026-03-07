@@ -209,6 +209,47 @@ describe("extractRateLimitSummaries", () => {
   });
 });
 
+describe("extractSkillSummaries", () => {
+  it("parses skills/list responses into local summaries", () => {
+    expect(
+      __testing.extractSkillSummaries({
+        data: [
+          {
+            cwd: "/repo/openclaw",
+            skills: [
+              {
+                name: "skill-creator",
+                description: "Create or update a Codex skill",
+                enabled: true,
+              },
+              {
+                name: "legacy-helper",
+                interface: {
+                  shortDescription: "Old helper",
+                },
+                enabled: false,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        cwd: "/repo/openclaw",
+        name: "legacy-helper",
+        description: "Old helper",
+        enabled: false,
+      },
+      {
+        cwd: "/repo/openclaw",
+        name: "skill-creator",
+        description: "Create or update a Codex skill",
+        enabled: true,
+      },
+    ]);
+  });
+});
+
 describe("buildCodexPendingUserInputActions", () => {
   it("renders typed approval actions and a steer affordance", () => {
     expect(

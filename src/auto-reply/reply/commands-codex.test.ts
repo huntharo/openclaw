@@ -13,6 +13,7 @@ const readCodexAppServerThreadStateMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerAccountMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerRateLimitsMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerSkillsMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadNameMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadServiceTierMock = vi.hoisted(() => vi.fn());
 const startCodexAppServerThreadCompactionMock = vi.hoisted(() => vi.fn());
@@ -42,6 +43,7 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   readCodexAppServerAccount: (...args: unknown[]) => readCodexAppServerAccountMock(...args),
   readCodexAppServerModels: (...args: unknown[]) => readCodexAppServerModelsMock(...args),
   readCodexAppServerRateLimits: (...args: unknown[]) => readCodexAppServerRateLimitsMock(...args),
+  readCodexAppServerSkills: (...args: unknown[]) => readCodexAppServerSkillsMock(...args),
   setCodexAppServerThreadName: (...args: unknown[]) => setCodexAppServerThreadNameMock(...args),
   setCodexAppServerThreadServiceTier: (...args: unknown[]) =>
     setCodexAppServerThreadServiceTierMock(...args),
@@ -98,6 +100,7 @@ describe("handleCodexCommand", () => {
         resetAt: Date.now() + 3_600_000,
       },
     ]);
+    readCodexAppServerSkillsMock.mockReset().mockResolvedValue([]);
     setCodexAppServerThreadNameMock.mockReset().mockResolvedValue(undefined);
     setCodexAppServerThreadServiceTierMock.mockReset().mockResolvedValue({
       threadId: "thread-123",
@@ -725,6 +728,44 @@ describe("handleCodexCommand", () => {
     expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
 
+  it("renders /codex_skills from App Server skill discovery", async () => {
+    const params = buildParams("/codex_skills");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerSkillsMock.mockResolvedValue([
+      {
+        cwd: "/repo/openclaw",
+        name: "skill-creator",
+        description: "Create or update a Codex skill",
+        enabled: true,
+      },
+      {
+        cwd: "/repo/openclaw",
+        name: "legacy-helper",
+        description: "Old helper",
+        enabled: false,
+      },
+    ]);
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Codex skills for /repo/openclaw:");
+    expect(result?.reply?.text).toContain("skill-creator - Create or update a Codex skill");
+    expect(result?.reply?.text).toContain("legacy-helper (disabled) - Old helper");
+    expect(readCodexAppServerSkillsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+  });
+
   it("renders /codex_status locally from App Server state", async () => {
     const params = buildParams("/codex_status");
     params.sessionEntry = {
@@ -844,7 +885,7 @@ describe("handleCodexCommand", () => {
     expect(setCodexAppServerThreadServiceTierMock).not.toHaveBeenCalled();
   });
 
-  it("dispatches mirrored skill commands directly to Codex", async () => {
+  it("strips the Telegram bot suffix before reading /codex_skills locally", async () => {
     const params = buildParams("/codex_skills@huntharo_bot");
     params.sessionEntry = {
       sessionId: "session-1",
@@ -854,15 +895,20 @@ describe("handleCodexCommand", () => {
       codexProjectKey: "/repo/openclaw",
       codexAutoRoute: true,
     };
+    readCodexAppServerSkillsMock.mockResolvedValue([
+      {
+        cwd: "/repo/openclaw",
+        name: "skill-creator",
+        description: "Create or update a Codex skill",
+        enabled: true,
+      },
+    ]);
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
-    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prompt: "/skills",
-      }),
-    );
+    expect(result?.reply?.text).toContain("skill-creator - Create or update a Codex skill");
+    expect(readCodexAppServerSkillsMock).toHaveBeenCalled();
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
 
   it("fails fast when the Codex runtime startup gate is unavailable", async () => {

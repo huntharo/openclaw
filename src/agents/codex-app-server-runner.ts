@@ -125,6 +125,13 @@ export type CodexAppServerModelSummary = {
   current?: boolean;
 };
 
+export type CodexAppServerSkillSummary = {
+  cwd?: string;
+  name: string;
+  description?: string;
+  enabled?: boolean;
+};
+
 export type CodexAppServerThreadState = {
   threadId: string;
   model?: string;
@@ -1458,6 +1465,43 @@ function extractModelSummaries(value: unknown): CodexAppServerModelSummary[] {
   });
 }
 
+function extractSkillSummaries(value: unknown): CodexAppServerSkillSummary[] {
+  const items: CodexAppServerSkillSummary[] = [];
+  const containers = Array.isArray(asRecord(value)?.data)
+    ? (asRecord(value)?.data as unknown[])
+    : Array.isArray(value)
+      ? value
+      : [];
+  for (const containerValue of containers) {
+    const container = asRecord(containerValue);
+    if (!container) {
+      continue;
+    }
+    const cwd = pickString(container, ["cwd", "path", "projectRoot"]);
+    const skills = Array.isArray(container.skills) ? container.skills : [];
+    for (const skillValue of skills) {
+      const skill = asRecord(skillValue);
+      if (!skill) {
+        continue;
+      }
+      const name = pickString(skill, ["name", "id"]);
+      if (!name) {
+        continue;
+      }
+      const iface = asRecord(skill.interface);
+      items.push({
+        cwd,
+        name,
+        description:
+          pickString(skill, ["description", "shortDescription"]) ??
+          pickString(iface ?? {}, ["shortDescription", "description"]),
+        enabled: pickBoolean(skill, ["enabled", "active", "isEnabled", "is_enabled"]),
+      });
+    }
+  }
+  return items.toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
 function summarizeSandboxPolicy(value: unknown): string | undefined {
   if (typeof value === "string") {
     return value.trim() || undefined;
@@ -1744,6 +1788,32 @@ export async function readCodexAppServerModels(params?: {
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+export async function readCodexAppServerSkills(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+  forceReload?: boolean;
+}): Promise<CodexAppServerSkillSummary[]> {
+  return await withInitializedCodexClient(params ?? {}, async ({ client, settings }) => {
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["skills/list"],
+      payloads: [
+        {
+          cwds: params?.workspaceDir ? [params.workspaceDir] : undefined,
+          forceReload: params?.forceReload,
+        },
+        {
+          cwd: params?.workspaceDir,
+          forceReload: params?.forceReload,
+        },
+      ],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    return extractSkillSummaries(result);
+  });
 }
 
 export async function readCodexAppServerRateLimits(params?: {
@@ -2382,6 +2452,7 @@ export const __testing = {
   extractOptionValues,
   extractAssistantNotificationText,
   extractRateLimitSummaries,
+  extractSkillSummaries,
   extractThreadState,
   extractThreadReplayFromReadResult,
   formatRateLimitWindowName,

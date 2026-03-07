@@ -17,6 +17,7 @@ import {
   readCodexAppServerAccount,
   readCodexAppServerModels,
   readCodexAppServerRateLimits,
+  readCodexAppServerSkills,
   readCodexAppServerThreadState,
   setCodexAppServerThreadName,
   setCodexAppServerThreadServiceTier,
@@ -24,6 +25,7 @@ import {
   readCodexAppServerThreadContext,
   type CodexAppServerAccountSummary,
   type CodexAppServerRateLimitSummary,
+  type CodexAppServerSkillSummary,
   type CodexAppServerThreadState,
   type PendingCodexUserInputState,
   type CodexAppServerThreadSummary,
@@ -840,6 +842,37 @@ function formatModelSummaryLines(params: {
   return lines;
 }
 
+function formatCodexSkillSummaryLines(params: {
+  workspaceDir: string;
+  skills: CodexAppServerSkillSummary[];
+  filter?: string;
+}): string[] {
+  const filter = params.filter?.trim().toLowerCase();
+  const skills = filter
+    ? params.skills.filter((skill) => {
+        const haystack = [skill.name, skill.description, skill.cwd].filter(Boolean).join("\n");
+        return haystack.toLowerCase().includes(filter);
+      })
+    : params.skills;
+  const lines = [`Codex skills for ${params.workspaceDir}:`];
+  if (skills.length === 0) {
+    lines.push(
+      filter ? `No Codex skills matched "${params.filter?.trim()}".` : "No Codex skills found.",
+    );
+    return lines;
+  }
+  for (const skill of skills.slice(0, 20)) {
+    const suffix = skill.description?.trim() ? ` - ${skill.description.trim()}` : "";
+    const state =
+      skill.enabled === false ? " (disabled)" : skill.enabled === true ? "" : " (status unknown)";
+    lines.push(`- ${skill.name}${state}${suffix}`);
+  }
+  if (skills.length > 20) {
+    lines.push(`- …and ${skills.length - 20} more`);
+  }
+  return lines;
+}
+
 async function sendCodexReplies(params: {
   commandParams: HandleCommandsParams;
   sessionKey: string;
@@ -1235,6 +1268,31 @@ async function handleCodexCompactCommand(
   return stopWithText("Started Codex thread compaction.");
 }
 
+async function handleCodexSkillsCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const skills = await readCodexAppServerSkills({
+    config: params.cfg,
+    sessionKey: target.sessionKey,
+    workspaceDir,
+  });
+  return stopWithText(
+    formatCodexSkillSummaryLines({
+      workspaceDir,
+      skills,
+      filter: argsText,
+    }).join("\n"),
+  );
+}
+
 function pickBestThread(
   threads: CodexAppServerThreadSummary[],
   token: string,
@@ -1284,6 +1342,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "compact") {
       return await handleCodexCompactCommand(params);
+    }
+    if (invocation.baseName === "skills") {
+      return await handleCodexSkillsCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();
