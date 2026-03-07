@@ -416,8 +416,18 @@ describe("handleCodexCommand", () => {
         pendingUserInputRequestId: "req-123",
         pendingUserInputOptions: ["Approve", "Decline"],
         pendingUserInputActions: [
-          { kind: "approval", decision: "accept", label: "Approve Once" },
-          { kind: "approval", decision: "decline", label: "Decline" },
+          {
+            kind: "approval",
+            decision: "accept",
+            responseDecision: "accept",
+            label: "Approve Once",
+          },
+          {
+            kind: "approval",
+            decision: "decline",
+            responseDecision: "decline",
+            label: "Decline",
+          },
           { kind: "steer", label: "Tell Codex What To Do" },
         ],
         pendingUserInputExpiresAt: Date.now() + 60_000,
@@ -534,8 +544,18 @@ describe("handleCodexCommand", () => {
       pendingUserInputRequestId: "req-123",
       pendingUserInputOptions: ["Approve", "Decline"],
       pendingUserInputActions: [
-        { kind: "approval", decision: "accept", label: "Approve Once" },
-        { kind: "approval", decision: "decline", label: "Decline" },
+        {
+          kind: "approval",
+          decision: "accept",
+          responseDecision: "accept",
+          label: "Approve Once",
+        },
+        {
+          kind: "approval",
+          decision: "decline",
+          responseDecision: "decline",
+          label: "Decline",
+        },
         { kind: "steer", label: "Tell Codex What To Do" },
       ],
       pendingUserInputExpiresAt: Date.now() + 60_000,

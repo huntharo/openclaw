@@ -1403,17 +1403,33 @@ export const registerTelegramHandlers = ({
           : true;
         const fallbackAction =
           codexCallback?.kind === "approvalAccept"
-            ? ({ kind: "approval", decision: "accept", label: "Approve Once" } as const)
+            ? ({
+                kind: "approval",
+                decision: "accept",
+                responseDecision: "accept",
+                label: "Approve Once",
+              } as const)
             : codexCallback?.kind === "approvalAcceptForSession"
               ? ({
                   kind: "approval",
                   decision: "acceptForSession",
+                  responseDecision: "acceptForSession",
                   label: "Approve for Session",
                 } as const)
               : codexCallback?.kind === "approvalDecline"
-                ? ({ kind: "approval", decision: "decline", label: "Decline" } as const)
+                ? ({
+                    kind: "approval",
+                    decision: "decline",
+                    responseDecision: "decline",
+                    label: "Decline",
+                  } as const)
                 : codexCallback?.kind === "approvalCancel"
-                  ? ({ kind: "approval", decision: "cancel", label: "Cancel" } as const)
+                  ? ({
+                      kind: "approval",
+                      decision: "cancel",
+                      responseDecision: "cancel",
+                      label: "Cancel",
+                    } as const)
                   : codexCallback?.kind === "steer"
                     ? ({ kind: "steer", label: "Tell Codex What To Do" } as const)
                     : undefined;

@@ -239,6 +239,17 @@ export async function initSessionState(params: {
   let persistedModelOverride: string | undefined;
   let persistedProviderOverride: string | undefined;
   let persistedLabel: string | undefined;
+  let persistedCodexThreadId: string | undefined;
+  let persistedCodexRunId: string | undefined;
+  let persistedCodexProjectKey: string | undefined;
+  let persistedCodexAutoRoute: boolean | undefined;
+  let persistedPendingUserInputRequestId: string | undefined;
+  let persistedPendingUserInputOptions: string[] | undefined;
+  let persistedPendingUserInputActions: SessionEntry["pendingUserInputActions"];
+  let persistedPendingUserInputExpiresAt: number | undefined;
+  let persistedPendingUserInputPromptText: string | undefined;
+  let persistedPendingUserInputMethod: string | undefined;
+  let persistedPendingUserInputAwaitingSteer: boolean | undefined;
 
   const normalizedChatType = normalizeChatType(ctx.ChatType);
   const isGroup =
@@ -375,6 +386,17 @@ export async function initSessionState(params: {
     persistedModelOverride = entry.modelOverride;
     persistedProviderOverride = entry.providerOverride;
     persistedLabel = entry.label;
+    persistedCodexThreadId = entry.codexThreadId;
+    persistedCodexRunId = entry.codexRunId;
+    persistedCodexProjectKey = entry.codexProjectKey;
+    persistedCodexAutoRoute = entry.codexAutoRoute;
+    persistedPendingUserInputRequestId = entry.pendingUserInputRequestId;
+    persistedPendingUserInputOptions = entry.pendingUserInputOptions;
+    persistedPendingUserInputActions = entry.pendingUserInputActions;
+    persistedPendingUserInputExpiresAt = entry.pendingUserInputExpiresAt;
+    persistedPendingUserInputPromptText = entry.pendingUserInputPromptText;
+    persistedPendingUserInputMethod = entry.pendingUserInputMethod;
+    persistedPendingUserInputAwaitingSteer = entry.pendingUserInputAwaitingSteer;
   } else {
     sessionId = crypto.randomUUID();
     isNewSession = true;
@@ -391,6 +413,17 @@ export async function initSessionState(params: {
       persistedModelOverride = entry.modelOverride;
       persistedProviderOverride = entry.providerOverride;
       persistedLabel = entry.label;
+      persistedCodexThreadId = entry.codexThreadId;
+      persistedCodexRunId = entry.codexRunId;
+      persistedCodexProjectKey = entry.codexProjectKey;
+      persistedCodexAutoRoute = entry.codexAutoRoute;
+      persistedPendingUserInputRequestId = entry.pendingUserInputRequestId;
+      persistedPendingUserInputOptions = entry.pendingUserInputOptions;
+      persistedPendingUserInputActions = entry.pendingUserInputActions;
+      persistedPendingUserInputExpiresAt = entry.pendingUserInputExpiresAt;
+      persistedPendingUserInputPromptText = entry.pendingUserInputPromptText;
+      persistedPendingUserInputMethod = entry.pendingUserInputMethod;
+      persistedPendingUserInputAwaitingSteer = entry.pendingUserInputAwaitingSteer;
     }
   }
 
@@ -441,6 +474,21 @@ export async function initSessionState(params: {
     responseUsage: baseEntry?.responseUsage,
     modelOverride: persistedModelOverride ?? baseEntry?.modelOverride,
     providerOverride: persistedProviderOverride ?? baseEntry?.providerOverride,
+    codexThreadId: persistedCodexThreadId ?? baseEntry?.codexThreadId,
+    codexRunId: persistedCodexRunId ?? baseEntry?.codexRunId,
+    codexProjectKey: persistedCodexProjectKey ?? baseEntry?.codexProjectKey,
+    codexAutoRoute: persistedCodexAutoRoute ?? baseEntry?.codexAutoRoute,
+    pendingUserInputRequestId:
+      persistedPendingUserInputRequestId ?? baseEntry?.pendingUserInputRequestId,
+    pendingUserInputOptions: persistedPendingUserInputOptions ?? baseEntry?.pendingUserInputOptions,
+    pendingUserInputActions: persistedPendingUserInputActions ?? baseEntry?.pendingUserInputActions,
+    pendingUserInputExpiresAt:
+      persistedPendingUserInputExpiresAt ?? baseEntry?.pendingUserInputExpiresAt,
+    pendingUserInputPromptText:
+      persistedPendingUserInputPromptText ?? baseEntry?.pendingUserInputPromptText,
+    pendingUserInputMethod: persistedPendingUserInputMethod ?? baseEntry?.pendingUserInputMethod,
+    pendingUserInputAwaitingSteer:
+      persistedPendingUserInputAwaitingSteer ?? baseEntry?.pendingUserInputAwaitingSteer,
     label: persistedLabel ?? baseEntry?.label,
     sendPolicy: baseEntry?.sendPolicy,
     queueMode: baseEntry?.queueMode,

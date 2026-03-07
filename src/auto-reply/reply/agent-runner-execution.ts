@@ -228,9 +228,16 @@ export async function runAgentTurnWithFallback(params: {
               let lifecycleTerminalEmitted = false;
               try {
                 const activeSessionEntry = params.getActiveSessionEntry();
-                const workspaceDir =
-                  activeSessionEntry?.codexProjectKey?.trim() ||
-                  params.followupRun.run.workspaceDir;
+                const storedCodexProjectKey = activeSessionEntry?.codexProjectKey?.trim();
+                const workspaceDir = storedCodexProjectKey || params.followupRun.run.workspaceDir;
+                if (
+                  !storedCodexProjectKey &&
+                  activeSessionEntry?.providerOverride === "codex-app-server"
+                ) {
+                  logVerbose(
+                    `codex run missing bound project key; falling back to run workspace ${workspaceDir}`,
+                  );
+                }
                 const existingThreadId = activeSessionEntry?.codexThreadId;
                 const result = await runCodexAppServerAgent({
                   sessionId: params.followupRun.run.sessionId,

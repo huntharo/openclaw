@@ -23,14 +23,26 @@ describe("buildCodexPendingUserInputActions", () => {
     });
 
     expect(actions).toEqual([
-      { kind: "approval", decision: "accept", label: "Approve Once" },
+      {
+        kind: "approval",
+        decision: "accept",
+        responseDecision: "accept",
+        label: "Approve Once",
+      },
       {
         kind: "approval",
         decision: "acceptForSession",
+        responseDecision: "acceptForSession",
         label: "Approve for Session",
+        proposedExecpolicyAmendment: { prefix: "npm view" },
         sessionPrefix: "npm view",
       },
-      { kind: "approval", decision: "decline", label: "Decline" },
+      {
+        kind: "approval",
+        decision: "decline",
+        responseDecision: "decline",
+        label: "Decline",
+      },
       { kind: "steer", label: "Tell Codex What To Do" },
     ]);
   });
@@ -41,8 +53,18 @@ describe("buildCodexPendingInputButtons", () => {
     const buttons = buildCodexPendingInputButtons({
       requestId: "3526d05c-ebf2-404c-9ce2-1c380a143ca8-mmffeqxg",
       actions: [
-        { kind: "approval", decision: "accept", label: "Approve Once" },
-        { kind: "approval", decision: "decline", label: "Decline" },
+        {
+          kind: "approval",
+          decision: "accept",
+          responseDecision: "accept",
+          label: "Approve Once",
+        },
+        {
+          kind: "approval",
+          decision: "decline",
+          responseDecision: "decline",
+          label: "Decline",
+        },
         { kind: "steer", label: "Tell Codex What To Do" },
       ],
     });

@@ -500,6 +500,22 @@ function pickPendingSelectionText(
   return pickString(record, ["option", "text", "value", "label"]) ?? "";
 }
 
+function pickPendingApprovalAction(
+  value: unknown,
+  actions: CodexPendingUserInputAction[],
+): Extract<CodexPendingUserInputAction, { kind: "approval" }> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const index = typeof record.index === "number" ? record.index : undefined;
+  if (index == null || !Number.isInteger(index)) {
+    return undefined;
+  }
+  const action = actions[index];
+  return action?.kind === "approval" ? action : undefined;
+}
+
 function buildToolRequestUserInputResponse(
   requestParams: unknown,
   response: unknown,
@@ -540,10 +556,19 @@ function mapPendingInputResponse(params: {
   }
   if (methodLower.includes("requestapproval")) {
     if (timedOut) {
-      return "cancel";
+      return { decision: "cancel" };
+    }
+    const selectedAction = pickPendingApprovalAction(response, actions);
+    if (selectedAction) {
+      return {
+        decision: selectedAction.responseDecision,
+        ...(selectedAction.proposedExecpolicyAmendment
+          ? { proposedExecpolicyAmendment: selectedAction.proposedExecpolicyAmendment }
+          : {}),
+      };
     }
     const selected = pickPendingSelectionText(response, options, actions);
-    return selected || "decline";
+    return { decision: selected || "decline" };
   }
   if (timedOut) {
     return { cancelled: true, reason: "timeout" };
@@ -1498,6 +1523,15 @@ export async function runCodexAppServerAgent(
     });
 
     awaitingInput = true;
+    log.info("codex interactive request opened", {
+      sessionKey: params.sessionKey,
+      requestId,
+      method,
+      threadId: threadId || undefined,
+      turnId: turnId || undefined,
+      workspaceDir: params.workspaceDir,
+      options: actions.map((action) => action.label),
+    });
     await params.onPendingUserInput?.({
       requestId,
       options,
@@ -1565,6 +1599,17 @@ export async function runCodexAppServerAgent(
       methodLower.includes("requestapproval") && typeof responseRecord?.steerText === "string"
         ? responseRecord.steerText.trim()
         : "";
+    log.info("codex interactive request resolved", {
+      sessionKey: params.sessionKey,
+      requestId,
+      method,
+      threadId: threadId || undefined,
+      turnId: turnId || undefined,
+      workspaceDir: params.workspaceDir,
+      timedOut,
+      mappedResponse,
+      steerText: steerText || undefined,
+    });
     if (steerText && threadId) {
       const steerPayloads = [
         { threadId, turnId: turnId || undefined, text: steerText },

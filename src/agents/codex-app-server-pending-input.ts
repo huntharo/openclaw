@@ -11,6 +11,8 @@ export type CodexPendingUserInputAction =
       kind: "approval";
       label: string;
       decision: CodexPendingUserInputApprovalDecision;
+      responseDecision: string;
+      proposedExecpolicyAmendment?: Record<string, unknown>;
       sessionPrefix?: string;
     }
   | {
@@ -101,6 +103,7 @@ function normalizeApprovalDecision(value: string): CodexPendingUserInputApproval
     case "approve":
     case "allow":
       return "accept";
+    case "acceptwithexecpolicyamendment":
     case "acceptforsession":
     case "approveforsession":
     case "allowforsession":
@@ -177,6 +180,7 @@ function buildApprovalActionsFromDecisions(value: unknown): CodexPendingUserInpu
       actions.push({
         kind: "approval",
         decision,
+        responseDecision: entry,
         label: humanizeApprovalDecision(decision),
       });
       continue;
@@ -190,9 +194,17 @@ function buildApprovalActionsFromDecisions(value: unknown): CodexPendingUserInpu
     }
     const sessionPrefix =
       decision === "acceptForSession" ? extractSessionPrefix(decisionRecord) : undefined;
+    const proposedExecpolicyAmendment =
+      decision === "acceptForSession"
+        ? (asRecord(decisionRecord?.proposedExecpolicyAmendment) ??
+          asRecord(decisionRecord?.execPolicyAmendment) ??
+          undefined)
+        : undefined;
     actions.push({
       kind: "approval",
       decision,
+      responseDecision: decisionValue || decision,
+      ...(proposedExecpolicyAmendment ? { proposedExecpolicyAmendment } : {}),
       ...(sessionPrefix ? { sessionPrefix } : {}),
       label:
         pickString(decisionRecord, ["label", "title", "text"]) ??
@@ -236,6 +248,7 @@ function buildApprovalActionsFromOptions(options: string[]): CodexPendingUserInp
     actions.push({
       kind: "approval",
       decision,
+      responseDecision: decision,
       label: option.trim() || humanizeApprovalDecision(decision),
     });
   }

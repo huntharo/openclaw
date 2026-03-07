@@ -128,8 +128,18 @@ describe("buildCodexPendingUserInputActions", () => {
         },
       }),
     ).toEqual([
-      { kind: "approval", decision: "accept", label: "Approve Once" },
-      { kind: "approval", decision: "decline", label: "Decline" },
+      {
+        kind: "approval",
+        decision: "accept",
+        responseDecision: "accept",
+        label: "Approve Once",
+      },
+      {
+        kind: "approval",
+        decision: "decline",
+        responseDecision: "decline",
+        label: "Decline",
+      },
       { kind: "steer", label: "Tell Codex What To Do" },
     ]);
   });
@@ -459,12 +469,22 @@ describe("mapPendingInputResponse", () => {
         response: { index: 1 },
         options: ["Approve Once", "Approve for Session"],
         actions: [
-          { kind: "approval", decision: "accept", label: "Approve Once" },
-          { kind: "approval", decision: "acceptForSession", label: "Approve for Session" },
+          {
+            kind: "approval",
+            decision: "accept",
+            responseDecision: "accept",
+            label: "Approve Once",
+          },
+          {
+            kind: "approval",
+            decision: "acceptForSession",
+            responseDecision: "acceptForSession",
+            label: "Approve for Session",
+          },
         ],
         timedOut: false,
       }),
-    ).toBe("acceptForSession");
+    ).toEqual({ decision: "acceptForSession" });
   });
 
   it("maps timed-out approvals to cancel", () => {
@@ -475,12 +495,47 @@ describe("mapPendingInputResponse", () => {
         response: { text: "Approve" },
         options: ["Approve", "Decline"],
         actions: [
-          { kind: "approval", decision: "accept", label: "Approve" },
-          { kind: "approval", decision: "decline", label: "Decline" },
+          {
+            kind: "approval",
+            decision: "accept",
+            responseDecision: "accept",
+            label: "Approve",
+          },
+          {
+            kind: "approval",
+            decision: "decline",
+            responseDecision: "decline",
+            label: "Decline",
+          },
         ],
         timedOut: true,
       }),
-    ).toBe("cancel");
+    ).toEqual({ decision: "cancel" });
+  });
+
+  it("preserves exec policy amendments for session-scoped approvals", () => {
+    expect(
+      __testing.mapPendingInputResponse({
+        methodLower: "server/requestapproval",
+        requestParams: {},
+        response: { index: 0 },
+        options: ["Approve for Session"],
+        actions: [
+          {
+            kind: "approval",
+            decision: "acceptForSession",
+            responseDecision: "acceptWithExecpolicyAmendment",
+            label: "Approve for Session",
+            proposedExecpolicyAmendment: { prefix: "npm view" },
+            sessionPrefix: "npm view",
+          },
+        ],
+        timedOut: false,
+      }),
+    ).toEqual({
+      decision: "acceptWithExecpolicyAmendment",
+      proposedExecpolicyAmendment: { prefix: "npm view" },
+    });
   });
 
   it("maps tool request user input selections into answer payloads", () => {

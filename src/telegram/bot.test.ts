@@ -525,8 +525,18 @@ describe("createTelegramBot", () => {
         pendingUserInputMethod: "item/commandExecution/requestApproval",
         pendingUserInputOptions: ["Approve Once", "Decline"],
         pendingUserInputActions: [
-          { kind: "approval", decision: "accept", label: "Approve Once" },
-          { kind: "approval", decision: "decline", label: "Decline" },
+          {
+            kind: "approval",
+            decision: "accept",
+            responseDecision: "accept",
+            label: "Approve Once",
+          },
+          {
+            kind: "approval",
+            decision: "decline",
+            responseDecision: "decline",
+            label: "Decline",
+          },
           { kind: "steer", label: "Tell Codex What To Do" },
         ],
       };
@@ -559,7 +569,12 @@ describe("createTelegramBot", () => {
         data: buildCodexPendingInputCallbackData({
           requestId: "req-approval-1",
           actionIndex: 0,
-          action: { kind: "approval", decision: "accept", label: "Approve Once" },
+          action: {
+            kind: "approval",
+            decision: "accept",
+            responseDecision: "accept",
+            label: "Approve Once",
+          },
         }),
         from: { id: 42, first_name: "Ada", username: "ada_bot" },
         message: {
@@ -600,7 +615,12 @@ describe("createTelegramBot", () => {
         pendingUserInputMethod: "item/commandExecution/requestApproval",
         pendingUserInputOptions: ["Approve Once"],
         pendingUserInputActions: [
-          { kind: "approval", decision: "accept", label: "Approve Once" },
+          {
+            kind: "approval",
+            decision: "accept",
+            responseDecision: "accept",
+            label: "Approve Once",
+          },
           { kind: "steer", label: "Tell Codex What To Do" },
         ],
       };
