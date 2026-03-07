@@ -146,6 +146,32 @@ function resolveHelpText(): string {
   ].join("\n");
 }
 
+function normalizeCodexOptionDashes(text: string): string {
+  return text.replace(/[\u2010-\u2015\u2212]/g, "-");
+}
+
+function parseCodexRenameArguments(argsText: string): { name: string; syncTopic: boolean } | null {
+  const normalized = normalizeCodexOptionDashes(argsText).trim();
+  if (!normalized) {
+    return null;
+  }
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  let syncTopic = false;
+  const nameTokens: string[] = [];
+  for (const token of tokens) {
+    if (token === "--sync" || token === "-sync") {
+      syncTopic = true;
+      continue;
+    }
+    nameTokens.push(token);
+  }
+  const name = nameTokens.join(" ").trim();
+  if (!name) {
+    return null;
+  }
+  return { name, syncTopic };
+}
+
 function buildPendingInputReplay(entry: HandleCommandsParams["sessionEntry"]): string | undefined {
   const requestId = entry?.pendingUserInputRequestId?.trim();
   if (!requestId) {
@@ -1397,9 +1423,9 @@ async function handleCodexRenameCommand(
   if ("error" in target) {
     return stopWithText(target.error);
   }
-  const name = argsText.trim();
-  if (!name) {
-    return stopWithText("Usage: /codex_rename <new thread name>");
+  const parsed = parseCodexRenameArguments(argsText);
+  if (!parsed) {
+    return stopWithText("Usage: /codex_rename [--sync] <new thread name>");
   }
   const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
   const threadId = sessionEntry?.codexThreadId?.trim();
@@ -1415,9 +1441,18 @@ async function handleCodexRenameCommand(
     sessionKey: target.sessionKey,
     workspaceDir,
     threadId,
-    name,
+    name: parsed.name,
   });
-  return stopWithText(`Renamed Codex thread to: ${name}`);
+  return {
+    shouldContinue: false,
+    reply: {
+      text: `Renamed Codex thread to: ${parsed.name}`,
+      channelData:
+        parsed.syncTopic && params.command.surface === "telegram"
+          ? { telegram: { renameTopicTo: parsed.name } }
+          : undefined,
+    },
+  };
 }
 
 async function handleCodexCompactCommand(

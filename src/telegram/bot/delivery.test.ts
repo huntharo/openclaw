@@ -747,6 +747,27 @@ describe("deliverReplies", () => {
     expect(pinChatMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("renames the Telegram forum topic when requested in channelData", async () => {
+    const runtime = createRuntime();
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 301, chat: { id: "123" } });
+    const editForumTopic = vi.fn().mockResolvedValue(true);
+    const bot = createBot({ sendMessage, editForumTopic });
+
+    await deliverReplies({
+      replies: [{ text: "renamed", channelData: { telegram: { renameTopicTo: "Better topic" } } }],
+      chatId: "123",
+      token: "tok",
+      runtime,
+      bot,
+      replyToMode: "off",
+      textLimit: 4000,
+      thread: { scope: "forum", id: 99 },
+    });
+
+    expect(editForumTopic).toHaveBeenCalledWith("123", 99, { name: "Better topic" });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("rethrows VOICE_MESSAGES_FORBIDDEN when no text fallback is available", async () => {
     const { runtime, sendVoice, sendMessage, bot } = createVoiceFailureHarness({
       voiceError: createVoiceMessagesForbiddenError(),

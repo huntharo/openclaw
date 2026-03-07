@@ -39,6 +39,7 @@ type DeliveryProgress = {
 type TelegramReplyChannelData = {
   buttons?: TelegramInlineButtons;
   pin?: boolean;
+  renameTopicTo?: string;
 };
 
 type ChunkTextFn = (markdown: string) => ReturnType<typeof markdownToTelegramChunks>;
@@ -577,7 +578,21 @@ export async function deliverReplies(params: {
         params.replyToMode === "off" ? undefined : resolveTelegramReplyId(reply.replyToId);
       const telegramData = reply.channelData?.telegram as TelegramReplyChannelData | undefined;
       const shouldPinFirstMessage = telegramData?.pin === true;
+      const renameTopicTo = telegramData?.renameTopicTo?.trim();
       const replyMarkup = buildInlineKeyboard(telegramData?.buttons);
+      if (
+        renameTopicTo &&
+        params.thread?.scope === "forum" &&
+        typeof params.thread.id === "number"
+      ) {
+        try {
+          await params.bot.api.editForumTopic(params.chatId, params.thread.id, {
+            name: renameTopicTo,
+          });
+        } catch (error) {
+          logVerbose(`telegram topic rename failed: ${formatErrorMessage(error)}`);
+        }
+      }
       let firstDeliveredMessageId: number | undefined;
       if (mediaList.length === 0) {
         firstDeliveredMessageId = await deliverTextReply({

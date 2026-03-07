@@ -721,8 +721,32 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result?.reply?.text).toBe("Usage: /codex_rename <new thread name>");
+    expect(result?.reply?.text).toBe("Usage: /codex_rename [--sync] <new thread name>");
     expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts Telegram smart-dash --sync for /codex_rename and requests topic rename", async () => {
+    const params = buildParams("/codex_rename —sync Better topic name");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Renamed Codex thread to: Better topic name");
+    expect(result?.reply?.channelData).toEqual({
+      telegram: { renameTopicTo: "Better topic name" },
+    });
+    expect(setCodexAppServerThreadNameMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Better topic name",
+      }),
+    );
   });
 
   it("starts Codex compaction through thread/compact/start", async () => {
