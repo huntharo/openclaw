@@ -16,6 +16,7 @@ import {
   runCodexAppServerAgent,
   readCodexAppServerAccount,
   readCodexAppServerExperimentalFeatures,
+  readCodexAppServerMcpServers,
   readCodexAppServerModels,
   readCodexAppServerRateLimits,
   readCodexAppServerSkills,
@@ -26,6 +27,7 @@ import {
   readCodexAppServerThreadContext,
   type CodexAppServerAccountSummary,
   type CodexAppServerExperimentalFeatureSummary,
+  type CodexAppServerMcpServerSummary,
   type CodexAppServerRateLimitSummary,
   type CodexAppServerSkillSummary,
   type CodexAppServerThreadState,
@@ -917,6 +919,39 @@ function formatCodexExperimentalFeatureLines(params: {
   return lines;
 }
 
+function formatCodexMcpServerLines(params: {
+  servers: CodexAppServerMcpServerSummary[];
+  filter?: string;
+}): string[] {
+  const filter = params.filter?.trim().toLowerCase();
+  const servers = filter
+    ? params.servers.filter((server) => {
+        const haystack = [server.name, server.authStatus].filter(Boolean).join("\n");
+        return haystack.toLowerCase().includes(filter);
+      })
+    : params.servers;
+  const lines = ["Codex MCP servers:"];
+  if (servers.length === 0) {
+    lines.push(
+      filter ? `No MCP servers matched "${params.filter?.trim()}".` : "No MCP servers reported.",
+    );
+    return lines;
+  }
+  for (const server of servers.slice(0, 20)) {
+    const details = [
+      server.authStatus ? `auth=${server.authStatus}` : undefined,
+      `tools=${server.toolCount}`,
+      `resources=${server.resourceCount}`,
+      `templates=${server.resourceTemplateCount}`,
+    ].filter(Boolean);
+    lines.push(`- ${server.name} · ${details.join(" · ")}`);
+  }
+  if (servers.length > 20) {
+    lines.push(`- …and ${servers.length - 20} more`);
+  }
+  return lines;
+}
+
 async function sendCodexReplies(params: {
   commandParams: HandleCommandsParams;
   sessionKey: string;
@@ -1361,6 +1396,30 @@ async function handleCodexExperimentalCommand(
   );
 }
 
+async function handleCodexMcpCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const servers = await readCodexAppServerMcpServers({
+    config: params.cfg,
+    sessionKey: target.sessionKey,
+    workspaceDir,
+  });
+  return stopWithText(
+    formatCodexMcpServerLines({
+      servers,
+      filter: argsText,
+    }).join("\n"),
+  );
+}
+
 function pickBestThread(
   threads: CodexAppServerThreadSummary[],
   token: string,
@@ -1416,6 +1475,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "experimental") {
       return await handleCodexExperimentalCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "mcp") {
+      return await handleCodexMcpCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();

@@ -277,6 +277,35 @@ describe("extractExperimentalFeatureSummaries", () => {
   });
 });
 
+describe("extractMcpServerSummaries", () => {
+  it("parses mcpServerStatus/list responses into local summaries", () => {
+    expect(
+      __testing.extractMcpServerSummaries({
+        data: [
+          {
+            name: "github",
+            authStatus: "authenticated",
+            tools: {
+              search: {},
+              read: {},
+            },
+            resources: [{}, {}],
+            resourceTemplates: [{}],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        name: "github",
+        authStatus: "authenticated",
+        toolCount: 2,
+        resourceCount: 2,
+        resourceTemplateCount: 1,
+      },
+    ]);
+  });
+});
+
 describe("buildCodexPendingUserInputActions", () => {
   it("renders typed approval actions and a steer affordance", () => {
     expect(

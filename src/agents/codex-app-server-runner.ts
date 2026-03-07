@@ -141,6 +141,14 @@ export type CodexAppServerExperimentalFeatureSummary = {
   defaultEnabled?: boolean;
 };
 
+export type CodexAppServerMcpServerSummary = {
+  name: string;
+  authStatus?: string;
+  toolCount: number;
+  resourceCount: number;
+  resourceTemplateCount: number;
+};
+
 export type CodexAppServerThreadState = {
   threadId: string;
   model?: string;
@@ -1541,6 +1549,42 @@ function extractExperimentalFeatureSummaries(
   return items.toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+function extractMcpServerSummaries(value: unknown): CodexAppServerMcpServerSummary[] {
+  const items: CodexAppServerMcpServerSummary[] = [];
+  const entries = Array.isArray(asRecord(value)?.data)
+    ? (asRecord(value)?.data as unknown[])
+    : Array.isArray(value)
+      ? value
+      : [];
+  for (const entryValue of entries) {
+    const entry = asRecord(entryValue);
+    if (!entry) {
+      continue;
+    }
+    const name = pickString(entry, ["name", "id"]);
+    if (!name) {
+      continue;
+    }
+    const tools = asRecord(entry.tools);
+    items.push({
+      name,
+      authStatus: pickString(entry, ["authStatus", "auth_status", "status"]),
+      toolCount: tools
+        ? Object.keys(tools).length
+        : Array.isArray(entry.tools)
+          ? entry.tools.length
+          : 0,
+      resourceCount: Array.isArray(entry.resources) ? entry.resources.length : 0,
+      resourceTemplateCount: Array.isArray(entry.resourceTemplates)
+        ? entry.resourceTemplates.length
+        : Array.isArray(entry.resource_templates)
+          ? entry.resource_templates.length
+          : 0,
+    });
+  }
+  return items.toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
 function summarizeSandboxPolicy(value: unknown): string | undefined {
   if (typeof value === "string") {
     return value.trim() || undefined;
@@ -1868,6 +1912,22 @@ export async function readCodexAppServerExperimentalFeatures(params?: {
       timeoutMs: settings.requestTimeoutMs,
     });
     return extractExperimentalFeatureSummaries(result);
+  });
+}
+
+export async function readCodexAppServerMcpServers(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+}): Promise<CodexAppServerMcpServerSummary[]> {
+  return await withInitializedCodexClient(params ?? {}, async ({ client, settings }) => {
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["mcpServerStatus/list"],
+      payloads: [{ limit: 100 }, {}],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    return extractMcpServerSummaries(result);
   });
 }
 
@@ -2507,6 +2567,7 @@ export const __testing = {
   extractOptionValues,
   extractAssistantNotificationText,
   extractExperimentalFeatureSummaries,
+  extractMcpServerSummaries,
   extractRateLimitSummaries,
   extractSkillSummaries,
   extractThreadState,

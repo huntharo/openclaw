@@ -12,6 +12,7 @@ const readCodexAppServerThreadContextMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerThreadStateMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerAccountMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerExperimentalFeaturesMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerMcpServersMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerRateLimitsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerSkillsMock = vi.hoisted(() => vi.fn());
@@ -44,6 +45,7 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   readCodexAppServerAccount: (...args: unknown[]) => readCodexAppServerAccountMock(...args),
   readCodexAppServerExperimentalFeatures: (...args: unknown[]) =>
     readCodexAppServerExperimentalFeaturesMock(...args),
+  readCodexAppServerMcpServers: (...args: unknown[]) => readCodexAppServerMcpServersMock(...args),
   readCodexAppServerModels: (...args: unknown[]) => readCodexAppServerModelsMock(...args),
   readCodexAppServerRateLimits: (...args: unknown[]) => readCodexAppServerRateLimitsMock(...args),
   readCodexAppServerSkills: (...args: unknown[]) => readCodexAppServerSkillsMock(...args),
@@ -95,6 +97,7 @@ describe("handleCodexCommand", () => {
       requiresOpenaiAuth: true,
     });
     readCodexAppServerExperimentalFeaturesMock.mockReset().mockResolvedValue([]);
+    readCodexAppServerMcpServersMock.mockReset().mockResolvedValue([]);
     readCodexAppServerModelsMock.mockReset().mockResolvedValue([]);
     readCodexAppServerRateLimitsMock.mockReset().mockResolvedValue([
       {
@@ -797,6 +800,36 @@ describe("handleCodexCommand", () => {
       "fancy_feature · stage=beta · enabled · default-off - Fancy Feature",
     );
     expect(readCodexAppServerExperimentalFeaturesMock).toHaveBeenCalled();
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("renders /codex_mcp from App Server MCP server discovery", async () => {
+    const params = buildParams("/codex_mcp");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerMcpServersMock.mockResolvedValue([
+      {
+        name: "github",
+        authStatus: "authenticated",
+        toolCount: 12,
+        resourceCount: 3,
+        resourceTemplateCount: 1,
+      },
+    ]);
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Codex MCP servers:");
+    expect(result?.reply?.text).toContain(
+      "github · auth=authenticated · tools=12 · resources=3 · templates=1",
+    );
+    expect(readCodexAppServerMcpServersMock).toHaveBeenCalled();
     expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
 
