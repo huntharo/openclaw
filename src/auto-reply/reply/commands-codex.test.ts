@@ -718,7 +718,16 @@ describe("handleCodexCommand", () => {
   });
 
   it("runs /codex_plan as a plan-mode Codex turn", async () => {
-    const params = buildParams("/codex_plan break this into phases");
+    const params = buildParams(
+      "/codex_plan break this into phases",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
     params.sessionEntry = {
       sessionId: "session-1",
       updatedAt: Date.now(),
@@ -731,6 +740,13 @@ describe("handleCodexCommand", () => {
     const result = await handleCodexCommand(params, true);
 
     expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: {
+          text: "Starting Codex plan mode. I’ll relay the questions and final plan as they arrive.",
+        },
+      }),
+    );
     expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "break this into phases",

@@ -1840,6 +1840,17 @@ async function handleCodexPlanCommand(
         threadId,
       }).catch(() => undefined)
     : undefined;
+  await sendCodexReplies({
+    commandParams: params,
+    sessionKey: target.sessionKey,
+    payloads: [
+      {
+        text: "Starting Codex plan mode. I’ll relay the questions and final plan as they arrive.",
+      },
+    ],
+  }).catch((error) => {
+    logVerbose(`Failed to send Codex plan start message: ${String(error)}`);
+  });
   const result = await runCodexAppServerAgent({
     sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
     sessionKey: target.sessionKey,
