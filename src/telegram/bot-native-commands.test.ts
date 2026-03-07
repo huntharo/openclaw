@@ -173,6 +173,31 @@ describe("registerTelegramNativeCommands", () => {
     expect(registeredHandlers).not.toContain("export-session");
   });
 
+  it("registers Codex mirrored Telegram native commands with underscores", async () => {
+    const command = vi.fn();
+
+    registerTelegramNativeCommands({
+      ...buildParams({}),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command,
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    await vi.waitFor(() => {
+      expect(command).toHaveBeenCalled();
+    });
+
+    const registeredHandlers = command.mock.calls.map(([name]) => name);
+    expect(registeredHandlers).toContain("codex_plan");
+    expect(registeredHandlers).toContain("codex_skills");
+    expect(registeredHandlers).toContain("codex_status");
+    expect(registeredHandlers).not.toContain("codexplan");
+  });
+
   it("registers only Telegram-safe command names across native, custom, and plugin sources", async () => {
     const setMyCommands = vi.fn().mockResolvedValue(undefined);
 

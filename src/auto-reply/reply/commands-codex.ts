@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
 import {
+  CODEX_BUILT_IN_MIRRORED_COMMANDS,
+  getCodexBuiltInMirroredCommandCount,
+} from "../../agents/codex-app-server-mirror-commands.js";
+import {
   buildCodexPendingInputButtons,
   buildCodexPendingUserInputActions,
   describeCodexPendingInputAction,
@@ -8,6 +12,7 @@ import {
 } from "../../agents/codex-app-server-pending-input.js";
 import {
   discoverCodexAppServerThreads,
+  readCodexAppServerModels,
   isCodexAppServerProvider,
   readCodexAppServerThreadContext,
   type CodexAppServerThreadSummary,
@@ -38,6 +43,10 @@ import type {
 import { isRoutableChannel, routeReply } from "./route-reply.js";
 
 const COMMAND = "/codex";
+const MIRRORED_COMMAND = "/codex_";
+const BUILT_IN_MIRRORED_BASE_NAMES: ReadonlySet<string> = new Set(
+  CODEX_BUILT_IN_MIRRORED_COMMANDS.map((command) => command.baseName),
+);
 
 type CodexAction = "new" | "spawn" | "join" | "steer" | "status" | "detach" | "list" | "help";
 
@@ -91,6 +100,34 @@ function continueWithPrompt(params: HandleCommandsParams, prompt: string): Comma
   return { shouldContinue: true };
 }
 
+function continueWithCodexRawPrompt(
+  params: HandleCommandsParams,
+  prompt: string,
+  marker: string,
+): CommandHandlerResult {
+  const trimmed = prompt.trim();
+  const mutableCtx = params.ctx as Record<string, unknown>;
+  mutableCtx.Body = trimmed;
+  mutableCtx.RawBody = trimmed;
+  mutableCtx.CommandBody = trimmed;
+  mutableCtx.BodyForCommands = trimmed;
+  mutableCtx.BodyForAgent = trimmed;
+  mutableCtx.BodyStripped = trimmed;
+  const commandMarker = `codex-mirrored-dispatch:${marker}`;
+  params.command.commandBodyNormalized = commandMarker;
+  params.command.rawBodyNormalized = commandMarker;
+  if (params.rootCtx && params.rootCtx !== params.ctx) {
+    const mutableRoot = params.rootCtx as Record<string, unknown>;
+    mutableRoot.Body = trimmed;
+    mutableRoot.RawBody = trimmed;
+    mutableRoot.CommandBody = trimmed;
+    mutableRoot.BodyForCommands = trimmed;
+    mutableRoot.BodyForAgent = trimmed;
+    mutableRoot.BodyStripped = trimmed;
+  }
+  return { shouldContinue: true };
+}
+
 function resolveHelpText(): string {
   return [
     "/codex new [--cwd <path>] [prompt]",
@@ -99,6 +136,19 @@ function resolveHelpText(): string {
     "/codex status",
     "/codex detach",
     "/codex list [filter]",
+    "/codex_model [input]",
+    "/codex_fast",
+    "/codex_permissions [input]",
+    "/codex_experimental [input]",
+    "/codex_skills [input]",
+    "/codex_plan [input]",
+    "/codex_review [input]",
+    "/codex_status",
+    "/codex_rename [input]",
+    "/codex_init [input]",
+    "/codex_compact [input]",
+    "/codex_diff [input]",
+    "/codex_mcp [input]",
   ].join("\n");
 }
 
@@ -575,6 +625,66 @@ function resolveCodexReplyRoute(params: HandleCommandsParams): {
   };
 }
 
+function hasActiveCodexSession(params: HandleCommandsParams): boolean {
+  return (
+    Boolean(params.sessionEntry?.codexThreadId?.trim()) ||
+    isCodexAppServerProvider(params.sessionEntry?.providerOverride ?? "", params.cfg)
+  );
+}
+
+function resolveCodexBoundSession(
+  params: HandleCommandsParams,
+): { sessionKey: string; projectKey?: string } | { error: string } {
+  applyExistingCodexConversationBinding(params);
+  if (!hasActiveCodexSession(params)) {
+    return {
+      error: "Codex is not bound in this conversation. Use /codex new or /codex join first.",
+    };
+  }
+  return {
+    sessionKey: params.sessionKey,
+    projectKey: params.sessionEntry?.codexProjectKey ?? params.workspaceDir,
+  };
+}
+
+function resolveStoredCodexModel(entry: HandleCommandsParams["sessionEntry"]): string | undefined {
+  const modelOverride = entry?.modelOverride?.trim();
+  if (modelOverride) {
+    return modelOverride;
+  }
+  const model = entry?.model?.trim();
+  if (model) {
+    return model;
+  }
+  return undefined;
+}
+
+function formatModelSummaryLines(params: {
+  currentModel?: string;
+  models: Awaited<ReturnType<typeof readCodexAppServerModels>>;
+}): string[] {
+  const lines = [`Current model: ${params.currentModel ?? "unknown"}`];
+  if (params.models.length === 0) {
+    lines.push("Available models: unavailable");
+    return lines;
+  }
+  lines.push("Available models:");
+  for (const model of params.models.slice(0, 10)) {
+    const parts = [model.id];
+    if (model.label && model.label !== model.id) {
+      parts.push(model.label);
+    }
+    if (model.current) {
+      parts.push("current");
+    }
+    lines.push(`- ${parts.join(" · ")}`);
+  }
+  if (params.models.length > 10) {
+    lines.push(`- …and ${params.models.length - 10} more`);
+  }
+  return lines;
+}
+
 async function sendCodexReplies(params: {
   commandParams: HandleCommandsParams;
   sessionKey: string;
@@ -601,16 +711,18 @@ async function sendCodexReplies(params: {
   return true;
 }
 
-function resolveStatusText(params: HandleCommandsParams): string {
+async function resolveStatusText(params: HandleCommandsParams): Promise<string> {
   const entry = params.sessionEntry;
   const runtimeStatus = getCodexAppServerRuntimeStatus();
   if (
     !entry?.codexThreadId &&
     !isCodexAppServerProvider(entry?.providerOverride ?? "", params.cfg)
   ) {
-    return ["Codex is not bound in this conversation.", `Runtime: ${runtimeStatus.state}`].join(
-      "\n",
-    );
+    return [
+      "Codex is not bound in this conversation.",
+      `Runtime: ${runtimeStatus.state}`,
+      `Mirrored commands: built-in=${getCodexBuiltInMirroredCommandCount()}`,
+    ].join("\n");
   }
   const lines = ["Codex binding active."];
   lines.push(`Runtime: ${runtimeStatus.state}`);
@@ -621,6 +733,7 @@ function resolveStatusText(params: HandleCommandsParams): string {
     lines.push(`Project: ${entry.codexProjectKey}`);
   }
   lines.push(`Auto-route: ${entry?.codexAutoRoute === false ? "off" : "on"}`);
+  lines.push(`Current model: ${resolveStoredCodexModel(entry) ?? "unknown"}`);
   if (entry?.pendingUserInputRequestId) {
     lines.push(`Pending input: ${entry.pendingUserInputRequestId}`);
   }
@@ -630,8 +743,71 @@ function resolveStatusText(params: HandleCommandsParams): string {
   if (entry?.pendingUserInputAwaitingSteer) {
     lines.push("Awaiting steer reply: yes");
   }
+  lines.push(`Mirrored commands: built-in=${getCodexBuiltInMirroredCommandCount()}`);
   lines.push(`Session: ${params.sessionKey}`);
   return lines.join("\n");
+}
+
+type CodexMirroredInvocation =
+  | {
+      kind: "namespace";
+      rest: string;
+    }
+  | {
+      kind: "mirrored";
+      baseName: string;
+      argsText: string;
+    };
+
+function parseCodexInvocation(rawCommandBody: string): CodexMirroredInvocation | null {
+  const mirroredMatch = rawCommandBody.match(/^\/codex_([a-z0-9_]+)\b/i);
+  if (mirroredMatch?.[1]) {
+    const matchedText = mirroredMatch[0];
+    const rawRemainder = rawCommandBody.slice(matchedText.length);
+    const normalizedRemainder = rawRemainder.startsWith("@")
+      ? rawRemainder.replace(/^@[^\s:]+(?::\s*|\s*)?/, "")
+      : rawRemainder;
+    return {
+      kind: "mirrored",
+      baseName: mirroredMatch[1].trim().toLowerCase(),
+      argsText: normalizedRemainder.trim(),
+    };
+  }
+  const namespaceMatch = rawCommandBody.match(/^\/codex\b/i);
+  if (namespaceMatch) {
+    const rawRemainder = rawCommandBody.slice(namespaceMatch[0].length);
+    const normalizedRemainder = rawRemainder.startsWith("@")
+      ? rawRemainder.replace(/^@[^\s:]+(?::\s*|\s*)?/, "")
+      : rawRemainder;
+    return {
+      kind: "namespace",
+      rest: normalizedRemainder.trim(),
+    };
+  }
+  return null;
+}
+
+async function continueWithCodexSlashCommand(params: {
+  commandParams: HandleCommandsParams;
+  slashName: string;
+  argsText?: string;
+  persistModelOverride?: string;
+}): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params.commandParams);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  await updateCodexSession(
+    params.commandParams,
+    {
+      providerOverride: "codex-app-server",
+      codexAutoRoute: true,
+      ...(params.persistModelOverride ? { modelOverride: params.persistModelOverride } : {}),
+    },
+    target.sessionKey,
+  );
+  const prompt = ["/" + params.slashName, params.argsText?.trim()].filter(Boolean).join(" ");
+  return continueWithCodexRawPrompt(params.commandParams, prompt, params.slashName);
 }
 
 function pickBestThread(
@@ -650,22 +826,71 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     return null;
   }
   const normalized = params.command.commandBodyNormalized;
-  if (!normalized.startsWith(COMMAND)) {
+  if (!normalized.startsWith(COMMAND) && !normalized.startsWith(MIRRORED_COMMAND)) {
     return null;
   }
   const rawCommandBody =
     typeof params.ctx.CommandBody === "string" ? params.ctx.CommandBody.trim() : normalized;
-  const commandMatch = rawCommandBody.match(/^\/codex\b/i);
-  const rest = commandMatch ? rawCommandBody.slice(commandMatch[0].length).trim() : "";
+  const invocation = parseCodexInvocation(rawCommandBody);
+  if (!invocation) {
+    return null;
+  }
   if (!params.command.isAuthorizedSender) {
     logVerbose(
-      `Ignoring /codex from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
+      `Ignoring Codex command from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
     return { shouldContinue: false };
   }
-  const tokens = rest.split(/\s+/).filter(Boolean);
-  const action = resolveAction(tokens);
   applyExistingCodexConversationBinding(params);
+
+  if (invocation.kind === "mirrored") {
+    const availabilityError = getCodexAppServerAvailabilityError(params.cfg);
+    if (availabilityError) {
+      return stopWithText(`⚠️ ${availabilityError}`);
+    }
+    if (invocation.baseName === "model") {
+      const trimmedArgs = invocation.argsText.trim();
+      if (!trimmedArgs) {
+        const target = resolveCodexBoundSession(params);
+        if ("error" in target) {
+          return stopWithText(target.error);
+        }
+        const models = await readCodexAppServerModels({
+          config: params.cfg,
+          sessionKey: target.sessionKey,
+          workspaceDir: target.projectKey,
+        }).catch((error) => {
+          logVerbose(`Failed to read Codex model list: ${String(error)}`);
+          return [];
+        });
+        const currentModel =
+          models.find((model) => model.current)?.id ?? resolveStoredCodexModel(params.sessionEntry);
+        return stopWithText(
+          formatModelSummaryLines({
+            currentModel,
+            models,
+          }).join("\n"),
+        );
+      }
+      return await continueWithCodexSlashCommand({
+        commandParams: params,
+        slashName: "model",
+        argsText: trimmedArgs,
+        persistModelOverride: trimmedArgs,
+      });
+    }
+    if (BUILT_IN_MIRRORED_BASE_NAMES.has(invocation.baseName)) {
+      return await continueWithCodexSlashCommand({
+        commandParams: params,
+        slashName: invocation.baseName,
+        argsText: invocation.argsText,
+      });
+    }
+    return stopWithText(`Unknown Codex mirrored command: /codex_${invocation.baseName}`);
+  }
+
+  const tokens = invocation.rest.split(/\s+/).filter(Boolean);
+  const action = resolveAction(tokens);
 
   if (action === "help") {
     return stopWithText(resolveHelpText());
@@ -675,7 +900,7 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     return {
       shouldContinue: false,
       reply: {
-        text: resolveStatusText(params),
+        text: await resolveStatusText(params),
         channelData: buildPendingInputChannelData(params, params.sessionEntry),
       },
     };

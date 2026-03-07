@@ -121,6 +121,21 @@ describe("commands registry", () => {
     expect(findCommandByNativeName("status", "slack")).toBeUndefined();
   });
 
+  it("keeps Telegram native Codex mirrored commands with underscores", () => {
+    const native = listNativeCommandSpecsForConfig(
+      { commands: { native: true } },
+      { provider: "telegram" },
+    );
+    expect(native.find((spec) => spec.name === "codex_plan")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_skills")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_status")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codexplan")).toBeFalsy();
+    expect(native.find((spec) => spec.name === "codexskills")).toBeFalsy();
+    expect(findCommandByNativeName("codex_plan", "telegram")?.key).toBe("codex_plan");
+    expect(findCommandByNativeName("codex_skills", "telegram")?.key).toBe("codex_skills");
+    expect(findCommandByNativeName("codexplan", "telegram")).toBeUndefined();
+  });
+
   it("keeps discord native command specs within slash-command limits", () => {
     const cfg = { commands: { native: true } };
     const native = listNativeCommandSpecsForConfig(cfg, { provider: "discord" });
@@ -212,6 +227,26 @@ describe("commands registry", () => {
       "list",
       "help",
     ]);
+  });
+
+  it("registers the built-in Codex mirrored native commands", () => {
+    const native = listNativeCommandSpecsForConfig(
+      { commands: { native: true } },
+      { provider: "discord" },
+    );
+    expect(native.find((spec) => spec.name === "codex_fast")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_permissions")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_experimental")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_skills")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_plan")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_review")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_model")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_rename")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_init")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_compact")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_diff")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_status")).toBeTruthy();
+    expect(native.find((spec) => spec.name === "codex_mcp")).toBeTruthy();
   });
 
   it("detects known text commands", () => {

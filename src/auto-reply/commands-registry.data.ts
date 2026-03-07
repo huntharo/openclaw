@@ -1,3 +1,4 @@
+import { CODEX_BUILT_IN_MIRRORED_COMMANDS } from "../agents/codex-app-server-mirror-commands.js";
 import { listChannelDocks } from "../channels/dock.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { COMMAND_ARG_FORMATTERS } from "./commands-args.js";
@@ -379,6 +380,17 @@ function buildChatCommands(): ChatCommandDefinition[] {
       ],
       argsMenu: "auto",
     }),
+    ...CODEX_BUILT_IN_MIRRORED_COMMANDS.map((command) =>
+      defineChatCommand({
+        key: `codex_${command.baseName}`,
+        nativeName: `codex_${command.baseName}`,
+        description: command.description,
+        textAlias: `/codex_${command.baseName}`,
+        acceptsArgs: true,
+        argsParsing: "none",
+        category: "management",
+      }),
+    ),
     defineChatCommand({
       key: "focus",
       nativeName: "focus",

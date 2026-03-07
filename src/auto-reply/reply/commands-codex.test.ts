@@ -9,6 +9,7 @@ import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const discoverCodexAppServerThreadsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerThreadContextMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
 const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
   vi.fn<() => string | null>(() => null),
@@ -28,6 +29,7 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   isCodexAppServerProvider: (provider: string) => provider === "codex-app-server",
   readCodexAppServerThreadContext: (...args: unknown[]) =>
     readCodexAppServerThreadContextMock(...args),
+  readCodexAppServerModels: (...args: unknown[]) => readCodexAppServerModelsMock(...args),
 }));
 
 vi.mock("../../agents/codex-app-server-startup.js", () => ({
@@ -55,6 +57,7 @@ describe("handleCodexCommand", () => {
     storePath = path.join(tempDir, "sessions.json");
     discoverCodexAppServerThreadsMock.mockReset().mockResolvedValue([]);
     readCodexAppServerThreadContextMock.mockReset().mockResolvedValue({});
+    readCodexAppServerModelsMock.mockReset().mockResolvedValue([]);
     getCodexAppServerAvailabilityErrorMock.mockReset().mockReturnValue(null);
     getCodexAppServerRuntimeStatusMock.mockReset().mockReturnValue({ state: "unknown" });
     routeReplyMock.mockReset().mockResolvedValue({ ok: true, messageId: "m-1" });
@@ -567,6 +570,7 @@ describe("handleCodexCommand", () => {
 
     expect(result?.reply?.text).toContain("Pending input: req-123");
     expect(result?.reply?.text).toContain("Approve deploy?");
+    expect(result?.reply?.text).toContain("Mirrored commands: built-in=13");
     expect(
       (result?.reply?.channelData as { telegram?: { buttons?: unknown[][] } } | undefined)?.telegram
         ?.buttons,
@@ -577,6 +581,118 @@ describe("handleCodexCommand", () => {
       ],
       [{ text: "Tell Codex What To Do", callback_data: expect.stringMatching(/^cdxui:/) }],
     ]);
+  });
+
+  it("routes /codex_plan into the bound Codex session", async () => {
+    const params = buildParams("/codex_plan break this into phases");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: true });
+    expect(params.ctx.BodyForAgent).toBe("/plan break this into phases");
+  });
+
+  it("routes /codex_status into the bound Codex session", async () => {
+    const params = buildParams("/codex_status");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: true });
+    expect(params.ctx.BodyForAgent).toBe("/status");
+  });
+
+  it("summarizes models for /codex_model with no args", async () => {
+    const params = buildParams("/codex_model");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+      modelOverride: "gpt-5.3-codex",
+    };
+    readCodexAppServerModelsMock.mockResolvedValue([
+      { id: "gpt-5.3-codex", current: true },
+      { id: "gpt-5.2-codex" },
+    ]);
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Current model: gpt-5.3-codex");
+    expect(result?.reply?.text).toContain("Available models:");
+    expect(result?.reply?.text).toContain("gpt-5.2-codex");
+  });
+
+  it("routes /codex_model with args into Codex and stores the requested model", async () => {
+    const params = buildParams("/codex_model gpt-5.2-codex");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: true });
+    expect(params.ctx.BodyForAgent).toBe("/model gpt-5.2-codex");
+    expect(loadSessionStore(storePath)[params.sessionKey]?.modelOverride).toBe("gpt-5.2-codex");
+  });
+
+  it("routes other built-in mirrored Codex commands without special casing", async () => {
+    const params = buildParams("/codex_fast");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: true });
+    expect(params.ctx.BodyForAgent).toBe("/fast");
+    expect(params.command.commandBodyNormalized).toBe("codex-mirrored-dispatch:fast");
+  });
+
+  it("strips the Telegram bot suffix before reading /codex_skills locally", async () => {
+    const params = buildParams("/codex_skills@huntharo_bot");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: true });
+    expect(params.ctx.BodyForAgent).toBe("/skills");
+    expect(params.command.commandBodyNormalized).toBe("codex-mirrored-dispatch:skills");
+    expect(params.command.rawBodyNormalized).toBe("codex-mirrored-dispatch:skills");
   });
 
   it("fails fast when the Codex runtime startup gate is unavailable", async () => {

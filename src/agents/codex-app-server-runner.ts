@@ -86,24 +86,23 @@ export type PendingCodexUserInputState = {
   method?: string;
 };
 
-export type CodexMirrorSlashSource = "codex" | "mcp" | "unknown";
+export type CodexAppServerReviewTarget =
+  | { type: "uncommittedChanges" }
+  | { type: "custom"; instructions: string };
 
-export type CodexMirrorSlashCommand = {
-  name: string;
-  description?: string;
-  source: CodexMirrorSlashSource;
+export type CodexAppServerReviewResult = {
+  reviewText: string;
+  reviewThreadId?: string;
+  turnId?: string;
 };
 
-export type CodexMirrorSlashCollision = {
-  name: string;
-  sources: CodexMirrorSlashSource[];
-};
-
-export type CodexMirrorSlashDiscoveryResult = {
-  available: boolean;
-  commands: CodexMirrorSlashCommand[];
-  collisions: CodexMirrorSlashCollision[];
-  error?: string;
+export type CodexAppServerCollaborationMode = {
+  mode: string;
+  settings?: {
+    model?: string;
+    reasoningEffort?: string;
+    developerInstructions?: string | null;
+  };
 };
 
 export type CodexAppServerThreadSummary = {
@@ -117,6 +116,22 @@ export type CodexAppServerThreadSummary = {
 export type CodexAppServerThreadReplay = {
   lastUserMessage?: string;
   lastAssistantMessage?: string;
+};
+
+export type CodexAppServerModelSummary = {
+  id: string;
+  label?: string;
+  description?: string;
+  current?: boolean;
+};
+
+export type CodexAppServerRateLimitSummary = {
+  name: string;
+  remaining?: number;
+  limit?: number;
+  used?: number;
+  resetAt?: number;
+  windowSeconds?: number;
 };
 
 type RunCodexAppServerAgentParams = {
@@ -199,6 +214,41 @@ function pickNumber(record: Record<string, unknown>, keys: string[]): number | u
       const parsed = Date.parse(value);
       if (!Number.isNaN(parsed)) {
         return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function pickFiniteNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string") {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function pickBoolean(record: Record<string, unknown>, keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") {
+        return true;
+      }
+      if (normalized === "false") {
+        return false;
       }
     }
   }
@@ -1213,35 +1263,6 @@ function extractThreadRecords(value: unknown): Record<string, unknown>[] {
   return out;
 }
 
-function extractSlashCommands(value: unknown): CodexMirrorSlashCommand[] {
-  const root = asRecord(value);
-  const records = Array.isArray(value)
-    ? value
-    : [
-        ...(Array.isArray(root?.commands) ? (root.commands as unknown[]) : []),
-        ...(Array.isArray(root?.items) ? (root.items as unknown[]) : []),
-      ];
-  const out = new Map<string, CodexMirrorSlashCommand>();
-  for (const entry of records) {
-    const record = asRecord(entry);
-    if (!record) {
-      continue;
-    }
-    const name = pickString(record, ["name", "command", "id"]);
-    if (!name) {
-      continue;
-    }
-    out.set(name, {
-      name,
-      description: pickString(record, ["description", "summary", "title"]),
-      source:
-        (pickString(record, ["source"], { trim: true })?.toLowerCase() as CodexMirrorSlashSource) ??
-        "unknown",
-    });
-  }
-  return [...out.values()].toSorted((left, right) => left.name.localeCompare(right.name));
-}
-
 function normalizeConversationRole(value: string | undefined): "user" | "assistant" | undefined {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "user") {
@@ -1338,50 +1359,109 @@ function extractThreadReplayFromReadResult(value: unknown): CodexAppServerThread
   };
 }
 
-export async function discoverCodexAppServerSlashCommands(params?: {
-  config?: OpenClawConfig;
-  sessionKey?: string;
-  workspaceDir?: string;
-}): Promise<CodexMirrorSlashDiscoveryResult> {
-  const settings = resolveCodexAppServerSettings(params?.config);
-  if (!settings.enabled) {
-    return {
-      available: false,
-      commands: [],
-      collisions: [],
-      error: 'Provider "codex-app-server" is disabled.',
-    };
-  }
-  const client = createJsonRpcClient(settings);
-  try {
-    await client.connect();
-    await initializeCodexAppServerClient({
-      client,
-      settings,
-      sessionKey: params?.sessionKey,
-      workspaceDir: params?.workspaceDir,
-    });
-    const result = await requestWithFallbacks({
-      client,
-      methods: ["commands/list", "mcp/commands/list"],
-      payloads: [{}],
-      timeoutMs: settings.requestTimeoutMs,
-    });
-    return {
-      available: true,
-      commands: extractSlashCommands(result),
-      collisions: [],
-    };
-  } catch (error) {
-    return {
-      available: false,
-      commands: [],
-      collisions: [],
-      error: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    await client.close().catch(() => undefined);
-  }
+function extractModelSummaries(value: unknown): CodexAppServerModelSummary[] {
+  const out = new Map<string, CodexAppServerModelSummary>();
+  const visit = (node: unknown) => {
+    if (Array.isArray(node)) {
+      node.forEach((entry) => visit(entry));
+      return;
+    }
+    const record = asRecord(node);
+    if (!record) {
+      return;
+    }
+    const provider = pickString(record, ["provider", "providerId", "provider_id"]);
+    const rawId =
+      pickString(record, ["id", "model", "modelId", "model_id", "name", "slug"]) ??
+      pickString(record, ["ref", "modelRef", "model_ref"]);
+    if (rawId) {
+      const id =
+        provider && !rawId.includes("/") && !rawId.startsWith("@") ? `${provider}/${rawId}` : rawId;
+      const existing = out.get(id);
+      const next: CodexAppServerModelSummary = {
+        id,
+        label:
+          pickString(record, ["label", "title", "displayName", "display_name"]) ?? existing?.label,
+        description:
+          pickString(record, ["description", "summary", "details"]) ?? existing?.description,
+        current:
+          pickBoolean(record, ["current", "selected", "isCurrent", "is_current", "active"]) ??
+          existing?.current,
+      };
+      out.set(id, next);
+    }
+    for (const key of ["models", "items", "data", "results", "entries", "available"]) {
+      visit(record[key]);
+    }
+  };
+  visit(value);
+  return [...out.values()].toSorted((left, right) => {
+    if (left.current && !right.current) {
+      return -1;
+    }
+    if (!left.current && right.current) {
+      return 1;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function extractRateLimitSummaries(value: unknown): CodexAppServerRateLimitSummary[] {
+  const out = new Map<string, CodexAppServerRateLimitSummary>();
+  const visit = (node: unknown) => {
+    if (Array.isArray(node)) {
+      node.forEach((entry) => visit(entry));
+      return;
+    }
+    const record = asRecord(node);
+    if (!record) {
+      return;
+    }
+    const remaining = pickFiniteNumber(record, [
+      "remaining",
+      "remainingCount",
+      "remaining_count",
+      "available",
+    ]);
+    const limit = pickFiniteNumber(record, ["limit", "max", "quota", "capacity"]);
+    const used = pickFiniteNumber(record, ["used", "consumed", "count"]);
+    const resetAt = pickNumber(record, [
+      "resetAt",
+      "reset_at",
+      "resetsAt",
+      "resets_at",
+      "nextResetAt",
+    ]);
+    const windowSeconds = pickFiniteNumber(record, [
+      "windowSeconds",
+      "window_seconds",
+      "resetInSeconds",
+      "retryAfterSeconds",
+    ]);
+    const name =
+      pickString(record, ["name", "label", "scope", "resource", "model", "id"]) ??
+      (typeof remaining === "number" ||
+      typeof limit === "number" ||
+      typeof used === "number" ||
+      typeof resetAt === "number"
+        ? `limit-${out.size + 1}`
+        : undefined);
+    if (name) {
+      out.set(name, {
+        name,
+        remaining,
+        limit,
+        used,
+        resetAt,
+        windowSeconds,
+      });
+    }
+    for (const key of ["limits", "items", "data", "results", "entries", "buckets"]) {
+      visit(record[key]);
+    }
+  };
+  visit(value);
+  return [...out.values()].toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
 export async function discoverCodexAppServerThreads(params?: {
@@ -1417,6 +1497,66 @@ export async function discoverCodexAppServerThreads(params?: {
       );
     }
     return threads;
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+export async function readCodexAppServerModels(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+}): Promise<CodexAppServerModelSummary[]> {
+  const settings = resolveCodexAppServerSettings(params?.config);
+  if (!settings.enabled) {
+    return [];
+  }
+  const client = createJsonRpcClient(settings);
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params?.sessionKey,
+      workspaceDir: params?.workspaceDir,
+    });
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["model/list"],
+      payloads: [{}],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    return extractModelSummaries(result);
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+export async function readCodexAppServerRateLimits(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+}): Promise<CodexAppServerRateLimitSummary[]> {
+  const settings = resolveCodexAppServerSettings(params?.config);
+  if (!settings.enabled) {
+    return [];
+  }
+  const client = createJsonRpcClient(settings);
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params?.sessionKey,
+      workspaceDir: params?.workspaceDir,
+    });
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["account/rateLimits/read"],
+      payloads: [{}],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    return extractRateLimitSummaries(result);
   } finally {
     await client.close().catch(() => undefined);
   }
