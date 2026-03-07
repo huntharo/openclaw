@@ -115,6 +115,100 @@ describe("applyThreadFilter", () => {
   });
 });
 
+describe("extractThreadState", () => {
+  it("pulls model, cwd, permissions, and service tier from thread/resume responses", () => {
+    expect(
+      __testing.extractThreadState({
+        thread: { id: "thread-123" },
+        model: "gpt-5.4",
+        modelProvider: "openai",
+        serviceTier: "fast",
+        cwd: "/repo/openclaw",
+        approvalPolicy: "on-request",
+        sandbox: {
+          workspaceWrite: {
+            networkAccess: false,
+          },
+        },
+        reasoningEffort: "high",
+      }),
+    ).toEqual({
+      threadId: "thread-123",
+      model: "gpt-5.4",
+      modelProvider: "openai",
+      serviceTier: "fast",
+      cwd: "/repo/openclaw",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      reasoningEffort: "high",
+    });
+  });
+});
+
+describe("extractAccountSummary", () => {
+  it("parses chatgpt account/read responses", () => {
+    expect(
+      __testing.extractAccountSummary({
+        account: {
+          type: "chatgpt",
+          email: "user@example.com",
+          planType: "pro",
+        },
+        requiresOpenaiAuth: true,
+      }),
+    ).toEqual({
+      type: "chatgpt",
+      email: "user@example.com",
+      planType: "pro",
+      requiresOpenaiAuth: true,
+    });
+  });
+});
+
+describe("extractRateLimitSummaries", () => {
+  it("parses primary and secondary windows from account/rateLimits/read", () => {
+    expect(
+      __testing.extractRateLimitSummaries({
+        rateLimits: {
+          primary: {
+            usedPercent: 4,
+            windowDurationMins: 300,
+            resetsAt: 1_700_000_000_000,
+          },
+          secondary: {
+            usedPercent: 17,
+            windowDurationMins: 10080,
+            resetsAt: 1_700_100_000_000,
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        name: "5h limit",
+        limitId: undefined,
+        remaining: 96,
+        limit: undefined,
+        used: undefined,
+        usedPercent: 4,
+        resetAt: 1_700_000_000_000,
+        windowSeconds: 18_000,
+        windowMinutes: 300,
+      },
+      {
+        name: "Weekly limit",
+        limitId: undefined,
+        remaining: 83,
+        limit: undefined,
+        used: undefined,
+        usedPercent: 17,
+        resetAt: 1_700_100_000_000,
+        windowSeconds: 604_800,
+        windowMinutes: 10080,
+      },
+    ]);
+  });
+});
+
 describe("buildCodexPendingUserInputActions", () => {
   it("renders typed approval actions and a steer affordance", () => {
     expect(

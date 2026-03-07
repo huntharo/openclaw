@@ -9,7 +9,11 @@ import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const discoverCodexAppServerThreadsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerThreadContextMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerThreadStateMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerAccountMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerRateLimitsMock = vi.hoisted(() => vi.fn());
+const setCodexAppServerThreadServiceTierMock = vi.hoisted(() => vi.fn());
 const runCodexAppServerAgentMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
 const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
@@ -30,7 +34,12 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   isCodexAppServerProvider: (provider: string) => provider === "codex-app-server",
   readCodexAppServerThreadContext: (...args: unknown[]) =>
     readCodexAppServerThreadContextMock(...args),
+  readCodexAppServerThreadState: (...args: unknown[]) => readCodexAppServerThreadStateMock(...args),
+  readCodexAppServerAccount: (...args: unknown[]) => readCodexAppServerAccountMock(...args),
   readCodexAppServerModels: (...args: unknown[]) => readCodexAppServerModelsMock(...args),
+  readCodexAppServerRateLimits: (...args: unknown[]) => readCodexAppServerRateLimitsMock(...args),
+  setCodexAppServerThreadServiceTier: (...args: unknown[]) =>
+    setCodexAppServerThreadServiceTierMock(...args),
   runCodexAppServerAgent: (...args: unknown[]) => runCodexAppServerAgentMock(...args),
 }));
 
@@ -59,7 +68,36 @@ describe("handleCodexCommand", () => {
     storePath = path.join(tempDir, "sessions.json");
     discoverCodexAppServerThreadsMock.mockReset().mockResolvedValue([]);
     readCodexAppServerThreadContextMock.mockReset().mockResolvedValue({});
+    readCodexAppServerThreadStateMock.mockReset().mockResolvedValue({
+      threadId: "thread-123",
+      model: "gpt-5.4",
+      modelProvider: "openai",
+      serviceTier: undefined,
+      cwd: "/repo/openclaw",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      reasoningEffort: "high",
+    });
+    readCodexAppServerAccountMock.mockReset().mockResolvedValue({
+      type: "chatgpt",
+      email: "user@example.com",
+      planType: "pro",
+      requiresOpenaiAuth: true,
+    });
     readCodexAppServerModelsMock.mockReset().mockResolvedValue([]);
+    readCodexAppServerRateLimitsMock.mockReset().mockResolvedValue([
+      {
+        name: "5h limit",
+        usedPercent: 4,
+        remaining: 96,
+        resetAt: Date.now() + 3_600_000,
+      },
+    ]);
+    setCodexAppServerThreadServiceTierMock.mockReset().mockResolvedValue({
+      threadId: "thread-123",
+      serviceTier: "fast",
+      cwd: "/repo/openclaw",
+    });
     runCodexAppServerAgentMock.mockReset().mockResolvedValue({
       payloads: [{ text: "Codex reply" }],
       meta: {
@@ -616,7 +654,7 @@ describe("handleCodexCommand", () => {
     );
   });
 
-  it("routes /codex_status into the bound Codex session", async () => {
+  it("renders /codex_status locally from App Server state", async () => {
     const params = buildParams("/codex_status");
     params.sessionEntry = {
       sessionId: "session-1",
@@ -629,14 +667,18 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
-    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        prompt: "/status",
-        existingThreadId: "thread-123",
-        workspaceDir: "/repo/openclaw",
-      }),
-    );
+    expect(result?.reply?.text).toContain("OpenAI Codex");
+    expect(result?.reply?.text).toContain("Model: openai/gpt-5.4 · reasoning high");
+    expect(result?.reply?.text).toContain("Directory: /repo/openclaw");
+    expect(result?.reply?.text).toContain("Fast mode: off");
+    expect(result?.reply?.text).toContain("Permissions: Default");
+    expect(result?.reply?.text).toContain("Account: user@example.com (pro)");
+    expect(result?.reply?.text).toContain("Session: thread-123");
+    expect(result?.reply?.text).toContain("5h limit: 96% left");
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+    expect(readCodexAppServerThreadStateMock).toHaveBeenCalled();
+    expect(readCodexAppServerAccountMock).toHaveBeenCalled();
+    expect(readCodexAppServerRateLimitsMock).toHaveBeenCalled();
   });
 
   it("summarizes models for /codex_model with no args", async () => {
@@ -685,7 +727,7 @@ describe("handleCodexCommand", () => {
     expect(loadSessionStore(storePath)[params.sessionKey]?.modelOverride).toBe("gpt-5.2-codex");
   });
 
-  it("routes other built-in mirrored Codex commands without special casing", async () => {
+  it("toggles /codex_fast through structured serviceTier updates", async () => {
     const params = buildParams("/codex_fast");
     params.sessionEntry = {
       sessionId: "session-1",
@@ -698,12 +740,37 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
-    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
+    expect(result?.reply?.text).toBe("Fast mode set to on.");
+    expect(setCodexAppServerThreadServiceTierMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        prompt: "/fast",
+        threadId: "thread-123",
+        serviceTier: "fast",
       }),
     );
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+    expect(loadSessionStore(storePath)[params.sessionKey]?.codexServiceTier).toBe("fast");
+  });
+
+  it("reports /codex_fast status without mutating thread state", async () => {
+    const params = buildParams("/codex_fast status");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerThreadStateMock.mockResolvedValueOnce({
+      threadId: "thread-123",
+      serviceTier: "fast",
+      cwd: "/repo/openclaw",
+    });
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Fast mode is on.");
+    expect(setCodexAppServerThreadServiceTierMock).not.toHaveBeenCalled();
   });
 
   it("dispatches mirrored skill commands directly to Codex", async () => {

@@ -13,9 +13,16 @@ import {
 import {
   discoverCodexAppServerThreads,
   runCodexAppServerAgent,
+  readCodexAppServerAccount,
   readCodexAppServerModels,
+  readCodexAppServerRateLimits,
+  readCodexAppServerThreadState,
+  setCodexAppServerThreadServiceTier,
   isCodexAppServerProvider,
   readCodexAppServerThreadContext,
+  type CodexAppServerAccountSummary,
+  type CodexAppServerRateLimitSummary,
+  type CodexAppServerThreadState,
   type PendingCodexUserInputState,
   type CodexAppServerThreadSummary,
 } from "../../agents/codex-app-server-runner.js";
@@ -57,6 +64,7 @@ type SessionMutation = {
   modelOverride?: string;
   codexThreadId?: string;
   codexProjectKey?: string;
+  codexServiceTier?: string;
   codexAutoRoute?: boolean;
   pendingUserInputRequestId?: string;
   pendingUserInputOptions?: string[];
@@ -634,6 +642,176 @@ function resolveStoredCodexModel(entry: HandleCommandsParams["sessionEntry"]): s
   return undefined;
 }
 
+function normalizeCodexServiceTier(value: string | undefined | null): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : undefined;
+}
+
+function formatCodexFastModeValue(value: string | undefined): string {
+  const normalized = normalizeCodexServiceTier(value);
+  if (!normalized) {
+    return "off";
+  }
+  if (normalized === "fast") {
+    return "on";
+  }
+  return normalized;
+}
+
+function formatCodexFastModeSetText(value: string | undefined): string {
+  return `Fast mode set to ${formatCodexFastModeValue(value)}.`;
+}
+
+function formatCodexFastModeStatusText(value: string | undefined): string {
+  return `Fast mode is ${formatCodexFastModeValue(value)}.`;
+}
+
+function parseCodexFastAction(
+  argsText: string,
+): "toggle" | "on" | "off" | "status" | { error: string } {
+  const normalized = argsText.trim().toLowerCase();
+  if (!normalized) {
+    return "toggle";
+  }
+  if (normalized === "on" || normalized === "off" || normalized === "status") {
+    return normalized;
+  }
+  return { error: "Usage: /codex_fast [on|off|status]" };
+}
+
+function formatCodexPermissions(params: {
+  approvalPolicy?: string;
+  sandbox?: string;
+}): string | undefined {
+  const approval = params.approvalPolicy?.trim();
+  const sandbox = params.sandbox?.trim();
+  if (!approval && !sandbox) {
+    return undefined;
+  }
+  if (approval === "on-request" && sandbox === "workspace-write") {
+    return "Default";
+  }
+  if (approval === "never" && sandbox === "danger-full-access") {
+    return "Full Access";
+  }
+  if (approval && sandbox) {
+    return `Custom (${sandbox}, ${approval})`;
+  }
+  return approval ?? sandbox;
+}
+
+function formatCodexAccountText(account: CodexAppServerAccountSummary | undefined): string {
+  if (!account) {
+    return "unknown";
+  }
+  if (account.type === "chatgpt" && account.email?.trim()) {
+    return account.planType?.trim()
+      ? `${account.email.trim()} (${account.planType.trim()})`
+      : account.email.trim();
+  }
+  if (account.type === "apiKey") {
+    return "API key";
+  }
+  if (account.requiresOpenaiAuth === false) {
+    return "not required";
+  }
+  if (account.requiresOpenaiAuth === true) {
+    return "not signed in";
+  }
+  return "unknown";
+}
+
+function formatCodexModelText(threadState: CodexAppServerThreadState | undefined): string {
+  const model = threadState?.model?.trim();
+  const provider = threadState?.modelProvider?.trim();
+  const reasoning = threadState?.reasoningEffort?.trim();
+  const parts = [
+    provider && model && !model.startsWith(`${provider}/`) ? `${provider}/${model}` : model,
+  ].filter(Boolean) as string[];
+  if (reasoning) {
+    parts.push(`reasoning ${reasoning}`);
+  }
+  return parts.join(" · ") || "unknown";
+}
+
+function formatCodexRateLimitReset(resetAt: number | undefined): string | undefined {
+  if (!resetAt || !Number.isFinite(resetAt)) {
+    return undefined;
+  }
+  const now = new Date();
+  const date = new Date(resetAt);
+  const sameDay = now.toDateString() === date.toDateString();
+  const timeText = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+  if (sameDay) {
+    return timeText;
+  }
+  const dateText = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(date);
+  return `${dateText}, ${timeText}`;
+}
+
+function formatCodexRateLimitLine(limit: CodexAppServerRateLimitSummary): string {
+  const prefix = `${limit.name}: `;
+  if (typeof limit.usedPercent === "number") {
+    const remaining = Math.max(0, Math.round(100 - limit.usedPercent));
+    const resetText = formatCodexRateLimitReset(limit.resetAt);
+    return `${prefix}${remaining}% left${resetText ? ` (resets ${resetText})` : ""}`;
+  }
+  if (typeof limit.remaining === "number" && typeof limit.limit === "number") {
+    const resetText = formatCodexRateLimitReset(limit.resetAt);
+    return `${prefix}${limit.remaining}/${limit.limit} remaining${resetText ? ` (resets ${resetText})` : ""}`;
+  }
+  return `${prefix}unavailable`;
+}
+
+function formatCodexMirroredStatusText(params: {
+  threadState?: CodexAppServerThreadState;
+  account?: CodexAppServerAccountSummary;
+  rateLimits: CodexAppServerRateLimitSummary[];
+  entry: HandleCommandsParams["sessionEntry"];
+  errors: string[];
+}): string {
+  const lines = ["OpenAI Codex"];
+  lines.push(`Model: ${formatCodexModelText(params.threadState)}`);
+  lines.push(
+    `Directory: ${params.threadState?.cwd?.trim() || params.entry?.codexProjectKey?.trim() || "unknown"}`,
+  );
+  lines.push(
+    `Fast mode: ${formatCodexFastModeValue(
+      params.threadState?.serviceTier ?? params.entry?.codexServiceTier,
+    )}`,
+  );
+  const permissions = formatCodexPermissions({
+    approvalPolicy: params.threadState?.approvalPolicy,
+    sandbox: params.threadState?.sandbox,
+  });
+  if (permissions) {
+    lines.push(`Permissions: ${permissions}`);
+  }
+  lines.push(`Account: ${formatCodexAccountText(params.account)}`);
+  lines.push(
+    `Session: ${params.threadState?.threadId?.trim() || params.entry?.codexThreadId?.trim() || "unknown"}`,
+  );
+  if (params.rateLimits.length > 0) {
+    lines.push("");
+    for (const limit of params.rateLimits) {
+      lines.push(formatCodexRateLimitLine(limit));
+    }
+  }
+  if (params.errors.length > 0) {
+    lines.push("");
+    for (const error of params.errors) {
+      lines.push(`Status note: ${error}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function formatModelSummaryLines(params: {
   currentModel?: string;
   models: Awaited<ReturnType<typeof readCodexAppServerModels>>;
@@ -706,6 +884,9 @@ async function resolveStatusText(params: HandleCommandsParams): Promise<string> 
   }
   if (entry?.codexProjectKey) {
     lines.push(`Project: ${entry.codexProjectKey}`);
+  }
+  if (entry?.codexServiceTier) {
+    lines.push(`Fast mode: ${formatCodexFastModeValue(entry.codexServiceTier)}`);
   }
   lines.push(`Auto-route: ${entry?.codexAutoRoute === false ? "off" : "on"}`);
   lines.push(`Current model: ${resolveStoredCodexModel(entry) ?? "unknown"}`);
@@ -862,6 +1043,140 @@ async function runCodexSlashCommandDirectly(params: {
   return { shouldContinue: false, reply };
 }
 
+async function handleCodexFastCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const threadId = sessionEntry?.codexThreadId?.trim();
+  if (!threadId) {
+    return stopWithText(
+      "Codex fast mode needs a live bound thread. Start or join a Codex thread first.",
+    );
+  }
+  const action = parseCodexFastAction(argsText);
+  if (typeof action === "object") {
+    return stopWithText(action.error);
+  }
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const currentState = await readCodexAppServerThreadState({
+    config: params.cfg,
+    sessionKey: target.sessionKey,
+    workspaceDir,
+    threadId,
+  });
+  const currentTier = normalizeCodexServiceTier(currentState.serviceTier);
+  if (action === "status") {
+    await updateCodexSession(
+      params,
+      {
+        providerOverride: "codex-app-server",
+        codexAutoRoute: true,
+        codexServiceTier: currentTier,
+      },
+      target.sessionKey,
+    );
+    return stopWithText(formatCodexFastModeStatusText(currentTier));
+  }
+  const nextTier =
+    action === "toggle"
+      ? currentTier === "fast"
+        ? null
+        : "fast"
+      : action === "on"
+        ? "fast"
+        : null;
+  const updatedState = await setCodexAppServerThreadServiceTier({
+    config: params.cfg,
+    sessionKey: target.sessionKey,
+    workspaceDir,
+    threadId,
+    serviceTier: nextTier,
+  });
+  const effectiveTier = normalizeCodexServiceTier(updatedState.serviceTier);
+  await updateCodexSession(
+    params,
+    {
+      providerOverride: "codex-app-server",
+      codexAutoRoute: true,
+      codexServiceTier: effectiveTier,
+    },
+    target.sessionKey,
+  );
+  return stopWithText(formatCodexFastModeSetText(effectiveTier));
+}
+
+async function handleCodexMirroredStatusCommand(
+  params: HandleCommandsParams,
+): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const threadId = sessionEntry?.codexThreadId?.trim();
+  if (!threadId) {
+    return stopWithText(
+      "Codex status is unavailable until a Codex thread is started or joined in this conversation.",
+    );
+  }
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const errors: string[] = [];
+  const [threadState, account, rateLimits] = await Promise.all([
+    readCodexAppServerThreadState({
+      config: params.cfg,
+      sessionKey: target.sessionKey,
+      workspaceDir,
+      threadId,
+    }).catch((error) => {
+      errors.push(`thread state unavailable: ${String(error)}`);
+      return undefined;
+    }),
+    readCodexAppServerAccount({
+      config: params.cfg,
+      sessionKey: target.sessionKey,
+      workspaceDir,
+    }).catch((error) => {
+      errors.push(`account unavailable: ${String(error)}`);
+      return undefined;
+    }),
+    readCodexAppServerRateLimits({
+      config: params.cfg,
+      sessionKey: target.sessionKey,
+      workspaceDir,
+    }).catch((error) => {
+      errors.push(`rate limits unavailable: ${String(error)}`);
+      return [] as CodexAppServerRateLimitSummary[];
+    }),
+  ]);
+  await updateCodexSession(
+    params,
+    {
+      providerOverride: "codex-app-server",
+      codexAutoRoute: true,
+      codexServiceTier: normalizeCodexServiceTier(
+        threadState?.serviceTier ?? sessionEntry?.codexServiceTier,
+      ),
+    },
+    target.sessionKey,
+  );
+  return stopWithText(
+    formatCodexMirroredStatusText({
+      threadState,
+      account,
+      rateLimits,
+      entry: sessionEntry,
+      errors,
+    }),
+  );
+}
+
 function pickBestThread(
   threads: CodexAppServerThreadSummary[],
   token: string,
@@ -899,6 +1214,12 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     const availabilityError = getCodexAppServerAvailabilityError(params.cfg);
     if (availabilityError) {
       return stopWithText(`⚠️ ${availabilityError}`);
+    }
+    if (invocation.baseName === "status") {
+      return await handleCodexMirroredStatusCommand(params);
+    }
+    if (invocation.baseName === "fast") {
+      return await handleCodexFastCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();

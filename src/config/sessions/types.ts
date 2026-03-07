@@ -155,6 +155,8 @@ export type SessionEntry = {
   codexRunId?: string;
   /** Workspace identity for the current Codex thread binding. */
   codexProjectKey?: string;
+  /** Effective Codex App Server service tier for the bound thread, when known. */
+  codexServiceTier?: string;
   /** When true, non-command turns in this session route directly to Codex App Server. */
   codexAutoRoute?: boolean;
   /** Pending server-initiated user input request id, if any. */

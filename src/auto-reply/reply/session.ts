@@ -242,6 +242,7 @@ export async function initSessionState(params: {
   let persistedCodexThreadId: string | undefined;
   let persistedCodexRunId: string | undefined;
   let persistedCodexProjectKey: string | undefined;
+  let persistedCodexServiceTier: string | undefined;
   let persistedCodexAutoRoute: boolean | undefined;
   let persistedPendingUserInputRequestId: string | undefined;
   let persistedPendingUserInputOptions: string[] | undefined;
@@ -389,6 +390,7 @@ export async function initSessionState(params: {
     persistedCodexThreadId = entry.codexThreadId;
     persistedCodexRunId = entry.codexRunId;
     persistedCodexProjectKey = entry.codexProjectKey;
+    persistedCodexServiceTier = entry.codexServiceTier;
     persistedCodexAutoRoute = entry.codexAutoRoute;
     persistedPendingUserInputRequestId = entry.pendingUserInputRequestId;
     persistedPendingUserInputOptions = entry.pendingUserInputOptions;
@@ -416,6 +418,7 @@ export async function initSessionState(params: {
       persistedCodexThreadId = entry.codexThreadId;
       persistedCodexRunId = entry.codexRunId;
       persistedCodexProjectKey = entry.codexProjectKey;
+      persistedCodexServiceTier = entry.codexServiceTier;
       persistedCodexAutoRoute = entry.codexAutoRoute;
       persistedPendingUserInputRequestId = entry.pendingUserInputRequestId;
       persistedPendingUserInputOptions = entry.pendingUserInputOptions;
@@ -477,6 +480,7 @@ export async function initSessionState(params: {
     codexThreadId: persistedCodexThreadId ?? baseEntry?.codexThreadId,
     codexRunId: persistedCodexRunId ?? baseEntry?.codexRunId,
     codexProjectKey: persistedCodexProjectKey ?? baseEntry?.codexProjectKey,
+    codexServiceTier: persistedCodexServiceTier ?? baseEntry?.codexServiceTier,
     codexAutoRoute: persistedCodexAutoRoute ?? baseEntry?.codexAutoRoute,
     pendingUserInputRequestId:
       persistedPendingUserInputRequestId ?? baseEntry?.pendingUserInputRequestId,

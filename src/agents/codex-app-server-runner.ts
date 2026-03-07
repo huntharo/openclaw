@@ -125,13 +125,34 @@ export type CodexAppServerModelSummary = {
   current?: boolean;
 };
 
+export type CodexAppServerThreadState = {
+  threadId: string;
+  model?: string;
+  modelProvider?: string;
+  serviceTier?: string;
+  cwd?: string;
+  approvalPolicy?: string;
+  sandbox?: string;
+  reasoningEffort?: string;
+};
+
+export type CodexAppServerAccountSummary = {
+  type?: "apiKey" | "chatgpt";
+  email?: string;
+  planType?: string;
+  requiresOpenaiAuth?: boolean;
+};
+
 export type CodexAppServerRateLimitSummary = {
   name: string;
+  limitId?: string;
   remaining?: number;
   limit?: number;
   used?: number;
+  usedPercent?: number;
   resetAt?: number;
   windowSeconds?: number;
+  windowMinutes?: number;
 };
 
 type RunCodexAppServerAgentParams = {
@@ -361,6 +382,37 @@ function findFirstArrayByKeys(
   for (const nested of Object.values(record)) {
     const match = findFirstArrayByKeys(nested, keys, depth + 1);
     if (match && match.length > 0) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
+function findFirstNestedValue(value: unknown, keys: readonly string[], depth = 0): unknown {
+  if (depth > 6) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const match = findFirstNestedValue(entry, keys, depth + 1);
+      if (match !== undefined) {
+        return match;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  for (const key of keys) {
+    if (record[key] !== undefined) {
+      return record[key];
+    }
+  }
+  for (const nested of Object.values(record)) {
+    const match = findFirstNestedValue(nested, keys, depth + 1);
+    if (match !== undefined) {
       return match;
     }
   }
@@ -1406,8 +1458,138 @@ function extractModelSummaries(value: unknown): CodexAppServerModelSummary[] {
   });
 }
 
+function summarizeSandboxPolicy(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.trim() || undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  if ("dangerFullAccess" in record || "danger_full_access" in record) {
+    return "danger-full-access";
+  }
+  if ("readOnly" in record || "read_only" in record) {
+    return "read-only";
+  }
+  if ("workspaceWrite" in record || "workspace_write" in record) {
+    const workspaceWrite = asRecord(record.workspaceWrite ?? record.workspace_write);
+    const networkEnabled =
+      pickBoolean(workspaceWrite ?? {}, ["networkAccess", "network_access", "enabled"]) === true;
+    return networkEnabled ? "workspace-write with network access" : "workspace-write";
+  }
+  if ("externalSandbox" in record || "external_sandbox" in record) {
+    return "external-sandbox";
+  }
+  const mode = pickString(record, ["mode", "type", "kind", "name"]);
+  if (mode) {
+    return mode;
+  }
+  return undefined;
+}
+
+function extractThreadState(value: unknown): CodexAppServerThreadState {
+  return {
+    threadId:
+      extractIds(value).threadId ??
+      findFirstNestedString(value, ["threadId", "thread_id", "id", "conversationId"]) ??
+      "",
+    model: findFirstNestedString(value, ["model", "modelId", "model_id"]),
+    modelProvider: findFirstNestedString(value, [
+      "modelProvider",
+      "model_provider",
+      "provider",
+      "providerId",
+      "provider_id",
+    ]),
+    serviceTier: findFirstNestedString(value, ["serviceTier", "service_tier"]),
+    cwd: findFirstNestedString(value, ["cwd", "workdir", "directory"]),
+    approvalPolicy: findFirstNestedString(value, ["approvalPolicy", "approval_policy"]),
+    sandbox: summarizeSandboxPolicy(findFirstNestedValue(value, ["sandbox", "sandbox_policy"])),
+    reasoningEffort: findFirstNestedString(value, ["reasoningEffort", "reasoning_effort"]),
+  };
+}
+
+function extractAccountSummary(value: unknown): CodexAppServerAccountSummary {
+  const root = asRecord(value) ?? {};
+  const account =
+    asRecord(findFirstNestedValue(value, ["account"])) ?? asRecord(root.account) ?? undefined;
+  const type = pickString(account ?? {}, ["type"]);
+  return {
+    type: type === "apiKey" || type === "chatgpt" ? type : undefined,
+    email: pickString(account ?? {}, ["email"]),
+    planType: pickString(account ?? {}, ["planType", "plan_type"]),
+    requiresOpenaiAuth: pickBoolean(root, ["requiresOpenaiAuth", "requires_openai_auth"]),
+  };
+}
+
+function formatRateLimitWindowName(params: {
+  limitId?: string;
+  limitName?: string;
+  windowKey: "primary" | "secondary";
+  windowMinutes?: number;
+}): string {
+  const rawId = params.limitId?.trim();
+  const rawName = params.limitName?.trim();
+  const minutes = params.windowMinutes;
+  let windowLabel: string;
+  if (minutes === 300) {
+    windowLabel = "5h limit";
+  } else if (minutes === 10080) {
+    windowLabel = "Weekly limit";
+  } else if (minutes === 43200) {
+    windowLabel = "Monthly limit";
+  } else if (typeof minutes === "number" && minutes > 0) {
+    if (minutes % 1440 === 0) {
+      windowLabel = `${Math.round(minutes / 1440)}d limit`;
+    } else if (minutes % 60 === 0) {
+      windowLabel = `${Math.round(minutes / 60)}h limit`;
+    } else {
+      windowLabel = `${minutes}m limit`;
+    }
+  } else {
+    windowLabel = params.windowKey === "primary" ? "Primary limit" : "Secondary limit";
+  }
+  if (!rawId || rawId.toLowerCase() === "codex") {
+    return windowLabel;
+  }
+  return `${rawName ?? rawId} ${windowLabel}`.trim();
+}
+
 function extractRateLimitSummaries(value: unknown): CodexAppServerRateLimitSummary[] {
   const out = new Map<string, CodexAppServerRateLimitSummary>();
+  const addWindow = (
+    windowValue: unknown,
+    params: { limitId?: string; limitName?: string; windowKey: "primary" | "secondary" },
+  ) => {
+    const window = asRecord(windowValue);
+    if (!window) {
+      return;
+    }
+    const usedPercent = pickFiniteNumber(window, ["usedPercent", "used_percent"]);
+    const windowMinutes = pickFiniteNumber(window, [
+      "windowDurationMins",
+      "window_duration_mins",
+      "windowMinutes",
+      "window_minutes",
+    ]);
+    const name = formatRateLimitWindowName({
+      limitId: params.limitId,
+      limitName: params.limitName,
+      windowKey: params.windowKey,
+      windowMinutes,
+    });
+    out.set(name, {
+      name,
+      limitId: params.limitId,
+      usedPercent,
+      remaining:
+        typeof usedPercent === "number" ? Math.max(0, Math.round(100 - usedPercent)) : undefined,
+      resetAt: pickNumber(window, ["resetsAt", "resets_at", "resetAt", "reset_at"]),
+      windowSeconds: typeof windowMinutes === "number" ? Math.round(windowMinutes * 60) : undefined,
+      windowMinutes,
+    });
+  };
   const visit = (node: unknown) => {
     if (Array.isArray(node)) {
       node.forEach((entry) => visit(entry));
@@ -1416,6 +1598,23 @@ function extractRateLimitSummaries(value: unknown): CodexAppServerRateLimitSumma
     const record = asRecord(node);
     if (!record) {
       return;
+    }
+    if ("primary" in record || "secondary" in record) {
+      const limitId = pickString(record, ["limitId", "limit_id", "id"]);
+      const limitName = pickString(record, ["limitName", "limit_name", "name", "label"]);
+      addWindow(record.primary, { limitId, limitName, windowKey: "primary" });
+      addWindow(record.secondary, { limitId, limitName, windowKey: "secondary" });
+    }
+    if (record.rateLimitsByLimitId && typeof record.rateLimitsByLimitId === "object") {
+      for (const [limitId, snapshot] of Object.entries(record.rateLimitsByLimitId)) {
+        const snapshotRecord = asRecord(snapshot);
+        if (!snapshotRecord) {
+          continue;
+        }
+        const limitName = pickString(snapshotRecord, ["limitName", "limit_name", "name", "label"]);
+        addWindow(snapshotRecord.primary, { limitId, limitName, windowKey: "primary" });
+        addWindow(snapshotRecord.secondary, { limitId, limitName, windowKey: "secondary" });
+      }
     }
     const remaining = pickFiniteNumber(record, [
       "remaining",
@@ -1447,16 +1646,31 @@ function extractRateLimitSummaries(value: unknown): CodexAppServerRateLimitSumma
         ? `limit-${out.size + 1}`
         : undefined);
     if (name) {
+      const existing = out.get(name);
       out.set(name, {
         name,
-        remaining,
-        limit,
-        used,
-        resetAt,
-        windowSeconds,
+        limitId: existing?.limitId,
+        remaining: remaining ?? existing?.remaining,
+        limit: limit ?? existing?.limit,
+        used: used ?? existing?.used,
+        usedPercent: existing?.usedPercent,
+        resetAt: resetAt ?? existing?.resetAt,
+        windowSeconds: windowSeconds ?? existing?.windowSeconds,
+        windowMinutes: existing?.windowMinutes,
       });
     }
-    for (const key of ["limits", "items", "data", "results", "entries", "buckets"]) {
+    for (const key of [
+      "limits",
+      "items",
+      "data",
+      "results",
+      "entries",
+      "buckets",
+      "rateLimits",
+      "rate_limits",
+      "rateLimitsByLimitId",
+      "rate_limits_by_limit_id",
+    ]) {
       visit(record[key]);
     }
   };
@@ -1560,6 +1774,137 @@ export async function readCodexAppServerRateLimits(params?: {
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+function buildThreadResumePayloads(params: {
+  threadId: string;
+  model?: string;
+  cwd?: string;
+  serviceTier?: string | null;
+}): Array<Record<string, unknown>> {
+  const payloads: Array<Record<string, unknown>> = [];
+  const base: Record<string, unknown> = {
+    threadId: params.threadId,
+  };
+  const snake: Record<string, unknown> = {
+    thread_id: params.threadId,
+  };
+  if (typeof params.model === "string" && params.model.trim()) {
+    base.model = params.model.trim();
+    snake.model = params.model.trim();
+  }
+  if (typeof params.cwd === "string" && params.cwd.trim()) {
+    base.cwd = params.cwd.trim();
+    snake.cwd = params.cwd.trim();
+  }
+  if (params.serviceTier !== undefined) {
+    base.serviceTier = params.serviceTier;
+    snake.serviceTier = params.serviceTier;
+    snake.service_tier = params.serviceTier;
+  }
+  payloads.push(base, snake);
+  return payloads;
+}
+
+async function withInitializedCodexClient<T>(
+  params: {
+    config?: OpenClawConfig;
+    sessionKey?: string;
+    workspaceDir?: string;
+  },
+  callback: (args: { client: JsonRpcClient; settings: CodexAppServerSettings }) => Promise<T>,
+): Promise<T> {
+  const settings = resolveCodexAppServerSettings(params.config);
+  if (!settings.enabled) {
+    throw new Error('Provider "codex-app-server" is disabled.');
+  }
+  const client = createJsonRpcClient(settings);
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params.sessionKey,
+      workspaceDir: params.workspaceDir,
+    });
+    return await callback({ client, settings });
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+export async function readCodexAppServerThreadState(params: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+  threadId: string;
+}): Promise<CodexAppServerThreadState> {
+  return await withInitializedCodexClient(params, async ({ client, settings }) => {
+    try {
+      const result = await requestWithFallbacks({
+        client,
+        methods: ["thread/resume"],
+        payloads: buildThreadResumePayloads({
+          threadId: params.threadId,
+        }),
+        timeoutMs: settings.requestTimeoutMs,
+      });
+      return extractThreadState(result);
+    } finally {
+      await requestWithFallbacks({
+        client,
+        methods: ["thread/unsubscribe"],
+        payloads: [{ threadId: params.threadId }, { thread_id: params.threadId }],
+        timeoutMs: settings.requestTimeoutMs,
+      }).catch(() => undefined);
+    }
+  });
+}
+
+export async function setCodexAppServerThreadServiceTier(params: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+  threadId: string;
+  serviceTier: string | null;
+}): Promise<CodexAppServerThreadState> {
+  return await withInitializedCodexClient(params, async ({ client, settings }) => {
+    try {
+      const result = await requestWithFallbacks({
+        client,
+        methods: ["thread/resume"],
+        payloads: buildThreadResumePayloads({
+          threadId: params.threadId,
+          serviceTier: params.serviceTier,
+        }),
+        timeoutMs: settings.requestTimeoutMs,
+      });
+      return extractThreadState(result);
+    } finally {
+      await requestWithFallbacks({
+        client,
+        methods: ["thread/unsubscribe"],
+        payloads: [{ threadId: params.threadId }, { thread_id: params.threadId }],
+        timeoutMs: settings.requestTimeoutMs,
+      }).catch(() => undefined);
+    }
+  });
+}
+
+export async function readCodexAppServerAccount(params?: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+}): Promise<CodexAppServerAccountSummary> {
+  return await withInitializedCodexClient(params ?? {}, async ({ client, settings }) => {
+    const result = await requestWithFallbacks({
+      client,
+      methods: ["account/read"],
+      payloads: [{ refreshToken: false }, { refresh_token: false }, {}],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    return extractAccountSummary(result);
+  });
 }
 
 export async function readCodexAppServerThreadContext(params: {
@@ -1997,9 +2342,13 @@ export const __testing = {
   buildPromptText,
   collectStreamingText,
   dispatchJsonRpcEnvelope,
+  extractAccountSummary,
   extractOptionValues,
   extractAssistantNotificationText,
+  extractRateLimitSummaries,
+  extractThreadState,
   extractThreadReplayFromReadResult,
+  formatRateLimitWindowName,
   isTransportClosedError,
   isMethodUnavailableError,
   mergeAssistantReplyAndEmit,
