@@ -460,6 +460,53 @@ describe("handleCodexCommand", () => {
     expect(result?.reply?.text).toContain("thread-789");
   });
 
+  it("adds Telegram join buttons to /codex list results", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
+        title: "App Server Redux 5.4",
+        projectKey: "/repo/openclaw",
+      },
+      {
+        threadId: "019cc00d-6cf4-7c11-afcd-2673db349a21",
+        title: "Fix Telegram approval flow",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams(
+      "/codex list",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Recent Codex threads:");
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "Join: App Server Redux 5.4",
+              callback_data: "/codex join 019cc38a-0128-7203-9e94-7e97610cdba6",
+            },
+          ],
+          [
+            {
+              text: "Join: Fix Telegram approval flow",
+              callback_data: "/codex join 019cc00d-6cf4-7c11-afcd-2673db349a21",
+            },
+          ],
+        ],
+      },
+    });
+  });
+
   it("includes runtime state in /codex status output", async () => {
     getCodexAppServerRuntimeStatusMock.mockReturnValue({ state: "ready" });
     const params = buildParams("/codex status");

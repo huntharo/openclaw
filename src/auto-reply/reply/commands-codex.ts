@@ -1268,6 +1268,39 @@ function buildCodexReviewActionButtons(params: {
   ]);
 }
 
+function truncateCodexButtonLabel(text: string, maxChars = 48): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+function buildCodexListJoinButtons(params: {
+  threads: Awaited<ReturnType<typeof discoverCodexAppServerThreads>>;
+}): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
+  const rows = params.threads
+    .slice(0, 10)
+    .map((thread) => {
+      const callbackData = `/codex join ${thread.threadId}`;
+      if (callbackData.length > 64) {
+        return null;
+      }
+      const labelSource =
+        thread.title?.trim() ||
+        path.basename(thread.projectKey?.trim() || "") ||
+        thread.threadId.trim();
+      return [
+        {
+          text: truncateCodexButtonLabel(`Join: ${labelSource}`),
+          callback_data: callbackData,
+        },
+      ];
+    })
+    .filter(Boolean) as Array<Array<{ text: string; callback_data: string }>>;
+  return rows.length > 0 ? rows : undefined;
+}
+
 async function sendCodexReplies(params: {
   commandParams: HandleCommandsParams;
   sessionKey: string;
@@ -2186,12 +2219,28 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
       return stopWithText("No Codex threads found.");
     }
     const lines = ["Recent Codex threads:"];
-    for (const thread of threads.slice(0, 10)) {
+    const visibleThreads = threads.slice(0, 10);
+    for (const thread of visibleThreads) {
       lines.push(
         `- ${thread.threadId}${thread.title ? ` · ${thread.title}` : ""}${thread.projectKey ? ` · ${thread.projectKey}` : ""}`,
       );
     }
-    return stopWithText(lines.join("\n"));
+    return {
+      shouldContinue: false,
+      reply: {
+        text: lines.join("\n"),
+        channelData:
+          params.command.surface === "telegram"
+            ? {
+                telegram: {
+                  buttons: buildCodexListJoinButtons({
+                    threads: visibleThreads,
+                  }),
+                },
+              }
+            : undefined,
+      },
+    };
   }
 
   if (action === "join") {
