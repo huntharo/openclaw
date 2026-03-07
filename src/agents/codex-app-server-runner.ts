@@ -86,6 +86,19 @@ export type PendingCodexUserInputState = {
   method?: string;
 };
 
+type LivePendingCodexUserInputState = {
+  requestId: string;
+  methodLower: string;
+  options: string[];
+  actions: CodexPendingUserInputAction[];
+  expiresAt: number;
+  resolve: (value: unknown) => void;
+  questionSummaries?: CodexUserInputQuestionSummary[];
+  currentQuestionIndex?: number;
+  answersByQuestionId?: Record<string, string[]>;
+  promptText?: string;
+  requestParams?: unknown;
+};
 export type CodexAppServerReviewTarget =
   | { type: "uncommittedChanges" }
   | { type: "custom"; instructions: string };
@@ -664,6 +677,50 @@ function extractUserInputQuestionSummaries(value: unknown): CodexUserInputQuesti
     .filter(Boolean) as CodexUserInputQuestionSummary[];
 }
 
+function buildQuestionOptionActions(
+  question: CodexUserInputQuestionSummary | undefined,
+): CodexPendingUserInputAction[] {
+  if (!question) {
+    return [];
+  }
+  return question.options.map((option) => ({
+    kind: "option",
+    label: option.label,
+    value: option.label,
+  }));
+}
+
+function buildQuestionAnswerPayload(params: {
+  questions: CodexUserInputQuestionSummary[];
+  answersByQuestionId?: Record<string, string[]>;
+}): unknown {
+  const answers = Object.fromEntries(
+    params.questions.map((question) => [
+      question.id,
+      { answers: params.answersByQuestionId?.[question.id] ?? [] },
+    ]),
+  );
+  return { answers };
+}
+
+function resolvePendingInputSelectionValue(params: {
+  parsed: ParsedCodexUserInput;
+  options: string[];
+  actions: CodexPendingUserInputAction[];
+}): string {
+  if (params.parsed.kind !== "option") {
+    return params.parsed.text;
+  }
+  const action = params.actions[params.parsed.index];
+  if (action?.kind === "approval") {
+    return action.decision;
+  }
+  if (action?.kind === "option") {
+    return action.value;
+  }
+  return params.options[params.parsed.index] ?? "";
+}
+
 function buildMarkdownCodeBlock(text: string, language = ""): string {
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
@@ -684,6 +741,7 @@ function buildPromptText(params: {
   question?: string;
   expiresAt: number;
   requestParams: unknown;
+  activeQuestionIndex?: number;
 }): string {
   const questions = extractUserInputQuestionSummaries(params.requestParams);
   const lines = [
@@ -737,27 +795,34 @@ function buildPromptText(params: {
     lines.push("", `Session Prefix: ${approvalSessionAction.sessionPrefix}`);
   }
   if (!/requestapproval/i.test(params.method) && questions.length > 0) {
-    lines.push("", questions.length > 1 ? "Questions:" : "Question:");
-    for (const [questionIndex, question] of questions.entries()) {
-      if (questionIndex > 0) {
-        lines.push("");
-      }
-      const heading =
-        question.header && question.question
-          ? `${question.header}: ${question.question}`
-          : (question.header ?? question.question ?? `Question ${questionIndex + 1}`);
-      lines.push(heading);
-      if (question.options.length > 0) {
-        question.options.forEach((option, optionIndex) => {
-          lines.push(`${optionIndex + 1}. ${option.label}`);
-          if (option.description) {
-            lines.push(`   ${option.description}`);
-          }
-        });
-      }
-      if (question.isOther) {
-        lines.push("   Other: You can reply with free text.");
-      }
+    const activeQuestionIndex = Math.min(
+      Math.max(0, params.activeQuestionIndex ?? 0),
+      questions.length - 1,
+    );
+    const activeQuestion = questions[activeQuestionIndex];
+    lines.push(
+      "",
+      questions.length > 1
+        ? `Question ${activeQuestionIndex + 1} of ${questions.length}:`
+        : "Question:",
+    );
+    const heading =
+      activeQuestion.header && activeQuestion.question
+        ? `${activeQuestion.header}: ${activeQuestion.question}`
+        : (activeQuestion.header ??
+          activeQuestion.question ??
+          `Question ${activeQuestionIndex + 1}`);
+    lines.push(heading);
+    if (activeQuestion.options.length > 0) {
+      activeQuestion.options.forEach((option, optionIndex) => {
+        lines.push(`${optionIndex + 1}. ${option.label}`);
+        if (option.description) {
+          lines.push(`   ${option.description}`);
+        }
+      });
+    }
+    if (activeQuestion.isOther) {
+      lines.push("Other: You can reply with free text.");
     }
     lines.push("", 'Reply with "1", "2", "option 1", etc., or use a button.');
   } else if (params.actions.length > 0) {
@@ -792,6 +857,122 @@ function buildPromptText(params: {
     lines.push("", "Approval buttons send exact decisions back to Codex.");
   }
   return lines.join("\n");
+}
+
+function buildInteractiveRequestPresentation(params: {
+  method: string;
+  requestId: string;
+  requestParams: unknown;
+  question?: string;
+  expiresAt: number;
+  options: string[];
+  activeQuestionIndex?: number;
+  questionSummaries?: CodexUserInputQuestionSummary[];
+}): {
+  questionSummaries: CodexUserInputQuestionSummary[];
+  currentQuestionIndex?: number;
+  actions: CodexPendingUserInputAction[];
+  options: string[];
+  promptText: string;
+} {
+  const questionSummaries =
+    params.questionSummaries ??
+    (!/requestapproval/i.test(params.method)
+      ? extractUserInputQuestionSummaries(params.requestParams)
+      : []);
+  const currentQuestionIndex =
+    questionSummaries.length > 0
+      ? Math.min(Math.max(0, params.activeQuestionIndex ?? 0), questionSummaries.length - 1)
+      : undefined;
+  const actions =
+    currentQuestionIndex != null
+      ? buildQuestionOptionActions(questionSummaries[currentQuestionIndex])
+      : buildCodexPendingUserInputActions({
+          method: params.method,
+          requestParams: params.requestParams,
+          options: params.options,
+        });
+  const options =
+    currentQuestionIndex != null
+      ? actions
+          .filter(
+            (action): action is Extract<CodexPendingUserInputAction, { kind: "option" }> =>
+              action.kind === "option",
+          )
+          .map((action) => action.value)
+      : params.options;
+  const promptText = buildPromptText({
+    method: params.method,
+    requestId: params.requestId,
+    options,
+    actions,
+    question: params.question,
+    expiresAt: params.expiresAt,
+    requestParams: params.requestParams,
+    activeQuestionIndex: currentQuestionIndex,
+  });
+  return {
+    questionSummaries,
+    currentQuestionIndex,
+    actions,
+    options,
+    promptText,
+  };
+}
+
+function advancePendingQuestionnaire(params: {
+  pendingInput: LivePendingCodexUserInputState;
+  answerText: string;
+}):
+  | {
+      done: true;
+      response: unknown;
+    }
+  | {
+      done: false;
+      nextQuestionIndex: number;
+      actions: CodexPendingUserInputAction[];
+      options: string[];
+      promptText: string;
+    } {
+  const questionSummaries = params.pendingInput.questionSummaries ?? [];
+  if (questionSummaries.length === 0) {
+    return { done: true, response: { text: params.answerText } };
+  }
+  const currentQuestionIndex = params.pendingInput.currentQuestionIndex ?? 0;
+  const currentQuestion = questionSummaries[currentQuestionIndex];
+  if (currentQuestion) {
+    params.pendingInput.answersByQuestionId = {
+      ...params.pendingInput.answersByQuestionId,
+      [currentQuestion.id]: params.answerText ? [params.answerText] : [],
+    };
+  }
+  const nextQuestionIndex = currentQuestionIndex + 1;
+  if (nextQuestionIndex >= questionSummaries.length) {
+    return {
+      done: true,
+      response: buildQuestionAnswerPayload({
+        questions: questionSummaries,
+        answersByQuestionId: params.pendingInput.answersByQuestionId,
+      }),
+    };
+  }
+  const nextState = buildInteractiveRequestPresentation({
+    method: params.pendingInput.methodLower,
+    requestId: params.pendingInput.requestId,
+    requestParams: params.pendingInput.requestParams,
+    expiresAt: params.pendingInput.expiresAt,
+    options: params.pendingInput.options,
+    activeQuestionIndex: nextQuestionIndex,
+    questionSummaries,
+  });
+  return {
+    done: false,
+    nextQuestionIndex,
+    actions: nextState.actions,
+    options: nextState.options,
+    promptText: nextState.promptText,
+  };
 }
 
 function pickPendingSelectionText(
@@ -837,10 +1018,17 @@ function buildToolRequestUserInputResponse(
   requestParams: unknown,
   response: unknown,
   actions: CodexPendingUserInputAction[],
+  answersByQuestionId?: Record<string, string[]>,
 ): unknown {
   const questions = extractUserInputQuestionSummaries(requestParams);
   if (questions.length === 0) {
     return response;
+  }
+  if (answersByQuestionId) {
+    return buildQuestionAnswerPayload({
+      questions,
+      answersByQuestionId,
+    });
   }
   const firstQuestion = questions[0];
   const selected = pickPendingSelectionText(
@@ -2368,14 +2556,7 @@ export async function startCodexAppServerReview(params: {
   let interrupted = false;
   let completed = false;
   let notificationQueue = Promise.resolve();
-  let pendingInput: {
-    requestId: string;
-    methodLower: string;
-    options: string[];
-    actions: CodexPendingUserInputAction[];
-    expiresAt: number;
-    resolve: (value: unknown) => void;
-  } | null = null;
+  let pendingInput: LivePendingCodexUserInputState | null = null;
   let completeTurn: (() => void) | null = null;
   const completion = new Promise<void>((resolve) => {
     completeTurn = () => {
@@ -2387,6 +2568,34 @@ export async function startCodexAppServerReview(params: {
     };
   });
 
+  const emitPendingInputState = async (
+    active: LivePendingCodexUserInputState,
+    requestMethod: string,
+  ) => {
+    await params.onPendingUserInput?.({
+      requestId: active.requestId,
+      options: active.options,
+      actions: active.actions,
+      expiresAt: active.expiresAt,
+      promptText: active.promptText,
+      method: requestMethod,
+    });
+    const telegramButtons = buildCodexPendingInputButtons({
+      requestId: active.requestId,
+      actions: active.actions,
+    });
+    await params.onToolResult?.({
+      text: active.promptText,
+      channelData: telegramButtons
+        ? {
+            telegram: {
+              buttons: telegramButtons,
+            },
+          }
+        : undefined,
+    });
+  };
+
   const queueHandle: CodexAppServerQueueHandle = {
     queueMessage: async (text) => {
       const trimmed = text.trim();
@@ -2397,7 +2606,26 @@ export async function startCodexAppServerReview(params: {
         pendingInput.actions.filter((action) => action.kind !== "steer").length ||
         pendingInput.options.length;
       const parsed = parseCodexUserInput(trimmed, actionSelectionCount);
-      if (parsed.kind === "option") {
+      if ((pendingInput.questionSummaries?.length ?? 0) > 0) {
+        const answerText = resolvePendingInputSelectionValue({
+          parsed,
+          options: pendingInput.options,
+          actions: pendingInput.actions,
+        });
+        const next = advancePendingQuestionnaire({
+          pendingInput,
+          answerText,
+        });
+        if (next.done) {
+          pendingInput.resolve(next.response);
+        } else {
+          pendingInput.currentQuestionIndex = next.nextQuestionIndex;
+          pendingInput.actions = next.actions;
+          pendingInput.options = next.options;
+          pendingInput.promptText = next.promptText;
+          await emitPendingInputState(pendingInput, methodLower);
+        }
+      } else if (parsed.kind === "option") {
         const action = pendingInput.actions[parsed.index];
         if (action?.kind === "steer") {
           pendingInput.resolve({ steerText: "" });
@@ -2422,10 +2650,28 @@ export async function startCodexAppServerReview(params: {
       if (!action || action.kind === "steer") {
         return false;
       }
-      pendingInput.resolve({
-        index: actionIndex,
-        option: pendingInput.options[actionIndex] ?? "",
-      });
+      if ((pendingInput.questionSummaries?.length ?? 0) > 0) {
+        const answerText =
+          action.kind === "option" ? action.value : (pendingInput.options[actionIndex] ?? "");
+        const next = advancePendingQuestionnaire({
+          pendingInput,
+          answerText,
+        });
+        if (next.done) {
+          pendingInput.resolve(next.response);
+        } else {
+          pendingInput.currentQuestionIndex = next.nextQuestionIndex;
+          pendingInput.actions = next.actions;
+          pendingInput.options = next.options;
+          pendingInput.promptText = next.promptText;
+          await emitPendingInputState(pendingInput, methodLower);
+        }
+      } else {
+        pendingInput.resolve({
+          index: actionIndex,
+          option: pendingInput.options[actionIndex] ?? "",
+        });
+      }
       return true;
     },
     interrupt: async () => {
@@ -2497,59 +2743,46 @@ export async function startCodexAppServerReview(params: {
     reviewThreadId ||= ids.threadId ?? "";
     turnId ||= ids.runId ?? "";
     const options = extractOptionValues(requestParams);
-    const actions = buildCodexPendingUserInputActions({
-      method,
-      requestParams,
-      options,
-    });
     log.debug(`codex review interactive request payload: ${stableStringify(requestParams)}`);
     const question = dedupeJoinedText(collectText(requestParams));
     const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
     const expiresAt = Date.now() + settings.inputTimeoutMs;
-    const promptText = buildPromptText({
+    const presentation = buildInteractiveRequestPresentation({
       method,
       requestId,
-      options,
-      actions,
+      requestParams,
       question,
       expiresAt,
-      requestParams,
+      options,
     });
+    const {
+      questionSummaries,
+      currentQuestionIndex,
+      actions,
+      options: resolvedOptions,
+      promptText,
+    } = presentation;
 
     awaitingInput = true;
-    await params.onPendingUserInput?.({
+    const livePendingInput: LivePendingCodexUserInputState = {
       requestId,
-      options,
+      methodLower,
+      options: resolvedOptions,
       actions,
       expiresAt,
+      questionSummaries,
+      currentQuestionIndex,
+      answersByQuestionId: {},
       promptText,
-      method,
-    });
-    const telegramButtons = buildCodexPendingInputButtons({
-      requestId,
-      actions,
-    });
-    await params.onToolResult?.({
-      text: promptText,
-      channelData: telegramButtons
-        ? {
-            telegram: {
-              buttons: telegramButtons,
-            },
-          }
-        : undefined,
-    });
+      requestParams,
+      resolve: () => undefined,
+    };
+    await emitPendingInputState(livePendingInput, method);
 
     let timedOut = false;
     const response = await new Promise<unknown>((resolve) => {
-      pendingInput = {
-        requestId,
-        methodLower,
-        options,
-        actions,
-        expiresAt,
-        resolve,
-      };
+      livePendingInput.resolve = resolve;
+      pendingInput = livePendingInput;
       setTimeout(() => {
         if (!pendingInput || pendingInput.requestId !== requestId) {
           return;
@@ -2567,7 +2800,7 @@ export async function startCodexAppServerReview(params: {
       methodLower,
       requestParams,
       response,
-      options,
+      options: resolvedOptions,
       actions,
       timedOut,
     });
@@ -2674,14 +2907,7 @@ export async function runCodexAppServerAgent(
   let interrupted = false;
   let completed = false;
   let notificationQueue = Promise.resolve();
-  let pendingInput: {
-    requestId: string;
-    methodLower: string;
-    options: string[];
-    actions: CodexPendingUserInputAction[];
-    expiresAt: number;
-    resolve: (value: unknown) => void;
-  } | null = null;
+  let pendingInput: LivePendingCodexUserInputState | null = null;
   let completeTurn: (() => void) | null = null;
   const completion = new Promise<void>((resolve) => {
     completeTurn = () => {
@@ -2694,6 +2920,42 @@ export async function runCodexAppServerAgent(
   });
   const startedAt = Date.now();
 
+  const emitPendingInputState = async (
+    active: LivePendingCodexUserInputState,
+    requestMethod: string,
+  ) => {
+    await params.onPendingUserInput?.({
+      requestId: active.requestId,
+      options: active.options,
+      actions: active.actions,
+      expiresAt: active.expiresAt,
+      promptText: active.promptText,
+      method: requestMethod,
+    });
+    const telegramButtons = buildCodexPendingInputButtons({
+      requestId: active.requestId,
+      actions: active.actions,
+    });
+    await params.onToolResult?.({
+      text: active.promptText,
+      channelData: {
+        codexAppServer: {
+          interactiveRequest: true,
+          method: requestMethod,
+          requestId: active.requestId,
+          actions: active.actions,
+        },
+        ...(telegramButtons
+          ? {
+              telegram: {
+                buttons: telegramButtons,
+              },
+            }
+          : {}),
+      },
+    });
+  };
+
   const queueHandle: CodexAppServerQueueHandle = {
     queueMessage: async (text) => {
       const trimmed = text.trim();
@@ -2705,7 +2967,26 @@ export async function runCodexAppServerAgent(
           pendingInput.actions.filter((action) => action.kind !== "steer").length ||
           pendingInput.options.length;
         const parsed = parseCodexUserInput(trimmed, actionSelectionCount);
-        if (parsed.kind === "option") {
+        if ((pendingInput.questionSummaries?.length ?? 0) > 0) {
+          const answerText = resolvePendingInputSelectionValue({
+            parsed,
+            options: pendingInput.options,
+            actions: pendingInput.actions,
+          });
+          const next = advancePendingQuestionnaire({
+            pendingInput,
+            answerText,
+          });
+          if (next.done) {
+            pendingInput.resolve(next.response);
+          } else {
+            pendingInput.currentQuestionIndex = next.nextQuestionIndex;
+            pendingInput.actions = next.actions;
+            pendingInput.options = next.options;
+            pendingInput.promptText = next.promptText;
+            await emitPendingInputState(pendingInput, pendingInput.methodLower);
+          }
+        } else if (parsed.kind === "option") {
           const action = pendingInput.actions[parsed.index];
           if (action?.kind === "steer") {
             pendingInput.resolve({ steerText: "" });
@@ -2747,10 +3028,28 @@ export async function runCodexAppServerAgent(
       if (!action || action.kind === "steer") {
         return false;
       }
-      pendingInput.resolve({
-        index: actionIndex,
-        option: pendingInput.options[actionIndex] ?? "",
-      });
+      if ((pendingInput.questionSummaries?.length ?? 0) > 0) {
+        const answerText =
+          action.kind === "option" ? action.value : (pendingInput.options[actionIndex] ?? "");
+        const next = advancePendingQuestionnaire({
+          pendingInput,
+          answerText,
+        });
+        if (next.done) {
+          pendingInput.resolve(next.response);
+        } else {
+          pendingInput.currentQuestionIndex = next.nextQuestionIndex;
+          pendingInput.actions = next.actions;
+          pendingInput.options = next.options;
+          pendingInput.promptText = next.promptText;
+          await emitPendingInputState(pendingInput, pendingInput.methodLower);
+        }
+      } else {
+        pendingInput.resolve({
+          index: actionIndex,
+          option: pendingInput.options[actionIndex] ?? "",
+        });
+      }
       return true;
     },
     interrupt: async () => {
@@ -2838,24 +3137,25 @@ export async function runCodexAppServerAgent(
     threadId ||= ids.threadId ?? "";
     turnId ||= ids.runId ?? "";
     const options = extractOptionValues(requestParams);
-    const actions = buildCodexPendingUserInputActions({
-      method,
-      requestParams,
-      options,
-    });
     log.debug(`codex interactive request payload: ${stableStringify(requestParams)}`);
     const question = dedupeJoinedText(collectText(requestParams));
     const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
     const expiresAt = Date.now() + settings.inputTimeoutMs;
-    const promptText = buildPromptText({
+    const presentation = buildInteractiveRequestPresentation({
       method,
       requestId,
-      options,
-      actions,
+      requestParams,
       question,
       expiresAt,
-      requestParams,
+      options,
     });
+    const {
+      questionSummaries,
+      currentQuestionIndex,
+      actions,
+      options: resolvedOptions,
+      promptText,
+    } = presentation;
 
     awaitingInput = true;
     // Approval and other interactive tool requests split the assistant flow. The
@@ -2871,47 +3171,25 @@ export async function runCodexAppServerAgent(
       workspaceDir: params.workspaceDir,
       options: actions.map((action) => action.label),
     });
-    await params.onPendingUserInput?.({
+    const livePendingInput: LivePendingCodexUserInputState = {
       requestId,
-      options,
+      methodLower,
+      options: resolvedOptions,
       actions,
       expiresAt,
+      questionSummaries,
+      currentQuestionIndex,
+      answersByQuestionId: {},
       promptText,
-      method,
-    });
-    const telegramButtons = buildCodexPendingInputButtons({
-      requestId,
-      actions,
-    });
-    await params.onToolResult?.({
-      text: promptText,
-      channelData: {
-        codexAppServer: {
-          interactiveRequest: true,
-          method,
-          requestId,
-          actions,
-        },
-        ...(telegramButtons
-          ? {
-              telegram: {
-                buttons: telegramButtons,
-              },
-            }
-          : {}),
-      },
-    });
+      requestParams,
+      resolve: () => undefined,
+    };
+    await emitPendingInputState(livePendingInput, method);
 
     let timedOut = false;
     const response = await new Promise<unknown>((resolve) => {
-      pendingInput = {
-        requestId,
-        methodLower,
-        options,
-        actions,
-        expiresAt,
-        resolve,
-      };
+      livePendingInput.resolve = resolve;
+      pendingInput = livePendingInput;
       setTimeout(() => {
         if (!pendingInput || pendingInput.requestId !== requestId) {
           return;
@@ -2929,7 +3207,7 @@ export async function runCodexAppServerAgent(
       methodLower,
       requestParams,
       response,
-      options,
+      options: resolvedOptions,
       actions,
       timedOut,
     });
@@ -3049,7 +3327,9 @@ export async function runCodexAppServerAgent(
 }
 
 export const __testing = {
+  advancePendingQuestionnaire,
   applyThreadFilter,
+  buildInteractiveRequestPresentation,
   buildCodexPendingUserInputActions,
   buildMarkdownCodeBlock,
   buildPromptText,

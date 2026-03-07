@@ -263,8 +263,10 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [x] Reimplement `/codex_compact` using `thread/compact/start` instead of relayed slash text.
 - [x] Reimplement `/codex_plan` as a client-side collaboration-mode or planning-state control instead of relayed slash text.
   - shipped shape: `turn/start` with `collaborationMode=plan` plus richer `request_user_input` prompt rendering for labels, descriptions, and recommended options
+- [x] Remove local wall-clock caps from long-lived Codex mirrored runs like `/codex_plan`, `/codex_review`, and relayed `/codex_*` turn starts; only the underlying App Server RPCs should have request timeouts.
 - [ ] Harden `/codex_plan` long-output delivery for Telegram, likely by falling back to a Markdown attachment when the final plan is too large for a clean chat message.
-- [ ] Harden `/codex_plan` multi-question answer composition if Codex emits batched `request_user_input` prompts instead of one question at a time.
+- [x] Harden `/codex_plan` multi-question answer composition if Codex emits batched `request_user_input` prompts instead of one question at a time.
+  - shipped shape: walk one active question at a time, persist the current prompt/actions in session state, and assemble the final `answers` payload only after the operator answers the full batch
 - [ ] Reimplement `/codex_diff` as a client-side diff view instead of relayed slash text.
 - [x] Reimplement `/codex_mcp` as a client-side MCP status or tool listing backed by structured discovery.
 - [ ] Commit Phase 3 with `scripts/committer`.

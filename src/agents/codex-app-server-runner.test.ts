@@ -251,6 +251,130 @@ describe("extractSkillSummaries", () => {
   });
 });
 
+describe("multi-question request_user_input helpers", () => {
+  const multiQuestionRequest = {
+    questions: [
+      {
+        id: "priority",
+        header: "Priority",
+        question: "What matters most for v1 hosting?",
+        options: [
+          { label: "Cheap + simple (Recommended)", description: "Lowest monthly cost." },
+          { label: "Managed DX", description: "Prefer hosted dashboards." },
+        ],
+      },
+      {
+        id: "runtime",
+        header: "Runtime",
+        question: "Which runtime shape should we optimize for?",
+        options: [
+          {
+            label: "Long-lived service (Recommended)",
+            description: "Best fit for stateful flows.",
+          },
+          { label: "Mostly serverless", description: "Best fit for stateless handlers." },
+        ],
+        isOther: true,
+      },
+      {
+        id: "db",
+        header: "DB",
+        question: "What kind of database migration do you want from SQLite?",
+        options: [
+          { label: "Postgres (Recommended)", description: "Straightforward production path." },
+          { label: "Firestore", description: "Bigger data-model rewrite." },
+        ],
+      },
+    ],
+  };
+
+  it("renders only the active question for multi-question prompts", () => {
+    const presentation = __testing.buildInteractiveRequestPresentation({
+      method: "item/tool/requestUserInput",
+      requestId: "req-1",
+      requestParams: multiQuestionRequest,
+      expiresAt: Date.now() + 900_000,
+      options: [],
+      activeQuestionIndex: 1,
+    });
+
+    expect(presentation.promptText).toContain("Question 2 of 3:");
+    expect(presentation.promptText).toContain(
+      "Runtime: Which runtime shape should we optimize for?",
+    );
+    expect(presentation.promptText).toContain("1. Long-lived service (Recommended)");
+    expect(presentation.promptText).toContain("Other: You can reply with free text.");
+    expect(presentation.promptText).not.toContain("Priority: What matters most for v1 hosting?");
+    expect(presentation.promptText).not.toContain(
+      "DB: What kind of database migration do you want from SQLite?",
+    );
+  });
+
+  it("advances through questions and builds a combined answers payload", () => {
+    const initial = __testing.buildInteractiveRequestPresentation({
+      method: "item/tool/requestUserInput",
+      requestId: "req-1",
+      requestParams: multiQuestionRequest,
+      expiresAt: Date.now() + 900_000,
+      options: [],
+    });
+    const pending = {
+      requestId: "req-1",
+      methodLower: "item/tool/requestuserinput",
+      options: initial.options,
+      actions: initial.actions,
+      expiresAt: Date.now() + 900_000,
+      resolve: () => undefined,
+      questionSummaries: initial.questionSummaries,
+      currentQuestionIndex: initial.currentQuestionIndex,
+      answersByQuestionId: {},
+      promptText: initial.promptText,
+      requestParams: multiQuestionRequest,
+    };
+
+    const second = __testing.advancePendingQuestionnaire({
+      pendingInput: pending,
+      answerText: "Cheap + simple (Recommended)",
+    });
+    expect(second.done).toBe(false);
+    if (second.done) {
+      throw new Error("expected second question");
+    }
+    pending.currentQuestionIndex = second.nextQuestionIndex;
+    pending.actions = second.actions;
+    pending.options = second.options;
+    pending.promptText = second.promptText;
+
+    const third = __testing.advancePendingQuestionnaire({
+      pendingInput: pending,
+      answerText: "Long-lived service (Recommended)",
+    });
+    expect(third.done).toBe(false);
+    if (third.done) {
+      throw new Error("expected third question");
+    }
+    pending.currentQuestionIndex = third.nextQuestionIndex;
+    pending.actions = third.actions;
+    pending.options = third.options;
+    pending.promptText = third.promptText;
+
+    const done = __testing.advancePendingQuestionnaire({
+      pendingInput: pending,
+      answerText: "Postgres (Recommended)",
+    });
+    expect(done).toEqual({
+      done: true,
+      response: {
+        answers: {
+          priority: { answers: ["Cheap + simple (Recommended)"] },
+          runtime: { answers: ["Long-lived service (Recommended)"] },
+          db: { answers: ["Postgres (Recommended)"] },
+        },
+      },
+    });
+  });
+});
+
 describe("buildPromptText", () => {
   it("renders request_user_input questions with descriptions and recommended labels", () => {
     const text = __testing.buildPromptText({
