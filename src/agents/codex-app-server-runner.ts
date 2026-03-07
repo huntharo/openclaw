@@ -345,7 +345,17 @@ function extractAssistantTextFromItemPayload(
 type AssistantNotificationText = {
   mode: "delta" | "snapshot" | "ignore";
   text: string;
+  itemId?: string;
 };
+
+function extractAssistantItemId(value: unknown): string | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const item = asRecord(record.item) ?? record;
+  return pickString(item, ["id", "itemId", "item_id", "messageId", "message_id"]);
+}
 
 function extractAssistantNotificationText(
   method: string,
@@ -356,12 +366,14 @@ function extractAssistantNotificationText(
     return {
       mode: "delta",
       text: collectStreamingText(params),
+      itemId: extractAssistantItemId(params),
     };
   }
   if (methodLower === "item/completed") {
     return {
       mode: "snapshot",
       text: extractAssistantTextFromItemPayload(params),
+      itemId: extractAssistantItemId(params),
     };
   }
   return { mode: "ignore", text: "" };
@@ -1355,6 +1367,7 @@ export async function runCodexAppServerAgent(
   let threadId = params.existingThreadId?.trim() || "";
   let turnId = "";
   let assistantText = "";
+  let assistantItemId = "";
   let awaitingInput = false;
   let interrupted = false;
   let completed = false;
@@ -1472,6 +1485,16 @@ export async function runCodexAppServerAgent(
     }
 
     const assistantNotification = extractAssistantNotificationText(methodLower, notificationParams);
+    if (
+      assistantNotification.itemId &&
+      assistantItemId &&
+      assistantNotification.itemId !== assistantItemId
+    ) {
+      assistantText = "";
+    }
+    if (assistantNotification.itemId) {
+      assistantItemId = assistantNotification.itemId;
+    }
     if (assistantNotification.mode === "delta" && assistantNotification.text) {
       assistantText = await mergeAssistantReplyAndEmit({
         assistantText,
@@ -1523,6 +1546,10 @@ export async function runCodexAppServerAgent(
     });
 
     awaitingInput = true;
+    // Approval and other interactive tool requests split the assistant flow. The
+    // next assistant item after approval must start from a fresh reply buffer.
+    assistantText = "";
+    assistantItemId = "";
     log.info("codex interactive request opened", {
       sessionKey: params.sessionKey,
       requestId,

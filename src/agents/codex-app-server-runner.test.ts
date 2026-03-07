@@ -275,6 +275,7 @@ describe("extractAssistantNotificationText", () => {
     expect(
       __testing.extractAssistantNotificationText("item/agentMessage/delta", {
         item: {
+          id: "assistant-item-1",
           type: "agentMessage",
           delta: " in this workspace.",
         },
@@ -282,6 +283,7 @@ describe("extractAssistantNotificationText", () => {
     ).toEqual({
       mode: "delta",
       text: " in this workspace.",
+      itemId: "assistant-item-1",
     });
   });
 
@@ -289,6 +291,7 @@ describe("extractAssistantNotificationText", () => {
     expect(
       __testing.extractAssistantNotificationText("item/completed", {
         item: {
+          id: "assistant-item-2",
           type: "agentMessage",
           text: "Codex. I'm your AI engineering assistant in this workspace.",
         },
@@ -296,6 +299,7 @@ describe("extractAssistantNotificationText", () => {
     ).toEqual({
       mode: "snapshot",
       text: "Codex. I'm your AI engineering assistant in this workspace.",
+      itemId: "assistant-item-2",
     });
   });
 
