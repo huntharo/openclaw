@@ -60,6 +60,25 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 - Bound conversations must continue routing normal follow-up messages to Codex after restart.
 - Status views must reflect actual bound state and auto-route state.
 
+4. Mirrored command philosophy.
+
+- Keep the operator-facing mirrored command family:
+  - `/codex_status`
+  - `/codex_fast`
+  - `/codex_model`
+  - `/codex_permissions`
+  - `/codex_experimental`
+  - `/codex_skills`
+  - `/codex_review`
+  - `/codex_rename`
+  - `/codex_init`
+  - `/codex_compact`
+  - `/codex_plan`
+  - `/codex_diff`
+  - `/codex_mcp`
+- Treat many of these as client-side features rather than "ask Codex to answer a slash command."
+- Only relay a mirrored command as a normal turn when the Codex source or protocol clearly indicates it is actually implemented that way.
+
 ### B) Approvals
 
 1. Typed approval mapping.
@@ -150,12 +169,18 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 - cross-thread pending approval actions
 - polling or subscription hardening for non-active threads
 
+4. Mirrored command correctness fourth.
+
+- stop treating all `/codex_*` commands as relayed slash text
+- mirror client-side Codex features faithfully where that is how Codex itself behaves
+
 ## Open Questions To Verify In Code And Protocol
 
 1. Which exact App Server fields expose unwrapped command versus shell-wrapped command?
 2. What event coverage is delivered for threads not currently driving a turn on this client connection?
 3. What stable thread status signals can be used for monitor digest freshness without expensive thread reads?
 4. What is the most reliable way to detect whether an approval dialog with a request id already exists and remains actionable on Telegram?
+5. Which mirrored commands should remain client-side in OpenClaw even though they appear as slash commands in Codex TUI?
 
 ## References
 

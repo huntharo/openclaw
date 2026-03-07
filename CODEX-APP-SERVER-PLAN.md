@@ -127,6 +127,56 @@ This plan defines a new Codex App Server integration that follows the `/acp` mod
   - expose them as prefixed OpenClaw commands like `/codex_<name>`
   - avoid conflicts with built-in OpenClaw slash commands
 
+### Mirrored command implementation matrix
+
+The local Codex source review on March 7, 2026 changed the implementation direction for mirrored commands. A large portion of the visible Codex slash surface is implemented in the Codex client or TUI layer, not as "send `/name` as a turn and let the model respond."
+
+- `/codex_status`
+  - classification: client-side command
+  - implementation note: render locally from App Server session, account, token, and rate-limit state; do not forward as turn text
+- `/codex_fast`
+  - classification: client-side command
+  - implementation note: toggle `serviceTier` state and persist frontend preference; do not forward as turn text
+- `/codex_model`
+  - classification: client-side command
+  - implementation note: drive a local model-selection flow backed by App Server model/config state rather than forwarding `/model` as turn text
+- `/codex_permissions`
+  - classification: client-side command
+  - implementation note: present and mutate permission or approval policy state through structured config/runtime controls, not turn text
+- `/codex_experimental`
+  - classification: client-side command
+  - implementation note: read and toggle experimental feature state through structured runtime/config reads where supported
+- `/codex_skills`
+  - classification: client-side command
+  - implementation note: list or surface skills from App Server skill discovery rather than asking Codex to "answer `/skills`"
+- `/codex_review`
+  - classification: structured App Server operation
+  - implementation note: use `review/start`, not a relayed conversational turn
+- `/codex_rename`
+  - classification: structured App Server operation
+  - implementation note: use `thread/name/set`, not a relayed conversational turn
+- `/codex_init`
+  - classification: relayed turn start
+  - implementation note: this is the main mirrored command we currently expect to seed as a user turn or built-in init prompt
+- `/codex_compact`
+  - classification: structured App Server operation
+  - implementation note: use `thread/compact/start`, not a relayed conversational turn
+- `/codex_plan`
+  - classification: client-side command
+  - implementation note: switch collaboration mode or plan-state client-side; do not assume `/plan` is a conversational turn command
+- `/codex_diff`
+  - classification: client-side command
+  - implementation note: compute and render local git diff output rather than forwarding `/diff` as turn text
+- `/codex_mcp`
+  - classification: client-side command
+  - implementation note: render configured MCP tools or server state from structured discovery, not turn text
+
+Implementation guidance:
+
+- Default assumption for mirrored commands should be `client-side` unless the Codex source or protocol shows a dedicated structured RPC or a real conversational turn.
+- Prefer structured App Server methods such as `review/start`, `thread/name/set`, and `thread/compact/start` over slash-text relays.
+- Avoid forwarding mirrored slash commands as `turn/start` text unless we have verified that the corresponding command is actually implemented that way in Codex.
+
 ### Approval and prompt relay
 
 - Treat interactive approvals as first-class protocol items:
@@ -189,11 +239,18 @@ Current status: functionally complete for the current Phase 1 scope. The command
 
 ### Phase 3: Mirrored Slash Commands And Discovery Hardening
 
+- Implementation note:
+  mirrored `/codex_*` commands should not be treated as a single "rewrite to slash text" family. Client-side commands should be implemented locally, structured operations should use their dedicated App Server methods, and only true conversational commands should be relayed as turns.
+
 - [ ] Replace heuristic discovery with documented discovery/read flows as the primary path.
 - [x] Add mirrored `/codex_<name>` command registration from discovered Codex and MCP slash commands.
 - [x] Add collision handling and stable fallback behavior when names conflict or discovery is unavailable.
 - [x] Add tests for slash command discovery, caching, refresh, and prefixed command dispatch.
 - [x] Document mirrored slash command behavior and limits.
+- [x] Reclassify mirrored `/codex_*` commands by implementation type: client-side, structured RPC, or relayed turn.
+- [x] Reimplement `/codex_status` as a client-side status view built from App Server state instead of relayed slash text.
+- [x] Reimplement `/codex_fast` as a client-side `serviceTier` control instead of relayed slash text.
+- [ ] Revisit `/codex_model`, `/codex_permissions`, `/codex_experimental`, `/codex_skills`, `/codex_plan`, `/codex_diff`, and `/codex_mcp` against the local Codex source before shipping them as relayed commands.
 - [ ] Commit Phase 3 with `scripts/committer`.
 
 ### Phase 4: Hardening And Cross-Channel Readiness

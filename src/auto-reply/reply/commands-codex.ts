@@ -12,9 +12,11 @@ import {
 } from "../../agents/codex-app-server-pending-input.js";
 import {
   discoverCodexAppServerThreads,
+  runCodexAppServerAgent,
   readCodexAppServerModels,
   isCodexAppServerProvider,
   readCodexAppServerThreadContext,
+  type PendingCodexUserInputState,
   type CodexAppServerThreadSummary,
 } from "../../agents/codex-app-server-runner.js";
 import {
@@ -52,6 +54,7 @@ type CodexAction = "new" | "spawn" | "join" | "steer" | "status" | "detach" | "l
 
 type SessionMutation = {
   providerOverride?: string;
+  modelOverride?: string;
   codexThreadId?: string;
   codexProjectKey?: string;
   codexAutoRoute?: boolean;
@@ -88,34 +91,6 @@ function continueWithPrompt(params: HandleCommandsParams, prompt: string): Comma
   mutableCtx.BodyForCommands = trimmed;
   mutableCtx.BodyForAgent = trimmed;
   mutableCtx.BodyStripped = trimmed;
-  if (params.rootCtx && params.rootCtx !== params.ctx) {
-    const mutableRoot = params.rootCtx as Record<string, unknown>;
-    mutableRoot.Body = trimmed;
-    mutableRoot.RawBody = trimmed;
-    mutableRoot.CommandBody = trimmed;
-    mutableRoot.BodyForCommands = trimmed;
-    mutableRoot.BodyForAgent = trimmed;
-    mutableRoot.BodyStripped = trimmed;
-  }
-  return { shouldContinue: true };
-}
-
-function continueWithCodexRawPrompt(
-  params: HandleCommandsParams,
-  prompt: string,
-  marker: string,
-): CommandHandlerResult {
-  const trimmed = prompt.trim();
-  const mutableCtx = params.ctx as Record<string, unknown>;
-  mutableCtx.Body = trimmed;
-  mutableCtx.RawBody = trimmed;
-  mutableCtx.CommandBody = trimmed;
-  mutableCtx.BodyForCommands = trimmed;
-  mutableCtx.BodyForAgent = trimmed;
-  mutableCtx.BodyStripped = trimmed;
-  const commandMarker = `codex-mirrored-dispatch:${marker}`;
-  params.command.commandBodyNormalized = commandMarker;
-  params.command.rawBodyNormalized = commandMarker;
   if (params.rootCtx && params.rootCtx !== params.ctx) {
     const mutableRoot = params.rootCtx as Record<string, unknown>;
     mutableRoot.Body = trimmed;
@@ -787,7 +762,27 @@ function parseCodexInvocation(rawCommandBody: string): CodexMirroredInvocation |
   return null;
 }
 
-async function continueWithCodexSlashCommand(params: {
+async function updateCodexPendingInputState(params: {
+  commandParams: HandleCommandsParams;
+  sessionKey: string;
+  pending: PendingCodexUserInputState | null;
+}): Promise<void> {
+  await updateCodexSession(
+    params.commandParams,
+    {
+      pendingUserInputRequestId: params.pending?.requestId,
+      pendingUserInputOptions: params.pending?.options,
+      pendingUserInputActions: params.pending?.actions,
+      pendingUserInputExpiresAt: params.pending?.expiresAt,
+      pendingUserInputPromptText: params.pending?.promptText,
+      pendingUserInputMethod: params.pending?.method,
+      pendingUserInputAwaitingSteer: false,
+    },
+    params.sessionKey,
+  );
+}
+
+async function runCodexSlashCommandDirectly(params: {
   commandParams: HandleCommandsParams;
   slashName: string;
   argsText?: string;
@@ -807,7 +802,64 @@ async function continueWithCodexSlashCommand(params: {
     target.sessionKey,
   );
   const prompt = ["/" + params.slashName, params.argsText?.trim()].filter(Boolean).join(" ");
-  return continueWithCodexRawPrompt(params.commandParams, prompt, params.slashName);
+  const sessionEntry =
+    resolveStoredSessionEntry(params.commandParams, target.sessionKey) ??
+    params.commandParams.sessionEntry;
+  const workspaceDir =
+    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.commandParams.workspaceDir;
+  const model =
+    params.persistModelOverride ||
+    resolveStoredCodexModel(sessionEntry) ||
+    params.commandParams.model;
+  const result = await runCodexAppServerAgent({
+    sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
+    sessionKey: target.sessionKey,
+    prompt,
+    model,
+    workspaceDir,
+    config: params.commandParams.cfg,
+    timeoutMs: 30_000,
+    runId: crypto.randomUUID(),
+    existingThreadId: sessionEntry?.codexThreadId?.trim(),
+    onToolResult: async (payload) => {
+      if (!payload.text?.trim() && !payload.channelData) {
+        return;
+      }
+      await sendCodexReplies({
+        commandParams: params.commandParams,
+        sessionKey: target.sessionKey,
+        payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+      });
+    },
+    onPendingUserInput: async (pending) => {
+      await updateCodexPendingInputState({
+        commandParams: params.commandParams,
+        sessionKey: target.sessionKey,
+        pending,
+      });
+    },
+  });
+  const resolvedThreadId = result.meta?.agentMeta?.sessionId?.trim();
+  if (resolvedThreadId) {
+    await updateCodexSession(
+      params.commandParams,
+      {
+        providerOverride: "codex-app-server",
+        codexAutoRoute: true,
+        codexThreadId: resolvedThreadId,
+        codexProjectKey: workspaceDir,
+        ...(params.persistModelOverride ? { modelOverride: params.persistModelOverride } : {}),
+      },
+      target.sessionKey,
+    );
+  }
+  const reply = result.payloads?.find(
+    (payload) => payload.text?.trim() || payload.mediaUrl || payload.mediaUrls?.length,
+  );
+  if (!reply) {
+    return { shouldContinue: false };
+  }
+  return { shouldContinue: false, reply };
 }
 
 function pickBestThread(
@@ -872,7 +924,7 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
           }).join("\n"),
         );
       }
-      return await continueWithCodexSlashCommand({
+      return await runCodexSlashCommandDirectly({
         commandParams: params,
         slashName: "model",
         argsText: trimmedArgs,
@@ -880,7 +932,7 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
       });
     }
     if (BUILT_IN_MIRRORED_BASE_NAMES.has(invocation.baseName)) {
-      return await continueWithCodexSlashCommand({
+      return await runCodexSlashCommandDirectly({
         commandParams: params,
         slashName: invocation.baseName,
         argsText: invocation.argsText,

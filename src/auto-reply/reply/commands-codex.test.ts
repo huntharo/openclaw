@@ -10,6 +10,7 @@ import { buildCommandTestParams } from "./commands.test-harness.js";
 const discoverCodexAppServerThreadsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerThreadContextMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
+const runCodexAppServerAgentMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
 const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
   vi.fn<() => string | null>(() => null),
@@ -30,6 +31,7 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   readCodexAppServerThreadContext: (...args: unknown[]) =>
     readCodexAppServerThreadContextMock(...args),
   readCodexAppServerModels: (...args: unknown[]) => readCodexAppServerModelsMock(...args),
+  runCodexAppServerAgent: (...args: unknown[]) => runCodexAppServerAgentMock(...args),
 }));
 
 vi.mock("../../agents/codex-app-server-startup.js", () => ({
@@ -58,6 +60,14 @@ describe("handleCodexCommand", () => {
     discoverCodexAppServerThreadsMock.mockReset().mockResolvedValue([]);
     readCodexAppServerThreadContextMock.mockReset().mockResolvedValue({});
     readCodexAppServerModelsMock.mockReset().mockResolvedValue([]);
+    runCodexAppServerAgentMock.mockReset().mockResolvedValue({
+      payloads: [{ text: "Codex reply" }],
+      meta: {
+        agentMeta: {
+          sessionId: "thread-123",
+        },
+      },
+    });
     getCodexAppServerAvailabilityErrorMock.mockReset().mockReturnValue(null);
     getCodexAppServerRuntimeStatusMock.mockReset().mockReturnValue({ state: "unknown" });
     routeReplyMock.mockReset().mockResolvedValue({ ok: true, messageId: "m-1" });
@@ -596,8 +606,14 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: true });
-    expect(params.ctx.BodyForAgent).toBe("/plan break this into phases");
+    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
+    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "/plan break this into phases",
+        existingThreadId: "thread-123",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
   });
 
   it("routes /codex_status into the bound Codex session", async () => {
@@ -613,8 +629,14 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: true });
-    expect(params.ctx.BodyForAgent).toBe("/status");
+    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
+    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "/status",
+        existingThreadId: "thread-123",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
   });
 
   it("summarizes models for /codex_model with no args", async () => {
@@ -653,8 +675,13 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: true });
-    expect(params.ctx.BodyForAgent).toBe("/model gpt-5.2-codex");
+    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
+    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "/model gpt-5.2-codex",
+        model: "gpt-5.2-codex",
+      }),
+    );
     expect(loadSessionStore(storePath)[params.sessionKey]?.modelOverride).toBe("gpt-5.2-codex");
   });
 
@@ -671,12 +698,15 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: true });
-    expect(params.ctx.BodyForAgent).toBe("/fast");
-    expect(params.command.commandBodyNormalized).toBe("codex-mirrored-dispatch:fast");
+    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
+    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "/fast",
+      }),
+    );
   });
 
-  it("strips the Telegram bot suffix before reading /codex_skills locally", async () => {
+  it("dispatches mirrored skill commands directly to Codex", async () => {
     const params = buildParams("/codex_skills@huntharo_bot");
     params.sessionEntry = {
       sessionId: "session-1",
@@ -689,10 +719,12 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: true });
-    expect(params.ctx.BodyForAgent).toBe("/skills");
-    expect(params.command.commandBodyNormalized).toBe("codex-mirrored-dispatch:skills");
-    expect(params.command.rawBodyNormalized).toBe("codex-mirrored-dispatch:skills");
+    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
+    expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "/skills",
+      }),
+    );
   });
 
   it("fails fast when the Codex runtime startup gate is unavailable", async () => {

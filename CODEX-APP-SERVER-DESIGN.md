@@ -183,6 +183,73 @@ Protocol assumptions reflected in current code:
 - Approval rendering and callback encoding are deterministic and strongly typed in code paths; they should not depend on model interpretation.
 - Thread replay shown by `/codex join` is extracted from structured thread/read data, not synthesized by LLM summarization.
 
+## Mirrored Command Split
+
+The current design should treat mirrored Codex slash commands as three different implementation families rather than one generic "dispatch slash text" path.
+
+### 1) Client-side commands
+
+These are implemented locally in Codex TUI and should be mirrored in OpenClaw as local UX backed by App Server state:
+
+- `/codex_status`
+- `/codex_fast`
+- `/codex_model`
+- `/codex_permissions`
+- `/codex_experimental`
+- `/codex_skills`
+- `/codex_plan`
+- `/codex_diff`
+- `/codex_mcp`
+
+Current OpenClaw seam:
+
+- [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+- `handleCodexCommand`
+- `runCodexSlashCommandDirectly`
+
+Design note:
+
+- these commands should stop flowing through `runCodexSlashCommandDirectly(...)` as slash-text prompts
+- they need dedicated handlers that read or mutate local Codex session state using structured App Server methods and stored session metadata
+
+### 2) Structured App Server operations
+
+These commands should map to explicit protocol methods rather than conversational turn text:
+
+- `/codex_review` -> `review/start`
+- `/codex_rename` -> `thread/name/set`
+- `/codex_compact` -> `thread/compact/start`
+
+Primary seams:
+
+- [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+- [src/agents/codex-app-server-runner.ts](src/agents/codex-app-server-runner.ts)
+
+Design note:
+
+- these handlers should become method-specific runner entry points instead of piggybacking on mirrored slash text dispatch
+
+### 3) Relayed turn commands
+
+These are the remaining mirrored commands that still plausibly map to a user turn:
+
+- `/codex_init`
+
+Design note:
+
+- `/codex_init` aligns with the Codex TUI pattern of submitting a built-in init prompt as a user message, so turn relay remains the expected shape here unless later source review shows a better structured path
+
+### Evidence sources
+
+The March 7, 2026 local Codex source review that drove this split came from:
+
+- `codex-rs/tui/src/chatwidget.rs`
+- `codex-rs/tui/src/app.rs`
+- `codex-rs/tui/src/status/mod.rs`
+- `codex-rs/tui/src/status/card.rs`
+- `codex-rs/app-server/README.md`
+- `codex-rs/app-server-protocol/src/protocol/common.rs`
+
 ## Next-Iteration Design Hooks
 
 This section maps the refined March 6, 2026 requirements into concrete code seams.
