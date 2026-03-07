@@ -21,9 +21,11 @@ import {
 } from "./codex-app-server-runs.js";
 import { normalizeProviderId } from "./model-selection.js";
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner/types.js";
+import { stableStringify } from "./stable-stringify.js";
 
 const log = createSubsystemLogger("agent/codex-app-server");
 const DEFAULT_PROTOCOL_VERSION = "1.0";
+const TURN_STEER_METHODS = ["turn/steer"] as const;
 
 type JsonRpcId = string | number;
 
@@ -219,6 +221,8 @@ function collectText(value: unknown): string[] {
     "text",
     "delta",
     "message",
+    "prompt",
+    "question",
     "summary",
     "title",
     "content",
@@ -226,10 +230,91 @@ function collectText(value: unknown): string[] {
     "reason",
   ];
   const out = directKeys.flatMap((key) => collectText(record[key]));
-  for (const nestedKey of ["item", "turn", "thread", "response", "result", "data"]) {
+  for (const nestedKey of ["item", "turn", "thread", "response", "result", "data", "questions"]) {
     out.push(...collectText(record[nestedKey]));
   }
   return out;
+}
+
+function findFirstNestedString(
+  value: unknown,
+  keys: readonly string[],
+  nestedKeys: readonly string[] = keys,
+  depth = 0,
+): string | undefined {
+  if (depth > 6) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const match = findFirstNestedString(entry, keys, nestedKeys, depth + 1);
+      if (match) {
+        return match;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const direct = pickString(record, [...keys]);
+  if (direct) {
+    return direct;
+  }
+  for (const key of keys) {
+    const nestedRecord = asRecord(record[key]);
+    if (!nestedRecord) {
+      continue;
+    }
+    const nested = pickString(nestedRecord, [...nestedKeys]);
+    if (nested) {
+      return nested;
+    }
+  }
+  for (const nested of Object.values(record)) {
+    const match = findFirstNestedString(nested, keys, nestedKeys, depth + 1);
+    if (match) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
+function findFirstArrayByKeys(
+  value: unknown,
+  keys: readonly string[],
+  depth = 0,
+): unknown[] | undefined {
+  if (depth > 6) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const match = findFirstArrayByKeys(entry, keys, depth + 1);
+      if (match && match.length > 0) {
+        return match;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const nested = record[key];
+    if (Array.isArray(nested) && nested.length > 0) {
+      return nested;
+    }
+  }
+  for (const nested of Object.values(record)) {
+    const match = findFirstArrayByKeys(nested, keys, depth + 1);
+    if (match && match.length > 0) {
+      return match;
+    }
+  }
+  return undefined;
 }
 
 function collectStreamingText(value: unknown): string {
@@ -380,30 +465,25 @@ function extractAssistantNotificationText(
 }
 
 function extractOptionValues(value: unknown): string[] {
-  const record = asRecord(value);
-  if (!record) {
+  const rawOptions = findFirstArrayByKeys(value, [
+    "options",
+    "choices",
+    "availableDecisions",
+    "decisions",
+  ]);
+  if (!rawOptions) {
     return [];
   }
-  for (const key of ["options", "choices", "availableDecisions", "decisions"]) {
-    const raw = record[key];
-    if (!Array.isArray(raw)) {
-      continue;
-    }
-    const values = raw
-      .map((entry) => {
-        if (typeof entry === "string") {
-          return entry.trim();
-        }
-        return (
-          pickString(asRecord(entry) ?? {}, ["label", "title", "text", "value", "name", "id"]) ?? ""
-        );
-      })
-      .filter(Boolean);
-    if (values.length > 0) {
-      return values;
-    }
-  }
-  return [];
+  return rawOptions
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return entry.trim();
+      }
+      return (
+        pickString(asRecord(entry) ?? {}, ["label", "title", "text", "value", "name", "id"]) ?? ""
+      );
+    })
+    .filter(Boolean);
 }
 
 function buildMarkdownCodeBlock(text: string, language = ""): string {
@@ -437,17 +517,36 @@ function buildPromptText(params: {
   }
   const requestRecord = asRecord(params.requestParams);
   const command =
-    (requestRecord ? pickString(requestRecord, ["command", "cmd"]) : undefined) ??
+    findFirstNestedString(
+      params.requestParams,
+      ["command", "cmd", "displayCommand", "rawCommand", "shellCommand"],
+      ["command", "cmd", "text", "value", "display", "raw"],
+    ) ??
     (asRecord(requestRecord?.command)
-      ? pickString(asRecord(requestRecord?.command)!, ["command", "text", "value"])
+      ? pickString(asRecord(requestRecord?.command)!, [
+          "command",
+          "text",
+          "value",
+          "display",
+          "raw",
+        ])
       : undefined);
   if (command) {
     lines.push("", "Command:", "", buildMarkdownCodeBlock(command, "sh"));
   }
   const cwd =
-    (requestRecord ? pickString(requestRecord, ["cwd", "workdir"]) : undefined) ??
+    findFirstNestedString(
+      params.requestParams,
+      ["cwd", "workdir", "workingDirectory", "working_directory"],
+      ["cwd", "workdir", "workingDirectory", "working_directory"],
+    ) ??
     (asRecord(requestRecord?.command)
-      ? pickString(asRecord(requestRecord?.command)!, ["cwd", "workdir"])
+      ? pickString(asRecord(requestRecord?.command)!, [
+          "cwd",
+          "workdir",
+          "workingDirectory",
+          "working_directory",
+        ])
       : undefined);
   if (cwd) {
     lines.push("", `Cwd: ${cwd}`);
@@ -1433,7 +1532,7 @@ export async function runCodexAppServerAgent(
       ];
       await requestWithFallbacks({
         client,
-        methods: ["turn/steer", "thread/steer"],
+        methods: [...TURN_STEER_METHODS],
         payloads: steerPayloads,
         timeoutMs: settings.requestTimeoutMs,
       });
@@ -1543,6 +1642,7 @@ export async function runCodexAppServerAgent(
       requestParams,
       options,
     });
+    log.debug(`codex interactive request payload: ${stableStringify(requestParams)}`);
     const question = dedupeJoinedText(collectText(requestParams));
     const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
     const expiresAt = Date.now() + settings.inputTimeoutMs;
@@ -1655,7 +1755,7 @@ export async function runCodexAppServerAgent(
       ];
       await requestWithFallbacks({
         client,
-        methods: ["turn/steer", "thread/steer"],
+        methods: [...TURN_STEER_METHODS],
         payloads: steerPayloads,
         timeoutMs: settings.requestTimeoutMs,
       });
@@ -1754,12 +1854,15 @@ export const __testing = {
   applyThreadFilter,
   buildCodexPendingUserInputActions,
   buildMarkdownCodeBlock,
+  buildPromptText,
   collectStreamingText,
   dispatchJsonRpcEnvelope,
+  extractOptionValues,
   extractAssistantNotificationText,
   extractThreadReplayFromReadResult,
   isTransportClosedError,
   isMethodUnavailableError,
   mergeAssistantReplyAndEmit,
   mapPendingInputResponse,
+  turnSteerMethods: [...TURN_STEER_METHODS],
 };

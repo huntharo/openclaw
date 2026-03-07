@@ -160,3 +160,162 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 ## References
 
 - Codex App Server protocol docs: https://developers.openai.com/codex/app-server - Always reference this when implementing new features or fixing corner cases - do not guess how it works
+
+## ACP Integration Reference
+
+This section records the ACP building blocks that matter for Codex parity work. The entries are ordered by merge date so it is clear which changes were foundational versus later feature work.
+
+### PR #23390
+
+- URL: https://github.com/openclaw/openclaw/pull/23390
+- Title: `fix(acp): wait for gateway connection before processing ACP messages`
+- Merged into `main`: February 22, 2026
+- Why it matters:
+  - earliest startup hardening for ACP runtime bring-up
+  - establishes that ACP session processing has to respect gateway readiness, not just process startup
+- Key touchpoints in current code:
+  - `src/acp/server.ts`
+  - `serveAcpGateway`
+  - startup argument parsing in `parseArgs`
+
+### PR #23580
+
+- URL: https://github.com/openclaw/openclaw/pull/23580
+- Title: `feat: ACP thread-bound agents`
+- Merged into `main`: February 26, 2026
+- Why it matters:
+  - this is the major ACP architecture baseline
+  - introduces the ACP control plane, runtime registry, spawn flow, command surface, thread-bound routing, and projector/dispatch hooks
+  - this is the main pattern Codex should mirror when possible
+- Key touchpoints in current code:
+  - `src/acp/control-plane/manager.ts`
+  - `getAcpSessionManager`
+  - `src/acp/control-plane/manager.core.ts`
+  - `AcpSessionManager`
+  - `AcpSessionManager.resolveSession`
+  - `AcpSessionManager.initializeSession`
+  - `AcpSessionManager.reconcilePendingSessionIdentities`
+  - `src/acp/control-plane/manager.identity-reconcile.ts`
+  - `reconcileManagerRuntimeSessionIdentifiers`
+  - `src/acp/control-plane/manager.runtime-controls.ts`
+  - `resolveManagerRuntimeCapabilities`
+  - `applyManagerRuntimeControls`
+  - `src/agents/acp-spawn.ts`
+  - `spawnAcpDirect`
+  - `prepareAcpThreadBinding`
+  - `src/auto-reply/reply/commands-acp.ts`
+  - `handleAcpCommand`
+  - `src/auto-reply/reply/commands-acp/lifecycle.ts`
+  - `handleAcpSpawnAction`
+  - `handleAcpSteerAction`
+  - `handleAcpCancelAction`
+  - `handleAcpCloseAction`
+  - `src/auto-reply/reply/commands-acp/shared.ts`
+  - `resolveAcpAction`
+  - `parseSpawnInput`
+  - `parseSteerInput`
+  - `resolveAcpHelpText`
+  - `src/auto-reply/reply/dispatch-acp.ts`
+  - `tryDispatchAcpReply`
+  - `shouldBypassAcpDispatchForCommand`
+  - `src/auto-reply/reply/acp-projector.ts`
+  - ACP reply projection seam used for user-facing relay
+  - `src/channels/thread-bindings-messages.ts`
+  - thread binding message formatting used by ACP-bound UX
+
+### PR #33136
+
+- URL: https://github.com/openclaw/openclaw/pull/33136
+- Title: `fix(discord): accept /acp inline action + ignore bound-thread system messages`
+- Merged into `main`: March 3, 2026
+- Why it matters:
+  - hardens inline ACP actions in Discord
+  - adds filtering so bound-thread system chatter does not trigger unwanted handling
+  - useful precedent for Codex-bound control messages and approval/system-message filtering
+- Key touchpoints in current code:
+  - `src/discord/monitor/message-handler.preflight.ts`
+  - `isBoundThreadBotSystemMessage`
+  - `shouldIgnoreBoundThreadWebhookMessage`
+  - `preflightDiscordMessage`
+  - `src/discord/monitor/native-command.ts`
+  - Discord inline command dispatch path
+
+### PR #33699
+
+- URL: https://github.com/openclaw/openclaw/pull/33699
+- Title: `fix: kill stuck ACP child processes on startup and harden sessions in discord threads`
+- Merged into `main`: March 4, 2026
+- Why it matters:
+  - hardens ACP child process lifecycle
+  - adds Discord thread session durability and startup cleanup behavior
+  - important precedent for Codex runtime lifecycle and restart-safe binding repair
+- Key touchpoints in current code:
+  - `extensions/acpx/src/runtime-internals/process.ts`
+  - ACPX process lifecycle cleanup seam
+  - `extensions/acpx/src/runtime.ts`
+  - ACPX runtime startup surface
+  - `src/acp/control-plane/manager.core.ts`
+  - ACP session manager runtime handling hardening
+  - `src/discord/monitor/message-handler.ts`
+  - `createDiscordMessageHandler`
+  - `src/discord/monitor/message-handler.process.ts`
+  - `processDiscordMessage`
+  - `src/discord/monitor/provider.ts`
+  - `monitorDiscordProvider`
+  - `src/discord/monitor/thread-bindings.lifecycle.ts`
+  - `reconcileAcpThreadBindingsOnStartup`
+  - `autoBindSpawnedDiscordSubagent`
+
+### PR #34310
+
+- URL: https://github.com/openclaw/openclaw/pull/34310
+- Title: `feat(acp): add sessions_spawn streamTo parent relay for ACP spawns`
+- Merged into `main`: March 4, 2026
+- Why it matters:
+  - adds parent-stream relay for ACP spawn flows
+  - this is one of the main precedents for relaying spawned session output back into the originating conversation
+  - useful analog for Codex detached thread monitoring and spawn/bootstrap relay
+- Key touchpoints in current code:
+  - `src/agents/acp-spawn-parent-stream.ts`
+  - `startAcpSpawnParentStreamRelay`
+  - `resolveAcpSpawnStreamLogPath`
+  - `src/agents/acp-spawn.ts`
+  - `spawnAcpDirect`
+  - `src/agents/tools/sessions-spawn-tool.ts`
+  - ACP spawn tool surface that feeds the relay path
+
+### PR #34873
+
+- URL: https://github.com/openclaw/openclaw/pull/34873
+- Title: `ACP: add persistent Discord channel and Telegram topic bindings`
+- Merged into `main`: March 5, 2026
+- Why it matters:
+  - this is the direct precedent for Codex-bound Telegram topic behavior
+  - adds persistent bindings, route resolution, and restart recovery for ACP in Telegram topics and Discord channels
+  - this is the most important ACP reference for Codex topic binding parity
+- Key touchpoints in current code:
+  - `src/acp/conversation-id.ts`
+  - ACP conversation identity normalization seam
+  - `src/acp/persistent-bindings.lifecycle.ts`
+  - `ensureConfiguredAcpBindingSession`
+  - `resetAcpSessionInPlace`
+  - `src/acp/persistent-bindings.resolve.ts`
+  - `resolveConfiguredAcpBindingSpecBySessionKey`
+  - `resolveConfiguredAcpBindingRecord`
+  - `src/acp/persistent-bindings.route.ts`
+  - `resolveConfiguredAcpRoute`
+  - `ensureConfiguredAcpRouteReady`
+  - `src/auto-reply/reply/commands-acp/context.ts`
+  - ACP command binding-context resolution seam
+  - `src/auto-reply/reply/commands-core.ts`
+  - native command integration point for binding-aware command handling
+  - `src/auto-reply/reply/session.ts`
+  - session persistence and target-resolution updates used by ACP-bound conversations
+  - `src/telegram/bot-message-context.ts`
+  - `buildTelegramMessageContext`
+  - `src/telegram/bot-native-commands.ts`
+  - `registerTelegramNativeCommands`
+  - `src/discord/monitor/message-handler.preflight.ts`
+  - Discord binding-aware preflight integration
+  - `src/commands/agents.bindings.ts`
+  - binding CLI/config surface

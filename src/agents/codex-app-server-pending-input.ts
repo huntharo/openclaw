@@ -96,6 +96,42 @@ function findFirstStringByKeys(
   return undefined;
 }
 
+function findFirstArrayByKeys(
+  value: unknown,
+  keys: readonly string[],
+  depth = 0,
+): unknown[] | undefined {
+  if (depth > 6) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const match = findFirstArrayByKeys(item, keys, depth + 1);
+      if (match && match.length > 0) {
+        return match;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const nested = record[key];
+    if (Array.isArray(nested) && nested.length > 0) {
+      return nested;
+    }
+  }
+  for (const nested of Object.values(record)) {
+    const match = findFirstArrayByKeys(nested, keys, depth + 1);
+    if (match && match.length > 0) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
 function normalizeApprovalDecision(value: string): CodexPendingUserInputApprovalDecision | null {
   const normalized = value.trim().toLowerCase();
   switch (normalized) {
@@ -165,8 +201,7 @@ function extractSessionPrefix(value: unknown): string | undefined {
 }
 
 function buildApprovalActionsFromDecisions(value: unknown): CodexPendingUserInputAction[] {
-  const record = asRecord(value);
-  const rawDecisions = record?.availableDecisions ?? record?.decisions;
+  const rawDecisions = findFirstArrayByKeys(value, ["availableDecisions", "decisions"]);
   if (!Array.isArray(rawDecisions)) {
     return [];
   }

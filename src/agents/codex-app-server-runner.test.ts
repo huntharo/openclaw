@@ -145,6 +145,27 @@ describe("buildCodexPendingUserInputActions", () => {
   });
 });
 
+describe("extractOptionValues", () => {
+  it("finds nested approval labels from question payloads", () => {
+    expect(
+      __testing.extractOptionValues({
+        questions: [
+          {
+            decisions: [
+              { decision: "accept", label: "Yes" },
+              {
+                decision: "acceptWithExecPolicyAmendment",
+                label: "Yes, and don't ask again for commands that start with npm view",
+              },
+              { decision: "decline", label: "No" },
+            ],
+          },
+        ],
+      }),
+    ).toEqual(["Yes", "Yes, and don't ask again for commands that start with npm view", "No"]);
+  });
+});
+
 describe("buildMarkdownCodeBlock", () => {
   it("renders shell commands as fenced code blocks", () => {
     expect(
@@ -159,6 +180,65 @@ describe("buildMarkdownCodeBlock", () => {
     expect(__testing.buildMarkdownCodeBlock("echo ```hello```", "sh")).toBe(
       "````sh\necho ```hello```\n````",
     );
+  });
+});
+
+describe("buildPromptText", () => {
+  it("renders nested approval question, command, cwd, and labeled choices", () => {
+    const text = __testing.buildPromptText({
+      method: "item/commandExecution/requestApproval",
+      requestId: "req-1",
+      options: ["Yes", "Yes, and don't ask again for commands that start with npm view", "No"],
+      actions: [
+        {
+          kind: "approval",
+          decision: "accept",
+          responseDecision: "accept",
+          label: "Yes",
+        },
+        {
+          kind: "approval",
+          decision: "acceptForSession",
+          responseDecision: "acceptWithExecPolicyAmendment",
+          label: "Yes, and don't ask again for commands that start with npm view",
+          proposedExecpolicyAmendment: { prefix: "npm view" },
+          sessionPrefix: "npm view",
+        },
+        {
+          kind: "approval",
+          decision: "decline",
+          responseDecision: "decline",
+          label: "No",
+        },
+        { kind: "steer", label: "Tell Codex What To Do" },
+      ],
+      question: "Do you want to let me query npm for the `diver` package?",
+      expiresAt: Date.now() + 900_000,
+      requestParams: {
+        questions: [
+          {
+            prompt: "Do you want to let me query npm for the `diver` package?",
+            command: {
+              text: "npm view diver name version description",
+              cwd: "/Users/huntharo/github/openclaw",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(text).toContain("Do you want to let me query npm for the `diver` package?");
+    expect(text).toContain("```sh\nnpm view diver name version description\n```");
+    expect(text).toContain("Cwd: /Users/huntharo/github/openclaw");
+    expect(text).toContain("1. Yes");
+    expect(text).toContain("2. Yes, and don't ask again for commands that start with npm view");
+    expect(text).toContain("3. No");
+  });
+});
+
+describe("turn steer methods", () => {
+  it("uses only the documented turn/steer rpc method", () => {
+    expect(__testing.turnSteerMethods).toEqual(["turn/steer"]);
   });
 });
 

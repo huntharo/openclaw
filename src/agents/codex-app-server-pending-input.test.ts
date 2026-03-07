@@ -46,6 +46,52 @@ describe("buildCodexPendingUserInputActions", () => {
       { kind: "steer", label: "Tell Codex What To Do" },
     ]);
   });
+
+  it("finds nested approval decisions and preserves Codex-provided labels", () => {
+    const actions = buildCodexPendingUserInputActions({
+      method: "item/commandExecution/requestApproval",
+      requestParams: {
+        questions: [
+          {
+            prompt: "Allow this command?",
+            decisions: [
+              { decision: "accept", label: "Yes" },
+              {
+                decision: "acceptWithExecPolicyAmendment",
+                label: "Yes, and don't ask again for commands that start with npm view",
+                proposedExecpolicyAmendment: { prefix: "npm view" },
+              },
+              { decision: "decline", label: "No, and tell Codex what to do differently" },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(actions).toEqual([
+      {
+        kind: "approval",
+        decision: "accept",
+        responseDecision: "accept",
+        label: "Yes",
+      },
+      {
+        kind: "approval",
+        decision: "acceptForSession",
+        responseDecision: "acceptWithExecPolicyAmendment",
+        label: "Yes, and don't ask again for commands that start with npm view",
+        proposedExecpolicyAmendment: { prefix: "npm view" },
+        sessionPrefix: "npm view",
+      },
+      {
+        kind: "approval",
+        decision: "decline",
+        responseDecision: "decline",
+        label: "No, and tell Codex what to do differently",
+      },
+      { kind: "steer", label: "Tell Codex What To Do" },
+    ]);
+  });
 });
 
 describe("buildCodexPendingInputButtons", () => {
