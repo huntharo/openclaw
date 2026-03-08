@@ -20,6 +20,7 @@ import {
 } from "./codex-app-server-config.js";
 import {
   isCodexAppServerMissingThreadError,
+  isCodexAppServerProvider,
   readCodexAppServerThreadState,
 } from "./codex-app-server-runner.js";
 import { normalizeProviderId } from "./model-selection.js";
@@ -267,6 +268,13 @@ function needsCodexBoundSessionRepair(entry: Record<string, unknown> | undefined
       typeof entry?.providerOverride === "string" ? entry.providerOverride : "",
     ) !== "codex-app-server" || entry?.codexAutoRoute === false
   );
+}
+
+function resolveCodexStartupBoundThreadId(
+  entry: Record<string, unknown> | undefined,
+): string | undefined {
+  const threadId = typeof entry?.codexThreadId === "string" ? entry.codexThreadId.trim() : "";
+  return threadId || undefined;
 }
 
 function resolveCodexStartupChannel(
@@ -532,8 +540,7 @@ async function validateCodexBoundThread(params: {
     threadId: string;
   }) => Promise<void>;
 }): Promise<{ missing: boolean }> {
-  const threadId =
-    typeof params.entry.codexThreadId === "string" ? params.entry.codexThreadId.trim() : "";
+  const threadId = resolveCodexStartupBoundThreadId(params.entry) ?? "";
   if (!threadId) {
     return { missing: false };
   }
@@ -617,6 +624,32 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
       }
       continue;
     }
+    if (
+      !resolveCodexStartupBoundThreadId(existing) &&
+      resolveCodexStartupConversation(existing) !== null
+    ) {
+      staleSessionKeys.add(sessionKey);
+      try {
+        removed += await (params.unbindBinding ?? unbindCodexStartupBinding)(binding.bindingId);
+        await clearCodexBoundSessionEntry({
+          cfg: params.cfg,
+          store,
+          sessionKey,
+          entry: existing,
+          now,
+        });
+      } catch (error) {
+        failed += 1;
+        failureDetails.push(
+          formatCodexStartupFailureDetail({
+            sessionKey,
+            conversationId: binding.conversation.conversationId,
+            error,
+          }),
+        );
+      }
+      continue;
+    }
     try {
       const threadStatus = await validateCodexBoundThread({
         cfg: params.cfg,
@@ -680,11 +713,27 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
       continue;
     }
     checked += 1;
+    const existingEntry = entry as Record<string, unknown>;
+    const threadId = resolveCodexStartupBoundThreadId(existingEntry);
+    const providerOverride =
+      typeof existingEntry.providerOverride === "string" ? existingEntry.providerOverride : "";
+    if (!threadId && !isCodexAppServerProvider(providerOverride, params.cfg)) {
+      staleSessionKeys.add(sessionKey);
+      await clearCodexBoundSessionEntry({
+        cfg: params.cfg,
+        store,
+        sessionKey,
+        entry: existingEntry,
+        now,
+      });
+      removed += 1;
+      continue;
+    }
     try {
       const threadStatus = await validateCodexBoundThread({
         cfg: params.cfg,
         sessionKey,
-        entry: entry as Record<string, unknown>,
+        entry: existingEntry,
         validateThread: params.validateThread,
       });
       if (threadStatus.missing) {
@@ -693,9 +742,10 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
           cfg: params.cfg,
           store,
           sessionKey,
-          entry: entry as Record<string, unknown>,
+          entry: existingEntry,
           now,
         });
+        removed += 1;
         continue;
       }
     } catch (error) {
@@ -729,7 +779,7 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
           cfg: params.cfg,
           store,
           sessionKey,
-          entry: entry as Record<string, unknown>,
+          entry: existingEntry,
           now,
         })
       ) {

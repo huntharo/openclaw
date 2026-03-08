@@ -795,10 +795,7 @@ function resolveCodexReplyRoute(params: HandleCommandsParams): {
 }
 
 function hasActiveCodexSession(params: HandleCommandsParams): boolean {
-  return (
-    Boolean(params.sessionEntry?.codexThreadId?.trim()) ||
-    isCodexAppServerProvider(params.sessionEntry?.providerOverride ?? "", params.cfg)
-  );
+  return Boolean(params.sessionEntry?.codexThreadId?.trim());
 }
 
 function resolveCodexBoundSession(
