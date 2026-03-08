@@ -571,7 +571,7 @@ describe("handleCodexCommand", () => {
       {
         threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
         title: "App Server Redux 5.4",
-        projectKey: "/repo/openclaw",
+        projectKey: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
       },
     ]);
     const params = buildParams(
@@ -598,10 +598,11 @@ describe("handleCodexCommand", () => {
     expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: params.sessionKey,
-        workspaceDir: tempDir,
+        workspaceDir: undefined,
         filter: undefined,
       }),
     );
+    expect(result?.reply?.text).toContain("Scope: /repo/openclaw");
     expect(result?.reply?.channelData).toEqual({
       telegram: {
         buttons: [
@@ -762,7 +763,7 @@ describe("handleCodexCommand", () => {
       {
         threadId: "thread-789",
         title: "OpenClaw approvals",
-        projectKey: "/repo/openclaw",
+        projectKey: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
       },
     ]);
     const params = buildParams("/codex_resume approvals");
@@ -780,10 +781,67 @@ describe("handleCodexCommand", () => {
     expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: params.sessionKey,
-        workspaceDir: tempDir,
+        workspaceDir: undefined,
         filter: "approvals",
       }),
     );
+  });
+
+  it("filters /codex_resume default scope by shared project root instead of exact worktree path", async () => {
+    runCommandWithTimeoutMock.mockImplementation(async (args: string[]) => {
+      const cwd = args[2];
+      if (cwd === tempDir || cwd === "/Users/huntharo/.codex/worktrees/41fb/openclaw") {
+        return {
+          code: 0,
+          stdout: "/repo/openclaw/.git\n",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      if (cwd === "/Users/huntharo/github/other-repo") {
+        return {
+          code: 0,
+          stdout: "/Users/huntharo/github/other-repo/.git\n",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      return {
+        code: 0,
+        stdout: "/repo/openclaw/.git\n",
+        stderr: "",
+        signal: null,
+        timedOut: false,
+      };
+    });
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-openclaw",
+        title: "Fix Telegram approval flow",
+        projectKey: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
+      },
+      {
+        threadId: "thread-other",
+        title: "Unrelated thread",
+        projectKey: "/Users/huntharo/github/other-repo",
+      },
+    ]);
+    const params = buildParams("/codex_resume");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-current",
+      codexProjectKey: tempDir,
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Fix Telegram approval flow");
+    expect(result?.reply?.text).not.toContain("Unrelated thread");
   });
 
   it("uses current workspace when /codex list --cwd is provided without a path", async () => {

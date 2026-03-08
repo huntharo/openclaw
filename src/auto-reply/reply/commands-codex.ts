@@ -1173,7 +1173,7 @@ function formatCodexMirroredStatusText(params: {
   return lines.join("\n");
 }
 
-async function resolveCodexProjectFolder(worktreeFolder?: string): Promise<string | undefined> {
+async function resolveCodexProjectRoot(worktreeFolder?: string): Promise<string | undefined> {
   const cwd = worktreeFolder?.trim();
   if (!cwd) {
     return undefined;
@@ -1184,15 +1184,15 @@ async function resolveCodexProjectFolder(worktreeFolder?: string): Promise<strin
       { timeoutMs: 5_000, cwd },
     );
     if (result.code !== 0) {
-      return shortenHomePath(cwd);
+      return cwd;
     }
     const commonDir = result.stdout.trim();
     if (!commonDir) {
-      return shortenHomePath(cwd);
+      return cwd;
     }
-    return shortenHomePath(path.dirname(commonDir));
+    return path.dirname(commonDir);
   } catch {
-    return shortenHomePath(cwd);
+    return cwd;
   }
 }
 
@@ -1255,6 +1255,36 @@ function formatCodexContextUsageSnapshot(
   return `${totalLabel} / ${contextLabel} tokens used${
     extras.length > 0 ? ` (${extras.join(", ")})` : ""
   }`;
+}
+
+async function resolveCodexProjectFolder(worktreeFolder?: string): Promise<string | undefined> {
+  const root = await resolveCodexProjectRoot(worktreeFolder);
+  return root ? shortenHomePath(root) : undefined;
+}
+
+async function filterCodexThreadsByProjectRoot(params: {
+  threads: CodexAppServerThreadSummary[];
+  projectRoot?: string;
+}): Promise<CodexAppServerThreadSummary[]> {
+  const projectRoot = params.projectRoot?.trim();
+  if (!projectRoot) {
+    return params.threads;
+  }
+  const normalizedProjectRoot = path.resolve(projectRoot);
+  const matches = await Promise.all(
+    params.threads.map(async (thread) => {
+      const threadProjectKey = thread.projectKey?.trim();
+      if (!threadProjectKey) {
+        return true;
+      }
+      const threadRoot = await resolveCodexProjectRoot(threadProjectKey);
+      return (
+        (threadRoot ? path.resolve(threadRoot) : path.resolve(threadProjectKey)) ===
+        normalizedProjectRoot
+      );
+    }),
+  );
+  return params.threads.filter((_, index) => matches[index]);
 }
 
 function formatModelSummaryLines(params: {
@@ -2000,7 +2030,7 @@ function parseCodexInvocation(rawCommandBody: string): CodexMirroredInvocation |
 
 type ParsedCodexResumeArguments = {
   filter?: string;
-  workspaceDir?: string;
+  projectRoot?: string;
   syncTopic: boolean;
   all: boolean;
   exactThreadId?: string;
@@ -2012,7 +2042,7 @@ function isCodexThreadIdToken(token: string): boolean {
 
 async function resolveCodexWorkspaceFilter(
   rawWorkspaceDir?: string,
-): Promise<{ workspaceDir?: string } | { error: string }> {
+): Promise<{ workspaceDir?: string; projectRoot?: string } | { error: string }> {
   const trimmed = rawWorkspaceDir?.trim();
   if (!trimmed) {
     return {};
@@ -2033,7 +2063,11 @@ async function resolveCodexWorkspaceFilter(
       error: `Codex workspace filter does not exist: ${trimmed}`,
     };
   }
-  return { workspaceDir: resolved };
+  const projectRoot = await resolveCodexProjectRoot(resolved);
+  return {
+    workspaceDir: resolved,
+    projectRoot: projectRoot ? path.resolve(projectRoot) : resolved,
+  };
 }
 
 async function parseCodexResumeArguments(params: {
@@ -2047,7 +2081,7 @@ async function parseCodexResumeArguments(params: {
       return resolvedWorkspace;
     }
     return {
-      workspaceDir: resolvedWorkspace.workspaceDir,
+      projectRoot: resolvedWorkspace.projectRoot,
       syncTopic: false,
       all: false,
     };
@@ -2113,7 +2147,7 @@ async function parseCodexResumeArguments(params: {
   }
   return {
     filter,
-    workspaceDir: resolvedWorkspace.workspaceDir,
+    projectRoot: resolvedWorkspace.projectRoot,
     syncTopic,
     all,
     exactThreadId,
@@ -3295,20 +3329,25 @@ async function handleCodexResumeCommand(
     return stopWithText(parsed.error);
   }
   const discoveryFilter = parsed.exactThreadId ?? parsed.filter;
-  const discoveryWorkspaceDir = parsed.exactThreadId ? undefined : parsed.workspaceDir;
-  const threads = await discoverCodexAppServerThreads({
+  let threads = await discoverCodexAppServerThreads({
     config: params.cfg,
     sessionKey: params.sessionKey,
-    workspaceDir: discoveryWorkspaceDir,
+    workspaceDir: undefined,
     filter: discoveryFilter,
   });
+  if (!parsed.exactThreadId && parsed.projectRoot) {
+    threads = await filterCodexThreadsByProjectRoot({
+      threads,
+      projectRoot: parsed.projectRoot,
+    });
+  }
   if (!parsed.filter) {
     if (threads.length === 0) {
       return stopWithText("No Codex threads found.");
     }
     const lines = ["Recent Codex threads:"];
-    if (parsed.workspaceDir) {
-      lines.push(`Scope: ${parsed.workspaceDir}`);
+    if (parsed.projectRoot) {
+      lines.push(`Scope: ${parsed.projectRoot}`);
     }
     if (parsed.syncTopic && params.command.surface === "telegram") {
       lines.push("Choosing a thread will also rename this topic to Thread Name (Project Name).");
