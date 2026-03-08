@@ -288,6 +288,7 @@ Current status: functionally complete for the current Phase 1 scope. The command
 
 - [ ] Review the core design for Telegram assumptions and extract reusable channel-agnostic pieces.
 - [ ] Harden connection lifecycle, reconnect behavior, and stale-binding recovery.
+- [ ] Revisit archived/missing-thread cleanup so startup can retire stale Telegram bindings only on positively identified missing-thread responses, without discarding bindings on transient runtime, auth, or transport failures.
 - [ ] Add tests for restart reconciliation, stale thread ids, missing workspaces, and connection-scoped multi-thread behavior.
 - [ ] Evaluate whether to move from per-run logical clients toward a shared long-lived connection manager.
 - [ ] Only broaden to additional channels after the control plane and Telegram UX are stable.
