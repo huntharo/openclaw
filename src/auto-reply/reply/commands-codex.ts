@@ -137,7 +137,7 @@ function resolveHelpText(): string {
     "/codex steer <instruction>",
     "/codex status",
     "/codex detach",
-    "/codex list [filter]",
+    "/codex list [--cwd[=<path>]|-C [path]] [filter]",
     "/codex_model [input]",
     "/codex_fast",
     "/codex_permissions [input]",
@@ -315,6 +315,76 @@ function parseNewArguments(tokens: string[]): { cwd?: string; prompt: string } |
   return {
     cwd,
     prompt: promptTokens.join(" ").trim(),
+  };
+}
+
+function isLikelyPathToken(token: string): boolean {
+  const value = token.trim();
+  if (!value) {
+    return false;
+  }
+  return (
+    value.startsWith("/") ||
+    value.startsWith("~") ||
+    value.startsWith(".") ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    /^[A-Za-z]:[\\/]/.test(value)
+  );
+}
+
+function parseListArguments(
+  tokens: string[],
+  defaultWorkspaceDir?: string,
+): { workspaceDir?: string; filter?: string } {
+  let workspaceDir: string | undefined;
+  const filterTokens: string[] = [];
+
+  for (let index = 0; index < tokens.length; ) {
+    const token = tokens[index]?.trim();
+    if (!token) {
+      index += 1;
+      continue;
+    }
+    const normalized = normalizeCodexOptionDashes(token).trim();
+    const lower = normalized.toLowerCase();
+
+    if (lower.startsWith("--cwd=") || lower.startsWith("-cwd=")) {
+      const value = normalized.slice(normalized.indexOf("=") + 1).trim();
+      workspaceDir = value || defaultWorkspaceDir;
+      index += 1;
+      continue;
+    }
+
+    if (lower === "--cwd" || lower === "-cwd" || lower === "-c") {
+      const nextToken = tokens[index + 1]?.trim();
+      if (nextToken) {
+        const nextNormalized = normalizeCodexOptionDashes(nextToken).trim();
+        const nextLower = nextNormalized.toLowerCase();
+        const looksLikeFlag =
+          nextLower === "--cwd" ||
+          nextLower === "-cwd" ||
+          nextLower === "-c" ||
+          nextLower.startsWith("--");
+        if (!looksLikeFlag && isLikelyPathToken(nextNormalized)) {
+          workspaceDir = nextNormalized;
+          index += 2;
+          continue;
+        }
+      }
+      workspaceDir = defaultWorkspaceDir;
+      index += 1;
+      continue;
+    }
+
+    filterTokens.push(token);
+    index += 1;
+  }
+
+  const filter = filterTokens.join(" ").trim() || undefined;
+  return {
+    workspaceDir,
+    filter,
   };
 }
 
@@ -2216,15 +2286,15 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
   }
 
   if (action === "list") {
-    const filter = tokens.join(" ").trim();
-    const workspaceDir = filter
-      ? undefined
-      : (params.sessionEntry?.codexProjectKey ?? params.workspaceDir);
+    const parsed = parseListArguments(
+      tokens,
+      params.sessionEntry?.codexProjectKey ?? params.workspaceDir,
+    );
     const threads = await discoverCodexAppServerThreads({
       config: params.cfg,
       sessionKey: params.sessionKey,
-      workspaceDir,
-      filter: filter || undefined,
+      workspaceDir: parsed.workspaceDir,
+      filter: parsed.filter,
     });
     if (threads.length === 0) {
       return stopWithText("No Codex threads found.");

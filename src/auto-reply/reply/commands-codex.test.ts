@@ -486,6 +486,13 @@ describe("handleCodexCommand", () => {
 
     const result = await handleCodexCommand(params, true);
 
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: undefined,
+        filter: undefined,
+      }),
+    );
     expect(result?.reply?.text).toContain("Recent Codex threads:");
     expect(result?.reply?.channelData).toEqual({
       telegram: {
@@ -505,6 +512,69 @@ describe("handleCodexCommand", () => {
         ],
       },
     });
+  });
+
+  it("uses current workspace when /codex list --cwd is provided without a path", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-123",
+        title: "Workspace scoped",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams("/codex list --cwd");
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: params.workspaceDir,
+        filter: undefined,
+      }),
+    );
+  });
+
+  it("supports em-dash uppercase --CWD without a path", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-123",
+        title: "Workspace scoped",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams("/codex list \u2014CWD");
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: params.workspaceDir,
+        filter: undefined,
+      }),
+    );
+  });
+
+  it("supports explicit /codex list -C <path> with a filter", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-123",
+        title: "OpenClaw scoped",
+        projectKey: "/Users/huntharo/github/openclaw",
+      },
+    ]);
+    const params = buildParams("/codex list -C /Users/huntharo/github/openclaw approvals");
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: "/Users/huntharo/github/openclaw",
+        filter: "approvals",
+      }),
+    );
   });
 
   it("includes runtime state in /codex status output", async () => {
