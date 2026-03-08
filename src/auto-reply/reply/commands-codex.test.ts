@@ -566,6 +566,226 @@ describe("handleCodexCommand", () => {
     });
   });
 
+  it("defaults /codex_resume to the bound Codex workspace when listing threads", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
+        title: "App Server Redux 5.4",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams(
+      "/codex_resume",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-current",
+      codexProjectKey: tempDir,
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: tempDir,
+        filter: undefined,
+      }),
+    );
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "Resume: App Server Redux 5.4",
+              callback_data: "/codex_resume 019cc38a-0128-7203-9e94-7e97610cdba6",
+            },
+          ],
+        ],
+      },
+    });
+  });
+
+  it("uses /codex_resume --all to bypass the implied bound workspace scope", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
+        title: "App Server Redux 5.4",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams("/codex_resume --all");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-current",
+      codexProjectKey: tempDir,
+      codexAutoRoute: true,
+    };
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: undefined,
+        filter: undefined,
+      }),
+    );
+  });
+
+  it("adds /codex_resume --sync buttons when listing resumable threads", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
+        title: "App Server Redux 5.4",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams(
+      "/codex_resume --sync",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "Resume: App Server Redux 5.4",
+              callback_data: "/codex_resume --sync 019cc38a-0128-7203-9e94-7e97610cdba6",
+            },
+          ],
+        ],
+      },
+    });
+    expect(result?.reply?.text).toContain(
+      "Choosing a thread will also rename this topic to Thread Name (Project Name).",
+    );
+  });
+
+  it("treats an exact guid in /codex_resume as a direct thread target, not a scoped filter", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019c68d3-d622-75c0-a542-198753af0b2c",
+        title: "Plan TASKS doc refresh",
+        projectKey: "/Users/huntharo/github/jeerreview",
+        updatedAt: Date.now(),
+      },
+    ]);
+    const params = buildParams(
+      "/codex_resume 019c68d3-d622-75c0-a542-198753af0b2c",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-current",
+      codexProjectKey: tempDir,
+      codexAutoRoute: true,
+    };
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:main:main",
+        workspaceDir: undefined,
+        filter: "019c68d3-d622-75c0-a542-198753af0b2c",
+      }),
+    );
+  });
+
+  it("binds and sync-renames the topic on /codex_resume --sync <thread-id>", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019c68d3-d622-75c0-a542-198753af0b2c",
+        title: "Plan TASKS doc refresh",
+        projectKey: "/Users/huntharo/github/jeerreview",
+        updatedAt: Date.now(),
+      },
+    ]);
+    const params = buildParams(
+      "/codex_resume --sync 019c68d3-d622-75c0-a542-198753af0b2c",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "group:1234:topic:77",
+        To: "group:1234:topic:77",
+        MessageThreadId: "77",
+      },
+    );
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: false });
+    expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        channelData: {
+          telegram: {
+            renameTopicTo: "Plan TASKS doc refresh (jeerreview)",
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps /codex_resume filter searches scoped to the bound workspace by default", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-789",
+        title: "OpenClaw approvals",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams("/codex_resume approvals");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-current",
+      codexProjectKey: tempDir,
+      codexAutoRoute: true,
+    };
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: tempDir,
+        filter: "approvals",
+      }),
+    );
+  });
+
   it("uses current workspace when /codex list --cwd is provided without a path", async () => {
     discoverCodexAppServerThreadsMock.mockResolvedValue([
       {
@@ -826,7 +1046,7 @@ describe("handleCodexCommand", () => {
 
     expect(result?.reply?.text).toContain("Pending input: req-123");
     expect(result?.reply?.text).toContain("Approve deploy?");
-    expect(result?.reply?.text).toContain("Mirrored commands: built-in=14");
+    expect(result?.reply?.text).toContain("Mirrored commands: built-in=15");
     expect(
       (result?.reply?.channelData as { telegram?: { buttons?: unknown[][] } } | undefined)?.telegram
         ?.buttons,

@@ -95,7 +95,16 @@ const BUILT_IN_MIRRORED_BASE_NAMES: ReadonlySet<string> = new Set(
   CODEX_BUILT_IN_MIRRORED_COMMANDS.map((command) => command.baseName),
 );
 
-type CodexAction = "new" | "spawn" | "join" | "steer" | "status" | "detach" | "list" | "help";
+type CodexAction =
+  | "new"
+  | "spawn"
+  | "resume"
+  | "join"
+  | "steer"
+  | "status"
+  | "detach"
+  | "list"
+  | "help";
 
 type SessionMutation = {
   providerOverride?: string;
@@ -203,6 +212,7 @@ function continueWithPrompt(params: HandleCommandsParams, prompt: string): Comma
 function resolveHelpText(): string {
   return [
     "/codex new [--cwd <path>] [prompt]",
+    "/codex resume [--all] [--cwd[=<path>]|-C [path]] [--sync] [thread-id-or-filter]",
     "/codex join <thread-id-or-filter>",
     "/codex steer <instruction>",
     "/codex status",
@@ -215,6 +225,7 @@ function resolveHelpText(): string {
     "/codex_skills [input]",
     "/codex_plan [input]",
     "/codex_review [input]",
+    "/codex_resume [--all] [--cwd[=<path>]|-C [path]] [--sync] [thread-id-or-filter]",
     "/codex_stop",
     "/codex_status",
     "/codex_rename [input]",
@@ -339,6 +350,7 @@ function resolveAction(tokens: string[]): CodexAction {
   if (
     action === "new" ||
     action === "spawn" ||
+    action === "resume" ||
     action === "join" ||
     action === "steer" ||
     action === "status" ||
@@ -1986,6 +1998,166 @@ function parseCodexInvocation(rawCommandBody: string): CodexMirroredInvocation |
   return null;
 }
 
+type ParsedCodexResumeArguments = {
+  filter?: string;
+  workspaceDir?: string;
+  syncTopic: boolean;
+  all: boolean;
+  exactThreadId?: string;
+};
+
+function isCodexThreadIdToken(token: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token.trim());
+}
+
+async function resolveCodexWorkspaceFilter(
+  rawWorkspaceDir?: string,
+): Promise<{ workspaceDir?: string } | { error: string }> {
+  const trimmed = rawWorkspaceDir?.trim();
+  if (!trimmed) {
+    return {};
+  }
+  const expanded = trimmed.startsWith("~")
+    ? path.join(process.env.HOME || "", trimmed.slice(1))
+    : trimmed;
+  const resolved = path.resolve(expanded);
+  try {
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) {
+      return {
+        error: `Codex workspace filter must be a directory: ${trimmed}`,
+      };
+    }
+  } catch {
+    return {
+      error: `Codex workspace filter does not exist: ${trimmed}`,
+    };
+  }
+  return { workspaceDir: resolved };
+}
+
+async function parseCodexResumeArguments(params: {
+  argsText: string;
+  impliedWorkspaceDir?: string;
+}): Promise<ParsedCodexResumeArguments | { error: string }> {
+  const normalized = normalizeCodexOptionDashes(params.argsText).trim();
+  if (!normalized) {
+    const resolvedWorkspace = await resolveCodexWorkspaceFilter(params.impliedWorkspaceDir);
+    if ("error" in resolvedWorkspace) {
+      return resolvedWorkspace;
+    }
+    return {
+      workspaceDir: resolvedWorkspace.workspaceDir,
+      syncTopic: false,
+      all: false,
+    };
+  }
+
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  let rawWorkspaceDir: string | undefined;
+  let syncTopic = false;
+  let all = false;
+  const filterTokens: string[] = [];
+
+  for (let index = 0; index < tokens.length; ) {
+    const token = tokens[index]?.trim();
+    if (!token) {
+      index += 1;
+      continue;
+    }
+    const lower = token.toLowerCase();
+    if (lower === "--sync") {
+      syncTopic = true;
+      index += 1;
+      continue;
+    }
+    if (lower === "--all") {
+      all = true;
+      index += 1;
+      continue;
+    }
+    const cwdOption = readOptionValue(tokens, index, "--cwd");
+    if (cwdOption.matched) {
+      if (cwdOption.error) {
+        return {
+          error: `${cwdOption.error}. Usage: /codex_resume [--all] [--cwd[=<path>]|-C [path]] [--sync] [thread-id-or-filter]`,
+        };
+      }
+      rawWorkspaceDir = cwdOption.value?.trim();
+      index = cwdOption.nextIndex;
+      continue;
+    }
+    const shortCwdOption = readOptionValue(tokens, index, "-C");
+    if (shortCwdOption.matched) {
+      if (shortCwdOption.error) {
+        return {
+          error: `${shortCwdOption.error}. Usage: /codex_resume [--all] [--cwd[=<path>]|-C [path]] [--sync] [thread-id-or-filter]`,
+        };
+      }
+      rawWorkspaceDir = shortCwdOption.value?.trim();
+      index = shortCwdOption.nextIndex;
+      continue;
+    }
+    filterTokens.push(token);
+    index += 1;
+  }
+
+  const filter = filterTokens.join(" ").trim() || undefined;
+  const exactThreadId =
+    filterTokens.length === 1 && filter && isCodexThreadIdToken(filter) ? filter : undefined;
+  const effectiveWorkspaceDir =
+    rawWorkspaceDir ?? (!all && !exactThreadId ? params.impliedWorkspaceDir : undefined);
+  const resolvedWorkspace = await resolveCodexWorkspaceFilter(effectiveWorkspaceDir);
+  if ("error" in resolvedWorkspace) {
+    return resolvedWorkspace;
+  }
+  return {
+    filter,
+    workspaceDir: resolvedWorkspace.workspaceDir,
+    syncTopic,
+    all,
+    exactThreadId,
+  };
+}
+
+function buildCodexResumeButtons(params: {
+  threads: Awaited<ReturnType<typeof discoverCodexAppServerThreads>>;
+  syncTopic: boolean;
+}): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
+  const rows = params.threads
+    .slice(0, 10)
+    .map((thread) => {
+      const callbackData = `/codex_resume${params.syncTopic ? " --sync" : ""} ${thread.threadId}`;
+      if (callbackData.length > 64) {
+        return null;
+      }
+      const labelSource =
+        thread.title?.trim() ||
+        path.basename(thread.projectKey?.trim() || "") ||
+        thread.threadId.trim();
+      return [
+        {
+          text: truncateCodexButtonLabel(`Resume: ${labelSource}`),
+          callback_data: callbackData,
+        },
+      ];
+    })
+    .filter(Boolean) as Array<Array<{ text: string; callback_data: string }>>;
+  return rows.length > 0 ? rows : undefined;
+}
+
+function buildCodexResumeTopicName(thread: CodexAppServerThreadSummary): string | undefined {
+  const threadName = thread.title?.trim() || thread.threadId.trim();
+  if (!threadName) {
+    return undefined;
+  }
+  const projectName = path.basename(thread.projectKey?.replace(/[\\/]+$/, "").trim() || "");
+  if (!projectName) {
+    return threadName;
+  }
+  return `${threadName} (${projectName})`;
+}
+
 async function updateCodexPendingInputState(params: {
   commandParams: HandleCommandsParams;
   sessionKey: string;
@@ -2994,6 +3166,189 @@ function pickBestThread(
   return threads[0];
 }
 
+async function bindCodexThreadToConversation(params: {
+  commandParams: HandleCommandsParams;
+  thread: CodexAppServerThreadSummary;
+  syncTopic?: boolean;
+}): Promise<CommandHandlerResult> {
+  const { commandParams, thread } = params;
+  const syncedTopicName =
+    params.syncTopic && commandParams.command.surface === "telegram"
+      ? buildCodexResumeTopicName(thread)
+      : undefined;
+  const targetSession = await ensureCodexBoundSession({
+    commandParams,
+    projectKey: thread.projectKey ?? commandParams.workspaceDir,
+  });
+  if ("error" in targetSession) {
+    return stopWithText(`⚠️ ${targetSession.error}`);
+  }
+  const existingPendingEntry = targetSession.sessionEntry;
+  const shouldPreservePendingReplay =
+    existingPendingEntry?.codexThreadId?.trim() === thread.threadId &&
+    Boolean(existingPendingEntry?.pendingUserInputRequestId?.trim());
+  await updateCodexSession(
+    commandParams,
+    {
+      providerOverride: "codex-app-server",
+      codexThreadId: thread.threadId,
+      codexProjectKey: thread.projectKey ?? commandParams.workspaceDir,
+      codexAutoRoute: true,
+      pendingUserInputRequestId: shouldPreservePendingReplay
+        ? existingPendingEntry?.pendingUserInputRequestId
+        : undefined,
+      pendingUserInputOptions: shouldPreservePendingReplay
+        ? existingPendingEntry?.pendingUserInputOptions
+        : undefined,
+      pendingUserInputActions: shouldPreservePendingReplay
+        ? existingPendingEntry?.pendingUserInputActions
+        : undefined,
+      pendingUserInputExpiresAt: shouldPreservePendingReplay
+        ? existingPendingEntry?.pendingUserInputExpiresAt
+        : undefined,
+      pendingUserInputPromptText: shouldPreservePendingReplay
+        ? existingPendingEntry?.pendingUserInputPromptText
+        : undefined,
+      pendingUserInputMethod: shouldPreservePendingReplay
+        ? existingPendingEntry?.pendingUserInputMethod
+        : undefined,
+      pendingUserInputAwaitingSteer: shouldPreservePendingReplay
+        ? existingPendingEntry?.pendingUserInputAwaitingSteer
+        : undefined,
+    },
+    targetSession.sessionKey,
+  );
+  const refreshedEntry =
+    commandParams.sessionStore?.[targetSession.sessionKey] ?? targetSession.sessionEntry;
+  const threadReplay = await readCodexAppServerThreadContext({
+    config: commandParams.cfg,
+    sessionKey: commandParams.sessionKey,
+    workspaceDir: thread.projectKey ?? commandParams.workspaceDir,
+    threadId: thread.threadId,
+  }).catch((error) => {
+    logVerbose(`Failed to read Codex thread context for ${thread.threadId}: ${String(error)}`);
+    return {};
+  });
+  const pendingReplay = buildPendingInputReplay(refreshedEntry);
+  const payloads: ReplyPayload[] = [
+    {
+      text: ["Codex thread bound.", summarizeThreadBinding(thread)].join("\n\n"),
+      channelData:
+        shouldPinCodexBindingNotice(commandParams) ||
+        (params.syncTopic && commandParams.command.surface === "telegram")
+          ? {
+              telegram: {
+                ...(shouldPinCodexBindingNotice(commandParams) ? { pin: true } : {}),
+                ...(syncedTopicName ? { renameTopicTo: syncedTopicName } : {}),
+              },
+            }
+          : undefined,
+    },
+    ...buildThreadReplayPayloads(threadReplay),
+  ];
+  if (pendingReplay) {
+    payloads.push({
+      text: pendingReplay,
+      channelData: buildPendingInputChannelData(commandParams, refreshedEntry),
+    });
+  }
+  const routed = await sendCodexReplies({
+    commandParams,
+    sessionKey: targetSession.sessionKey,
+    payloads,
+  }).catch((error) => {
+    logVerbose(`Failed to route Codex resume replay: ${String(error)}`);
+    return false;
+  });
+  if (routed) {
+    return { shouldContinue: false };
+  }
+  return {
+    shouldContinue: false,
+    reply: {
+      text: [
+        "Codex thread bound.",
+        summarizeThreadBinding(thread),
+        pendingReplay,
+        threadReplay.lastUserMessage?.trim() ? "Last User Request in Thread:" : undefined,
+        threadReplay.lastUserMessage?.trim(),
+        threadReplay.lastAssistantMessage?.trim() ? "Last Agent Reply in Thread:" : undefined,
+        threadReplay.lastAssistantMessage?.trim(),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      channelData: buildPendingInputChannelData(commandParams, refreshedEntry),
+    },
+  };
+}
+
+async function handleCodexResumeCommand(
+  params: HandleCommandsParams,
+  argsText: string,
+): Promise<CommandHandlerResult> {
+  const impliedWorkspaceDir = params.sessionEntry?.codexProjectKey ?? undefined;
+  const parsed = await parseCodexResumeArguments({
+    argsText,
+    impliedWorkspaceDir,
+  });
+  if ("error" in parsed) {
+    return stopWithText(parsed.error);
+  }
+  const discoveryFilter = parsed.exactThreadId ?? parsed.filter;
+  const discoveryWorkspaceDir = parsed.exactThreadId ? undefined : parsed.workspaceDir;
+  const threads = await discoverCodexAppServerThreads({
+    config: params.cfg,
+    sessionKey: params.sessionKey,
+    workspaceDir: discoveryWorkspaceDir,
+    filter: discoveryFilter,
+  });
+  if (!parsed.filter) {
+    if (threads.length === 0) {
+      return stopWithText("No Codex threads found.");
+    }
+    const lines = ["Recent Codex threads:"];
+    if (parsed.workspaceDir) {
+      lines.push(`Scope: ${parsed.workspaceDir}`);
+    }
+    if (parsed.syncTopic && params.command.surface === "telegram") {
+      lines.push("Choosing a thread will also rename this topic to Thread Name (Project Name).");
+    }
+    const visibleThreads = threads.slice(0, 10);
+    for (const thread of visibleThreads) {
+      lines.push(
+        `- ${thread.threadId}${thread.title ? ` · ${thread.title}` : ""}${thread.projectKey ? ` · ${thread.projectKey}` : ""}`,
+      );
+    }
+    return {
+      shouldContinue: false,
+      reply: {
+        text: lines.join("\n"),
+        channelData:
+          params.command.surface === "telegram"
+            ? {
+                telegram: {
+                  buttons: buildCodexResumeButtons({
+                    threads: visibleThreads,
+                    syncTopic: parsed.syncTopic,
+                  }),
+                },
+              }
+            : undefined,
+      },
+    };
+  }
+
+  const selected = pickBestThread(threads, parsed.filter);
+  if (!selected) {
+    return stopWithText(`No Codex thread matched: ${parsed.filter}`);
+  }
+  return bindCodexThreadToConversation({
+    commandParams: params,
+    thread: selected,
+    syncTopic: parsed.syncTopic,
+  });
+}
+
 export const handleCodexCommand: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) {
     return null;
@@ -3047,6 +3402,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "plan") {
       return await handleCodexPlanCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "resume") {
+      return await handleCodexResumeCommand(params, invocation.argsText);
     }
     if (invocation.baseName === "stop") {
       return await handleCodexStopCommand(params);
@@ -3236,6 +3594,10 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     };
   }
 
+  if (action === "resume") {
+    return await handleCodexResumeCommand(params, tokens.join(" "));
+  }
+
   if (action === "join") {
     const token = tokens.join(" ").trim();
     if (!token) {
@@ -3251,93 +3613,10 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     if (!selected) {
       return stopWithText(`No Codex thread matched: ${token}`);
     }
-    const targetSession = await ensureCodexBoundSession({
+    return await bindCodexThreadToConversation({
       commandParams: params,
-      projectKey: selected.projectKey ?? params.workspaceDir,
+      thread: selected,
     });
-    if ("error" in targetSession) {
-      return stopWithText(`⚠️ ${targetSession.error}`);
-    }
-    const existingPendingEntry = targetSession.sessionEntry;
-    const shouldPreservePendingReplay =
-      existingPendingEntry?.codexThreadId?.trim() === selected.threadId &&
-      Boolean(existingPendingEntry?.pendingUserInputRequestId?.trim());
-    await updateCodexSession(
-      params,
-      {
-        providerOverride: "codex-app-server",
-        codexThreadId: selected.threadId,
-        codexProjectKey: selected.projectKey ?? params.workspaceDir,
-        codexAutoRoute: true,
-        pendingUserInputRequestId: shouldPreservePendingReplay
-          ? existingPendingEntry?.pendingUserInputRequestId
-          : undefined,
-        pendingUserInputOptions: shouldPreservePendingReplay
-          ? existingPendingEntry?.pendingUserInputOptions
-          : undefined,
-        pendingUserInputActions: shouldPreservePendingReplay
-          ? existingPendingEntry?.pendingUserInputActions
-          : undefined,
-        pendingUserInputExpiresAt: shouldPreservePendingReplay
-          ? existingPendingEntry?.pendingUserInputExpiresAt
-          : undefined,
-        pendingUserInputPromptText: shouldPreservePendingReplay
-          ? existingPendingEntry?.pendingUserInputPromptText
-          : undefined,
-        pendingUserInputMethod: shouldPreservePendingReplay
-          ? existingPendingEntry?.pendingUserInputMethod
-          : undefined,
-        pendingUserInputAwaitingSteer: shouldPreservePendingReplay
-          ? existingPendingEntry?.pendingUserInputAwaitingSteer
-          : undefined,
-      },
-      targetSession.sessionKey,
-    );
-    const refreshedEntry =
-      params.sessionStore?.[targetSession.sessionKey] ?? targetSession.sessionEntry;
-    const threadReplay = await readCodexAppServerThreadContext({
-      config: params.cfg,
-      sessionKey: params.sessionKey,
-      workspaceDir: selected.projectKey ?? params.workspaceDir,
-      threadId: selected.threadId,
-    }).catch((error) => {
-      logVerbose(`Failed to read Codex thread context for ${selected.threadId}: ${String(error)}`);
-      return {};
-    });
-    const pendingReplay = buildPendingInputReplay(refreshedEntry);
-    const payloads: ReplyPayload[] = [
-      {
-        text: ["Codex thread bound.", summarizeThreadBinding(selected)].join("\n\n"),
-        channelData: shouldPinCodexBindingNotice(params) ? { telegram: { pin: true } } : undefined,
-      },
-      ...buildThreadReplayPayloads(threadReplay),
-    ];
-    if (pendingReplay) {
-      payloads.push({
-        text: pendingReplay,
-        channelData: buildPendingInputChannelData(params, refreshedEntry),
-      });
-    }
-    const routed = await sendCodexReplies({
-      commandParams: params,
-      sessionKey: targetSession.sessionKey,
-      payloads,
-    }).catch((error) => {
-      logVerbose(`Failed to route Codex join replay: ${String(error)}`);
-      return false;
-    });
-    if (routed) {
-      return { shouldContinue: false };
-    }
-    return {
-      shouldContinue: false,
-      reply: {
-        text: ["Codex thread bound.", summarizeThreadBinding(selected), pendingReplay]
-          .filter(Boolean)
-          .join("\n\n"),
-        channelData: buildPendingInputChannelData(params, refreshedEntry),
-      },
-    };
   }
 
   return stopWithText(resolveHelpText());

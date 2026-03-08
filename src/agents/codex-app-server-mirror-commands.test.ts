@@ -13,5 +13,8 @@ describe("codex mirrored commands", () => {
     expect(CODEX_BUILT_IN_MIRRORED_COMMANDS).toContainEqual(
       expect.objectContaining({ baseName: "plan" }),
     );
+    expect(CODEX_BUILT_IN_MIRRORED_COMMANDS).toContainEqual(
+      expect.objectContaining({ baseName: "resume" }),
+    );
   });
 });
