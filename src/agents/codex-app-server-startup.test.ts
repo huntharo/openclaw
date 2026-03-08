@@ -322,6 +322,51 @@ describe("initializeCodexAppServerRuntime", () => {
     });
   });
 
+  it("clears threadless persisted codex conversations instead of rebinding them", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:abc123def4567802";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-threadless-stale",
+            updatedAt: Date.now() - 60_000,
+            codexAutoRoute: false,
+            channel: "telegram",
+            groupId: "-100200300:topic:111",
+            origin: {
+              accountId: "default",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    const bindBinding = vi.fn(async () => {});
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [],
+      bindBinding,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 0,
+      removed: 1,
+      failed: 0,
+      staleSessionKeys: [sessionKey],
+      failureDetails: [],
+    });
+    expect(bindBinding).not.toHaveBeenCalled();
+  });
+
   it("removes stale codex bindings when the target bound session is missing", async () => {
     const unbindBinding = vi.fn(async () => 1);
 
@@ -535,6 +580,144 @@ describe("initializeCodexAppServerRuntime", () => {
       restored[sessionKey] as {
         providerOverride?: string;
         codexThreadId?: string;
+        codexAutoRoute?: boolean;
+      },
+    ).toEqual(
+      expect.objectContaining({
+        codexAutoRoute: false,
+      }),
+    );
+    expect(restored[sessionKey]).not.toHaveProperty("providerOverride");
+    expect(restored[sessionKey]).not.toHaveProperty("codexThreadId");
+  });
+
+  it("removes stale bindings when the session entry no longer has a codex thread id", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:abc123def4567801";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-stale-binding",
+            updatedAt: Date.now() - 60_000,
+            codexAutoRoute: false,
+            channel: "telegram",
+            groupId: "-100200300:topic:123",
+            origin: {
+              accountId: "default",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    const unbindBinding = vi.fn(async () => 1);
+    const validateThread = vi.fn();
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [
+        {
+          bindingId: "telegram:stale-threadless",
+          targetSessionKey: sessionKey,
+          targetKind: "session",
+          conversation: {
+            channel: "telegram",
+            accountId: "default",
+            conversationId: "-100200300:topic:123",
+            parentConversationId: "-100200300",
+          },
+          status: "active",
+          boundAt: Date.now() - 60_000,
+        },
+      ],
+      unbindBinding,
+      validateThread,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 0,
+      removed: 1,
+      failed: 0,
+      staleSessionKeys: [sessionKey],
+      failureDetails: [],
+    });
+    expect(unbindBinding).toHaveBeenCalledWith("telegram:stale-threadless");
+    expect(validateThread).not.toHaveBeenCalled();
+
+    const restored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
+    expect(
+      restored[sessionKey] as {
+        codexAutoRoute?: boolean;
+      },
+    ).toEqual(
+      expect.objectContaining({
+        codexAutoRoute: false,
+      }),
+    );
+    expect(restored[sessionKey]).not.toHaveProperty("providerOverride");
+    expect(restored[sessionKey]).not.toHaveProperty("codexThreadId");
+  });
+
+  it("counts cleared orphaned bound sessions as removed when the remote codex thread no longer exists", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:abc123def4567890";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-orphaned",
+            updatedAt: Date.now() - 60_000,
+            providerOverride: "codex-app-server",
+            codexThreadId: "thread-orphaned-dead",
+            codexProjectKey: "/repo/openclaw",
+            codexAutoRoute: true,
+            channel: "telegram",
+            groupId: "-100200300:topic:99",
+            origin: {
+              accountId: "default",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [],
+      validateThread: vi.fn(async () => {
+        throw new Error(
+          "codex app server rpc error (-32600): no rollout found for thread id thread-orphaned-dead",
+        );
+      }),
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 0,
+      removed: 1,
+      failed: 0,
+      staleSessionKeys: [sessionKey],
+      failureDetails: [],
+    });
+
+    const restored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
+    expect(
+      restored[sessionKey] as {
         codexAutoRoute?: boolean;
       },
     ).toEqual(
