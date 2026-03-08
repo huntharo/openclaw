@@ -274,10 +274,10 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [x] Reclassify mirrored `/codex_*` commands by implementation type: client-side, structured RPC, or relayed turn.
 - [x] Reimplement `/codex_status` as a client-side status view built from App Server state instead of relayed slash text.
 - [x] Reimplement `/codex_fast` as a client-side `serviceTier` control instead of relayed slash text.
-- [ ] Add `/codex_resume` as the primary picker-style thread selection command, preserving current `/codex list` filtering, buttons, and bind-and-replay behavior.
-- [ ] Teach `/codex_resume` the Codex TUI-style scope rules: current project by default when bound, `--all` to disable that scope, and explicit `--cwd` override.
-- [ ] Teach `/codex_resume` to infer exact thread id versus free-form filter text from a single positional argument.
-- [ ] Teach `/codex_resume --sync` to carry synchronized-topic rename behavior through list buttons and explicit resume targets.
+- [x] Add `/codex_resume` as the primary picker-style thread selection command, preserving current `/codex list` filtering, buttons, and bind-and-replay behavior.
+- [x] Teach `/codex_resume` the Codex TUI-style scope rules: current project by default when bound, `--all` to disable that scope, and explicit `--cwd` override.
+- [x] Teach `/codex_resume` to infer exact thread id versus free-form filter text from a single positional argument.
+- [x] Teach `/codex_resume --sync` to carry synchronized-topic rename behavior through list buttons and explicit resume targets.
 - [ ] After `/codex_resume` is stable, remove `/codex list` and `/codex join` or reduce them to thin compatibility aliases, and update help text plus button callbacks accordingly.
 - [ ] Reimplement `/codex_model` as a client-side model selection and summary flow backed by App Server state.
 - [ ] Reimplement `/codex_permissions` as a client-side permissions or approval-policy control instead of relayed slash text.
