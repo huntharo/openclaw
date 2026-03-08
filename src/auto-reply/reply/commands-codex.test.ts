@@ -183,12 +183,32 @@ describe("handleCodexCommand", () => {
       sendChatAction: sendChatActionMock,
       reset: vi.fn(),
     });
-    runCommandWithTimeoutMock.mockReset().mockResolvedValue({
-      code: 0,
-      stdout: "/repo/openclaw/.git\n",
-      stderr: "",
-      signal: null,
-      timedOut: false,
+    runCommandWithTimeoutMock.mockReset().mockImplementation(async (args: string[]) => {
+      if (args.includes("--git-common-dir")) {
+        return {
+          code: 0,
+          stdout: "/repo/openclaw/.git\n",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      if (args.includes("--porcelain")) {
+        return {
+          code: 0,
+          stdout: "",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      return {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        signal: null,
+        timedOut: false,
+      };
     });
     sessionBindingServiceMock.bind.mockReset().mockImplementation(async (input: unknown) => {
       const record = input as {
@@ -608,7 +628,7 @@ describe("handleCodexCommand", () => {
         buttons: [
           [
             {
-              text: "Resume: App Server Redux 5.4",
+              text: "🌿 App Server Redux 5.4",
               callback_data: "/codex_resume 019cc38a-0128-7203-9e94-7e97610cdba6",
             },
           ],
@@ -646,6 +666,37 @@ describe("handleCodexCommand", () => {
     );
   });
 
+  it("accepts Telegram smart-dash --all for /codex_resume", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
+        title: "App Server Redux 5.4",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams("/codex_resume —all");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-current",
+      codexProjectKey: tempDir,
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: undefined,
+        filter: undefined,
+      }),
+    );
+    expect(result?.reply?.text).toContain("Recent Codex threads:");
+    expect(result?.reply?.text).not.toContain(`Scope: ${tempDir}`);
+  });
+
   it("adds /codex_resume --sync buttons when listing resumable threads", async () => {
     discoverCodexAppServerThreadsMock.mockResolvedValue([
       {
@@ -672,7 +723,83 @@ describe("handleCodexCommand", () => {
         buttons: [
           [
             {
-              text: "Resume: App Server Redux 5.4",
+              text: "openclaw: App Server Redux 5.4",
+              callback_data: "/codex_resume --sync 019cc38a-0128-7203-9e94-7e97610cdba6",
+            },
+          ],
+        ],
+      },
+    });
+    expect(result?.reply?.text).toContain(
+      "Choosing a thread will also rename this topic to Thread Name (Project Name).",
+    );
+  });
+
+  it("accepts Telegram smart-dash --sync for /codex_resume", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
+        title: "App Server Redux 5.4",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams(
+      "/codex_resume —sync",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "openclaw: App Server Redux 5.4",
+              callback_data: "/codex_resume --sync 019cc38a-0128-7203-9e94-7e97610cdba6",
+            },
+          ],
+        ],
+      },
+    });
+    expect(result?.reply?.text).toContain(
+      "Choosing a thread will also rename this topic to Thread Name (Project Name).",
+    );
+  });
+
+  it("preserves --sync in /codex_resume list buttons when combined with smart-dash --all", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019cc38a-0128-7203-9e94-7e97610cdba6",
+        title: "App Server Redux 5.4",
+        projectKey: "/repo/openclaw",
+      },
+    ]);
+    const params = buildParams(
+      "/codex_resume —all —sync",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "openclaw: App Server Redux 5.4",
               callback_data: "/codex_resume --sync 019cc38a-0128-7203-9e94-7e97610cdba6",
             },
           ],
@@ -758,6 +885,42 @@ describe("handleCodexCommand", () => {
     });
   });
 
+  it("sync-renames the topic for /codex_resume --sync <thread-id> when routed back to Telegram from a non-Telegram surface", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "019c68d3-d622-75c0-a542-198753af0b2c",
+        title: "Plan TASKS doc refresh",
+        projectKey: "/Users/huntharo/github/jeerreview",
+        updatedAt: Date.now(),
+      },
+    ]);
+    const params = buildParams(
+      "/codex_resume --sync 019c68d3-d622-75c0-a542-198753af0b2c",
+      {},
+      {
+        Surface: "webchat",
+        Provider: "webchat",
+        OriginatingChannel: "telegram",
+        OriginatingTo: "group:1234:topic:77",
+        To: "group:1234:topic:77",
+        MessageThreadId: "77",
+      },
+    );
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: false });
+    expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        channelData: {
+          telegram: {
+            renameTopicTo: "Plan TASKS doc refresh (jeerreview)",
+          },
+        },
+      },
+    });
+  });
+
   it("keeps /codex_resume filter searches scoped to the bound workspace by default", async () => {
     discoverCodexAppServerThreadsMock.mockResolvedValue([
       {
@@ -775,6 +938,27 @@ describe("handleCodexCommand", () => {
       codexProjectKey: tempDir,
       codexAutoRoute: true,
     };
+
+    await handleCodexCommand(params, true);
+
+    expect(discoverCodexAppServerThreadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: params.sessionKey,
+        workspaceDir: undefined,
+        filter: "approvals",
+      }),
+    );
+  });
+
+  it("accepts Telegram smart-dash --cwd for /codex_resume", async () => {
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-789",
+        title: "OpenClaw approvals",
+        projectKey: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
+      },
+    ]);
+    const params = buildParams(`/codex_resume —cwd ${tempDir} approvals`);
 
     await handleCodexCommand(params, true);
 
@@ -842,6 +1026,182 @@ describe("handleCodexCommand", () => {
 
     expect(result?.reply?.text).toContain("Fix Telegram approval flow");
     expect(result?.reply?.text).not.toContain("Unrelated thread");
+  });
+
+  it("prefers the bound thread cwd over the stored session project key for /codex_resume scope", async () => {
+    runCommandWithTimeoutMock.mockImplementation(async (args: string[]) => {
+      const cwd = args[2];
+      if (cwd === tempDir) {
+        return {
+          code: 0,
+          stdout: "/Users/huntharo/.openclaw/.git\n",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      if (cwd === "/Users/huntharo/github/jeerreview") {
+        return {
+          code: 0,
+          stdout: "/Users/huntharo/github/jeerreview/.git\n",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      if (cwd === "/Users/huntharo/.openclaw/workspace-pwrdrvr") {
+        return {
+          code: 0,
+          stdout: "/Users/huntharo/.openclaw/.git\n",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      if (args.includes("--porcelain")) {
+        return {
+          code: 0,
+          stdout: "",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      return {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        signal: null,
+        timedOut: false,
+      };
+    });
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-jeerreview",
+        title: "Plan TASKS doc refresh",
+        projectKey: "/Users/huntharo/github/jeerreview",
+      },
+      {
+        threadId: "thread-openclaw",
+        title: "workspace-pwrdrvr",
+        projectKey: "/Users/huntharo/.openclaw/workspace-pwrdrvr",
+      },
+    ]);
+    const params = buildParams("/codex_resume");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-current",
+      codexProjectKey: tempDir,
+      codexAutoRoute: true,
+    };
+    readCodexAppServerThreadStateMock.mockResolvedValueOnce({
+      threadId: "thread-current",
+      cwd: "/Users/huntharo/github/jeerreview",
+      threadName: "JeerReview",
+      model: "gpt-5.4",
+      modelProvider: "openai",
+      serviceTier: undefined,
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      reasoningEffort: "high",
+    });
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain("Scope: /Users/huntharo/github/jeerreview");
+    expect(result?.reply?.text).toContain("Plan TASKS doc refresh");
+    expect(result?.reply?.text).not.toContain("workspace-pwrdrvr");
+  });
+
+  it("prefixes mixed-project /codex_resume buttons and includes worktree, dirty, and age badges", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-08T18:00:00Z"));
+    runCommandWithTimeoutMock.mockImplementation(async (args: string[]) => {
+      const cwd = args[2];
+      if (args.includes("--git-common-dir")) {
+        if (cwd === "/Users/huntharo/.codex/worktrees/41fb/openclaw") {
+          return {
+            code: 0,
+            stdout: "/Users/huntharo/github/openclaw/.git\n",
+            stderr: "",
+            signal: null,
+            timedOut: false,
+          };
+        }
+        if (cwd === "/Users/huntharo/github/jeerreview") {
+          return {
+            code: 0,
+            stdout: "/Users/huntharo/github/jeerreview/.git\n",
+            stderr: "",
+            signal: null,
+            timedOut: false,
+          };
+        }
+      }
+      if (args.includes("--porcelain")) {
+        return {
+          code: 0,
+          stdout:
+            cwd === "/Users/huntharo/.codex/worktrees/41fb/openclaw" ? " M src/file.ts\n" : "",
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        };
+      }
+      return {
+        code: 0,
+        stdout: "",
+        stderr: "",
+        signal: null,
+        timedOut: false,
+      };
+    });
+    discoverCodexAppServerThreadsMock.mockResolvedValue([
+      {
+        threadId: "thread-openclaw",
+        title: "Fix Telegram approval flow",
+        projectKey: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
+        createdAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
+        updatedAt: Date.now() - 60 * 1000,
+      },
+      {
+        threadId: "thread-jeerreview",
+        title: "Plan TASKS doc refresh",
+        projectKey: "/Users/huntharo/github/jeerreview",
+        createdAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
+        updatedAt: Date.now() - 2 * 60 * 60 * 1000,
+      },
+    ]);
+    const params = buildParams("/codex_resume --all");
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toContain(
+      "- thread-openclaw · 🌿 ✏️ openclaw: Fix Telegram approval flow U:1m C:2d",
+    );
+    expect(result?.reply?.text).toContain(
+      "- thread-jeerreview · jeerreview: Plan TASKS doc refresh U:2h C:3d",
+    );
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "🌿 ✏️ openclaw: Fix Telegram approval flow U:1m C:2d",
+              callback_data: "/codex_resume thread-openclaw",
+            },
+          ],
+          [
+            {
+              text: "jeerreview: Plan TASKS doc refresh U:2h C:3d",
+              callback_data: "/codex_resume thread-jeerreview",
+            },
+          ],
+        ],
+      },
+    });
   });
 
   it("uses current workspace when /codex list --cwd is provided without a path", async () => {
@@ -1838,7 +2198,15 @@ describe("handleCodexCommand", () => {
   });
 
   it("prompts for topic-only rename options when /codex_rename --sync has no name", async () => {
-    const params = buildParams("/codex_rename --sync", {}, { MessageThreadId: 1364 });
+    const params = buildParams(
+      "/codex_rename --sync",
+      {},
+      {
+        OriginatingChannel: "telegram",
+        OriginatingTo: "group:1234:topic:1364",
+        MessageThreadId: 1364,
+      },
+    );
     params.sessionEntry = {
       sessionId: "session-1",
       updatedAt: Date.now(),
@@ -1886,7 +2254,15 @@ describe("handleCodexCommand", () => {
   });
 
   it("accepts Telegram smart-dash --sync for /codex_rename and requests topic rename", async () => {
-    const params = buildParams("/codex_rename —sync Better topic name");
+    const params = buildParams(
+      "/codex_rename —sync Better topic name",
+      {},
+      {
+        OriginatingChannel: "telegram",
+        OriginatingTo: "group:1234:topic:77",
+        MessageThreadId: "77",
+      },
+    );
     params.sessionEntry = {
       sessionId: "session-1",
       updatedAt: Date.now(),
@@ -1909,6 +2285,36 @@ describe("handleCodexCommand", () => {
     );
   });
 
+  it("sync-renames via /codex_rename when routed back to Telegram from a non-Telegram surface", async () => {
+    const params = buildParams(
+      "/codex_rename --sync Better topic name",
+      {},
+      {
+        Surface: "webchat",
+        Provider: "webchat",
+        OriginatingChannel: "telegram",
+        OriginatingTo: "group:1234:topic:77",
+        To: "group:1234:topic:77",
+        MessageThreadId: "77",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Renamed Codex thread to: Better topic name");
+    expect(result?.reply?.channelData).toEqual({
+      telegram: { renameTopicTo: "Better topic name" },
+    });
+  });
+
   it("supports internal topic-only rename without mutating the Codex thread name", async () => {
     const params = buildParams("/codex_rename --sync --topic-only Better topic name");
     params.sessionEntry = {
@@ -1927,6 +2333,58 @@ describe("handleCodexCommand", () => {
       telegram: { renameTopicTo: "Better topic name" },
     });
     expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
+  });
+
+  it("allows /codex_rename --sync prompt flow when routed back to a Telegram topic from a non-Telegram surface", async () => {
+    const params = buildParams(
+      "/codex_rename --sync",
+      {},
+      {
+        Surface: "webchat",
+        Provider: "webchat",
+        OriginatingChannel: "telegram",
+        OriginatingTo: "group:1234:topic:1364",
+        To: "group:1234:topic:1364",
+        MessageThreadId: 1364,
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerThreadStateMock.mockResolvedValueOnce({
+      threadId: "thread-123",
+      threadName: "Plan TASKS doc refresh",
+      cwd: "/repo/openclaw",
+    });
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe(
+      "Choose how to rename this Telegram topic. The Codex thread name will stay as: Plan TASKS doc refresh",
+    );
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "Plan TASKS doc refresh (openclaw)",
+              callback_data: expect.stringMatching(/^cdxrn:p:/),
+            },
+          ],
+          [
+            {
+              text: "Plan TASKS doc refresh",
+              callback_data: expect.stringMatching(/^cdxrn:t:/),
+            },
+          ],
+        ],
+      },
+    });
   });
 
   it("runs Codex compaction with start, progress, and completion updates", async () => {

@@ -69,6 +69,7 @@ import {
 } from "../../channels/thread-bindings-policy.js";
 import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
+import { formatTimeAgo } from "../../infra/format-time/format-relative.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import { logWarn } from "../../logger.js";
@@ -105,6 +106,15 @@ type CodexAction =
   | "detach"
   | "list"
   | "help";
+
+type CodexResumeThreadDisplay = {
+  thread: CodexAppServerThreadSummary;
+  projectLabel?: string;
+  isWorktree: boolean;
+  hasChanges?: boolean;
+  createdAge?: string;
+  updatedAge?: string;
+};
 
 type SessionMutation = {
   providerOverride?: string;
@@ -237,7 +247,9 @@ function resolveHelpText(): string {
 }
 
 function normalizeCodexOptionDashes(text: string): string {
-  return text.replace(/[\u2010-\u2015\u2212]/g, "-");
+  return text
+    .replace(/(^|\s)[\u2010-\u2015\u2212](?=\S)/g, "$1--")
+    .replace(/[\u2010-\u2015\u2212]/g, "-");
 }
 
 function parseCodexRenameArguments(
@@ -834,6 +846,10 @@ function resolveCodexReplyRoute(params: HandleCommandsParams): {
   };
 }
 
+function shouldSyncCodexTelegramTopic(params: HandleCommandsParams): boolean {
+  return resolveCodexReplyRoute(params)?.channel === "telegram";
+}
+
 function hasActiveCodexSession(params: HandleCommandsParams): boolean {
   return Boolean(params.sessionEntry?.codexThreadId?.trim());
 }
@@ -1285,6 +1301,133 @@ async function filterCodexThreadsByProjectRoot(params: {
     }),
   );
   return params.threads.filter((_, index) => matches[index]);
+}
+
+async function readCodexThreadHasChanges(cwd?: string): Promise<boolean | undefined> {
+  const resolvedCwd = cwd?.trim();
+  if (!resolvedCwd) {
+    return undefined;
+  }
+  try {
+    const result = await runCommandWithTimeout(
+      ["git", "-C", resolvedCwd, "status", "--porcelain"],
+      { timeoutMs: 5_000, cwd: resolvedCwd },
+    );
+    if (result.code !== 0) {
+      return undefined;
+    }
+    return result.stdout.trim().length > 0;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatCodexResumeAgeLabel(timestampMs?: number): string | undefined {
+  if (!timestampMs || !Number.isFinite(timestampMs)) {
+    return undefined;
+  }
+  return formatTimeAgo(Math.max(0, Date.now() - timestampMs), { suffix: false });
+}
+
+function resolveCodexThreadProjectLabel(
+  projectRoot?: string,
+  projectKey?: string,
+): string | undefined {
+  const source = projectRoot?.trim() || projectKey?.trim();
+  if (!source) {
+    return undefined;
+  }
+  const normalized = source.replace(/[\\/]+$/, "");
+  const label = path.basename(normalized);
+  return label || undefined;
+}
+
+function buildCodexResumeDisplayLabel(params: {
+  display: CodexResumeThreadDisplay;
+  includeProjectPrefix: boolean;
+  maxChars?: number;
+}): string {
+  const icons = [
+    params.display.isWorktree ? "🌿" : undefined,
+    params.display.hasChanges ? "✏️" : undefined,
+  ].filter(Boolean);
+  const projectPrefix =
+    params.includeProjectPrefix && params.display.projectLabel
+      ? `${params.display.projectLabel}: `
+      : "";
+  const title =
+    params.display.thread.title?.trim() ||
+    path.basename(params.display.thread.projectKey?.trim() || "") ||
+    params.display.thread.threadId.trim();
+  const suffixParts = [
+    params.display.updatedAge ? `U:${params.display.updatedAge}` : undefined,
+    params.display.createdAge ? `C:${params.display.createdAge}` : undefined,
+  ].filter(Boolean);
+  const prefix = [icons.join(" "), projectPrefix].filter(Boolean).join(" ").trim();
+  const suffix = suffixParts.join(" ");
+  const maxChars = params.maxChars ?? 56;
+  const fixedLength =
+    (prefix ? `${prefix} `.length : 0) + title.length + (suffix ? ` ${suffix}`.length : 0);
+  if (fixedLength <= maxChars) {
+    return [prefix, title, suffix].filter(Boolean).join(" ");
+  }
+
+  const titleBudget = Math.max(
+    8,
+    maxChars - (prefix ? `${prefix} `.length : 0) - (suffix ? ` ${suffix}`.length : 0),
+  );
+  const clippedTitle =
+    title.length > titleBudget
+      ? `${title.slice(0, Math.max(1, titleBudget - 1)).trimEnd()}…`
+      : title;
+  return truncateCodexButtonLabel(
+    [prefix, clippedTitle, suffix].filter(Boolean).join(" "),
+    maxChars,
+  );
+}
+
+async function buildCodexResumeThreadDisplays(params: {
+  threads: CodexAppServerThreadSummary[];
+}): Promise<CodexResumeThreadDisplay[]> {
+  const projectRootCache = new Map<string, Promise<string | undefined>>();
+  const hasChangesCache = new Map<string, Promise<boolean | undefined>>();
+  const getProjectRoot = (cwd: string) => {
+    let cached = projectRootCache.get(cwd);
+    if (!cached) {
+      cached = resolveCodexProjectRoot(cwd);
+      projectRootCache.set(cwd, cached);
+    }
+    return cached;
+  };
+  const getHasChanges = (cwd: string) => {
+    let cached = hasChangesCache.get(cwd);
+    if (!cached) {
+      cached = readCodexThreadHasChanges(cwd);
+      hasChangesCache.set(cwd, cached);
+    }
+    return cached;
+  };
+
+  return await Promise.all(
+    params.threads.map(async (thread) => {
+      const threadProjectKey = thread.projectKey?.trim();
+      const projectRoot = threadProjectKey ? await getProjectRoot(threadProjectKey) : undefined;
+      const normalizedProjectKey = threadProjectKey ? path.resolve(threadProjectKey) : undefined;
+      const normalizedProjectRoot = projectRoot ? path.resolve(projectRoot) : undefined;
+      return {
+        thread,
+        projectLabel: resolveCodexThreadProjectLabel(projectRoot, threadProjectKey),
+        isWorktree: Boolean(
+          normalizedProjectKey &&
+          normalizedProjectRoot &&
+          normalizedProjectKey !== normalizedProjectRoot,
+        ),
+        hasChanges: threadProjectKey ? await getHasChanges(threadProjectKey) : undefined,
+        createdAge: formatCodexResumeAgeLabel(thread.createdAt),
+        updatedAge: formatCodexResumeAgeLabel(thread.updatedAt),
+      };
+    }),
+  );
 }
 
 function formatModelSummaryLines(params: {
@@ -2070,6 +2213,19 @@ async function resolveCodexWorkspaceFilter(
   };
 }
 
+async function isExistingDirectory(dir?: string): Promise<boolean> {
+  const trimmed = dir?.trim();
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const stat = await fs.stat(trimmed);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function parseCodexResumeArguments(params: {
   argsText: string;
   impliedWorkspaceDir?: string;
@@ -2154,24 +2310,35 @@ async function parseCodexResumeArguments(params: {
   };
 }
 
-function buildCodexResumeButtons(params: {
-  threads: Awaited<ReturnType<typeof discoverCodexAppServerThreads>>;
+function formatCodexResumeListLine(params: {
+  display: CodexResumeThreadDisplay;
+  includeProjectPrefix: boolean;
+}): string {
+  return `- ${params.display.thread.threadId} · ${buildCodexResumeDisplayLabel({
+    display: params.display,
+    includeProjectPrefix: params.includeProjectPrefix,
+    maxChars: 96,
+  })}`;
+}
+
+async function buildCodexResumeButtons(params: {
+  displays: CodexResumeThreadDisplay[];
+  includeProjectPrefix: boolean;
   syncTopic: boolean;
-}): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined {
-  const rows = params.threads
-    .slice(0, 10)
-    .map((thread) => {
+}): Promise<ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> | undefined> {
+  const rows = params.displays
+    .map((display) => {
+      const thread = display.thread;
       const callbackData = `/codex_resume${params.syncTopic ? " --sync" : ""} ${thread.threadId}`;
       if (callbackData.length > 64) {
         return null;
       }
-      const labelSource =
-        thread.title?.trim() ||
-        path.basename(thread.projectKey?.trim() || "") ||
-        thread.threadId.trim();
       return [
         {
-          text: truncateCodexButtonLabel(`Resume: ${labelSource}`),
+          text: buildCodexResumeDisplayLabel({
+            display,
+            includeProjectPrefix: params.includeProjectPrefix,
+          }),
           callback_data: callbackData,
         },
       ];
@@ -2543,7 +2710,7 @@ async function handleCodexRenameCommand(
   const workspaceDir =
     sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
   if (!parsed.name) {
-    if (params.command.surface !== "telegram" || typeof params.ctx.MessageThreadId !== "number") {
+    if (!shouldSyncCodexTelegramTopic(params) || typeof params.ctx.MessageThreadId !== "number") {
       return stopWithText(
         "Topic-only sync prompts are only available in Telegram topics. Use /codex_rename --sync <name> to rename both the Codex thread and the topic.",
       );
@@ -2599,7 +2766,7 @@ async function handleCodexRenameCommand(
       reply: {
         text: `Renamed topic to: ${parsed.name}`,
         channelData:
-          parsed.syncTopic && params.command.surface === "telegram"
+          parsed.syncTopic && shouldSyncCodexTelegramTopic(params)
             ? { telegram: { renameTopicTo: parsed.name } }
             : undefined,
       },
@@ -2617,7 +2784,7 @@ async function handleCodexRenameCommand(
     reply: {
       text: `Renamed Codex thread to: ${parsed.name}`,
       channelData:
-        parsed.syncTopic && params.command.surface === "telegram"
+        parsed.syncTopic && shouldSyncCodexTelegramTopic(params)
           ? { telegram: { renameTopicTo: parsed.name } }
           : undefined,
     },
@@ -3206,10 +3373,8 @@ async function bindCodexThreadToConversation(params: {
   syncTopic?: boolean;
 }): Promise<CommandHandlerResult> {
   const { commandParams, thread } = params;
-  const syncedTopicName =
-    params.syncTopic && commandParams.command.surface === "telegram"
-      ? buildCodexResumeTopicName(thread)
-      : undefined;
+  const shouldSyncTopic = params.syncTopic && shouldSyncCodexTelegramTopic(commandParams);
+  const syncedTopicName = shouldSyncTopic ? buildCodexResumeTopicName(thread) : undefined;
   const targetSession = await ensureCodexBoundSession({
     commandParams,
     projectKey: thread.projectKey ?? commandParams.workspaceDir,
@@ -3268,8 +3433,7 @@ async function bindCodexThreadToConversation(params: {
     {
       text: ["Codex thread bound.", summarizeThreadBinding(thread)].join("\n\n"),
       channelData:
-        shouldPinCodexBindingNotice(commandParams) ||
-        (params.syncTopic && commandParams.command.surface === "telegram")
+        shouldPinCodexBindingNotice(commandParams) || shouldSyncTopic
           ? {
               telegram: {
                 ...(shouldPinCodexBindingNotice(commandParams) ? { pin: true } : {}),
@@ -3320,7 +3484,35 @@ async function handleCodexResumeCommand(
   params: HandleCommandsParams,
   argsText: string,
 ): Promise<CommandHandlerResult> {
-  const impliedWorkspaceDir = params.sessionEntry?.codexProjectKey ?? undefined;
+  let impliedWorkspaceDir = params.sessionEntry?.codexProjectKey ?? undefined;
+  if (hasActiveCodexSession(params)) {
+    const target = resolveCodexBoundSession(params);
+    if (!("error" in target)) {
+      const sessionEntry =
+        resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+      const threadId = sessionEntry?.codexThreadId?.trim();
+      const workspaceDir =
+        sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+      if (threadId) {
+        try {
+          const threadState = await readCodexAppServerThreadState({
+            config: params.cfg,
+            sessionKey: target.sessionKey,
+            workspaceDir,
+            threadId,
+          });
+          const liveCwd = threadState.cwd?.trim();
+          impliedWorkspaceDir = (await isExistingDirectory(liveCwd))
+            ? liveCwd
+            : (impliedWorkspaceDir ?? workspaceDir);
+        } catch {
+          impliedWorkspaceDir = impliedWorkspaceDir ?? workspaceDir;
+        }
+      } else {
+        impliedWorkspaceDir = impliedWorkspaceDir ?? workspaceDir;
+      }
+    }
+  }
   const parsed = await parseCodexResumeArguments({
     argsText,
     impliedWorkspaceDir,
@@ -3345,17 +3537,24 @@ async function handleCodexResumeCommand(
     if (threads.length === 0) {
       return stopWithText("No Codex threads found.");
     }
+    const visibleThreads = threads.slice(0, 10);
+    const visibleDisplays = await buildCodexResumeThreadDisplays({
+      threads: visibleThreads,
+    });
+    const includeProjectPrefix = !parsed.projectRoot;
     const lines = ["Recent Codex threads:"];
     if (parsed.projectRoot) {
       lines.push(`Scope: ${parsed.projectRoot}`);
     }
-    if (parsed.syncTopic && params.command.surface === "telegram") {
+    if (parsed.syncTopic && shouldSyncCodexTelegramTopic(params)) {
       lines.push("Choosing a thread will also rename this topic to Thread Name (Project Name).");
     }
-    const visibleThreads = threads.slice(0, 10);
-    for (const thread of visibleThreads) {
+    for (const display of visibleDisplays) {
       lines.push(
-        `- ${thread.threadId}${thread.title ? ` · ${thread.title}` : ""}${thread.projectKey ? ` · ${thread.projectKey}` : ""}`,
+        formatCodexResumeListLine({
+          display,
+          includeProjectPrefix,
+        }),
       );
     }
     return {
@@ -3366,8 +3565,9 @@ async function handleCodexResumeCommand(
           params.command.surface === "telegram"
             ? {
                 telegram: {
-                  buttons: buildCodexResumeButtons({
-                    threads: visibleThreads,
+                  buttons: await buildCodexResumeButtons({
+                    displays: visibleDisplays,
+                    includeProjectPrefix,
                     syncTopic: parsed.syncTopic,
                   }),
                 },

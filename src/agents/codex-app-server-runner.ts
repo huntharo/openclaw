@@ -135,7 +135,9 @@ export type CodexAppServerThreadSummary = {
   title?: string;
   summary?: string;
   projectKey?: string;
+  createdAt?: number;
   updatedAt?: number;
+  gitBranch?: string;
 };
 
 export type CodexAppServerThreadReplay = {
@@ -1809,10 +1811,19 @@ function extractThreadsFromValue(value: unknown): CodexAppServerThreadSummary[] 
       projectKey:
         pickString(record, ["projectKey", "project_key", "cwd"]) ??
         pickString(sessionRecord ?? {}, ["cwd", "projectKey", "project_key"]),
+      createdAt: normalizeEpochTimestamp(
+        pickNumber(record, ["createdAt", "created_at"]) ??
+          pickNumber(sessionRecord ?? {}, ["createdAt", "created_at"]),
+      ),
       updatedAt: normalizeEpochTimestamp(
         pickNumber(record, ["updatedAt", "updated_at", "lastActivityAt", "createdAt"]) ??
           pickNumber(sessionRecord ?? {}, ["updatedAt", "updated_at", "lastActivityAt"]),
       ),
+      gitBranch:
+        pickString(asRecord(record.gitInfo) ?? {}, ["branch"]) ??
+        pickString(asRecord(record.git_info) ?? {}, ["branch"]) ??
+        pickString(asRecord(sessionRecord?.gitInfo) ?? {}, ["branch"]) ??
+        pickString(asRecord(sessionRecord?.git_info) ?? {}, ["branch"]),
     });
   }
   return [...summaries.values()].toSorted(
