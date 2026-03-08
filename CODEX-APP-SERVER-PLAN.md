@@ -159,6 +159,7 @@ The local Codex source review on March 7, 2026 changed the implementation direct
 - `/codex_rename`
   - classification: structured App Server operation
   - implementation note: use `thread/name/set`, not a relayed conversational turn
+  - sync-only note: `/codex_rename --sync` with no explicit name should prompt with `Thread Name (Project Name)` and `Thread Name` topic-name buttons; choosing one should rename only the channel topic and should not mutate or clear the remote Codex thread name
 - `/codex_init`
   - classification: relayed turn start
   - implementation note: this is the main mirrored command we currently expect to seed as a user turn or built-in init prompt

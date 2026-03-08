@@ -77,6 +77,8 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
   - `/codex_plan`
   - `/codex_diff`
   - `/codex_mcp`
+- `/codex_rename --sync` with no explicit name should present two topic-only rename options, `Thread Name (Project Name)` and `Thread Name`, via typed callback buttons.
+- Choosing one of those `/codex_rename --sync` no-name options must rename only the channel topic; it must not rename the remote Codex thread and must not clear the existing thread name.
 - Treat many of these as client-side features rather than "ask Codex to answer a slash command."
 - Only relay a mirrored command as a normal turn when the Codex source or protocol clearly indicates it is actually implemented that way.
 
