@@ -64,6 +64,7 @@ type DeliverLaneTextParams = {
   payload: ReplyPayload;
   infoKind: string;
   previewButtons?: TelegramInlineButtons;
+  forceStandardDelivery?: boolean;
   allowPreviewUpdateForNonFinal?: boolean;
 };
 
