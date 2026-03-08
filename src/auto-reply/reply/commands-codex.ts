@@ -1427,6 +1427,7 @@ function buildCodexRenameTopicButtons(params: {
 
 const CODEX_PLAN_INLINE_TEXT_LIMIT = 2600;
 const CODEX_PLAN_PROGRESS_DELAY_MS = 12_000;
+const CODEX_REVIEW_PROGRESS_DELAY_MS = 12_000;
 const CODEX_DIRECT_TELEGRAM_TYPING_INTERVAL_MS = 4_500;
 
 function buildCodexPlanPromptActions(): CodexPlanPromptAction[] {
@@ -2589,6 +2590,7 @@ async function handleCodexReviewCommand(
   }
   const workspaceDir =
     sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  const directTyping = createDirectCodexTelegramTypingController(params);
   await sendCodexReplies({
     commandParams: params,
     sessionKey: target.sessionKey,
@@ -2602,34 +2604,66 @@ async function handleCodexReviewCommand(
   }).catch((error) => {
     logVerbose(`Failed to send Codex review start message: ${String(error)}`);
   });
-  const reviewResult = await startCodexAppServerReview({
-    sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
-    sessionKey: target.sessionKey,
-    workspaceDir,
-    config: params.cfg,
-    runId: crypto.randomUUID(),
-    threadId,
-    target: argsText.trim()
-      ? { type: "custom", instructions: argsText.trim() }
-      : { type: "uncommittedChanges" },
-    onToolResult: async (payload) => {
-      if (!payload.text?.trim() && !payload.channelData) {
+  await directTyping?.start();
+  let keepaliveSent = false;
+  let reviewVisible = false;
+  const progressTimer = setTimeout(() => {
+    void (async () => {
+      if (reviewVisible || keepaliveSent) {
         return;
       }
+      keepaliveSent = true;
+      await directTyping?.refresh();
       await sendCodexReplies({
         commandParams: params,
         sessionKey: target.sessionKey,
-        payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+        payloads: [{ text: "Codex is still reviewing..." }],
+      }).catch((error) => {
+        logVerbose(`Failed to send Codex review progress update: ${String(error)}`);
       });
-    },
-    onPendingUserInput: async (pending) => {
-      await updateCodexPendingInputState({
-        commandParams: params,
+    })();
+  }, CODEX_REVIEW_PROGRESS_DELAY_MS);
+  const reviewResult = await (async () => {
+    try {
+      return await startCodexAppServerReview({
+        sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
         sessionKey: target.sessionKey,
-        pending,
+        workspaceDir,
+        config: params.cfg,
+        runId: crypto.randomUUID(),
+        threadId,
+        target: argsText.trim()
+          ? { type: "custom", instructions: argsText.trim() }
+          : { type: "uncommittedChanges" },
+        onToolResult: async (payload) => {
+          if (!payload.text?.trim() && !payload.channelData) {
+            return;
+          }
+          reviewVisible = true;
+          await directTyping?.refresh();
+          await sendCodexReplies({
+            commandParams: params,
+            sessionKey: target.sessionKey,
+            payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+          });
+        },
+        onPendingUserInput: async (pending) => {
+          if (pending) {
+            reviewVisible = true;
+            await directTyping?.refresh();
+          }
+          await updateCodexPendingInputState({
+            commandParams: params,
+            sessionKey: target.sessionKey,
+            pending,
+          });
+        },
       });
-    },
-  });
+    } finally {
+      clearTimeout(progressTimer);
+      directTyping?.stop();
+    }
+  })();
   const parsed = parseCodexReviewOutput(reviewResult.reviewText);
   const reviewRequestId = crypto.randomUUID();
   const reviewActions = buildCodexReviewActions(parsed.findings);
