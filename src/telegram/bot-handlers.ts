@@ -11,6 +11,10 @@ import {
 } from "../agents/codex-app-server-pending-input.js";
 import { parseCodexPlanActionCallbackData } from "../agents/codex-app-server-plan-actions.js";
 import {
+  matchesCodexRenameActionRequestToken,
+  parseCodexRenameActionCallbackData,
+} from "../agents/codex-app-server-rename-actions.js";
+import {
   matchesCodexReviewActionRequestToken,
   parseCodexReviewActionCallbackData,
 } from "../agents/codex-app-server-review-actions.js";
@@ -1501,6 +1505,106 @@ export const registerTelegramHandlers = ({
           base: callbackMessage,
           from: callback.from,
           text: action.prompt,
+        });
+        await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
+          forceWasMentioned: true,
+          messageIdOverride: callback.id,
+        });
+        return;
+      }
+
+      const codexRenameCallback = parseCodexRenameActionCallbackData(data);
+      if (codexRenameCallback) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex topic rename prompt is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex topic rename prompt is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        let storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
+        let sessionStore = loadSessionStore(storePath);
+        let effectiveSessionKey = targetSessionKey;
+        let renameEntry = sessionStore[effectiveSessionKey];
+        if (!renameEntry?.codexRenameTopicRequestId?.trim()) {
+          const fallbackEntry = Object.entries(sessionStore).find(([, entry]) =>
+            entry?.codexRenameTopicRequestId?.trim(),
+          );
+          if (fallbackEntry) {
+            [effectiveSessionKey, renameEntry] = fallbackEntry;
+          }
+        }
+        if (!renameEntry?.codexRenameTopicRequestId?.trim()) {
+          const defaultStorePath = resolveStorePath(cfg.session?.store);
+          if (defaultStorePath !== storePath) {
+            const defaultStore = loadSessionStore(defaultStorePath);
+            let defaultSessionKey = targetSessionKey;
+            let defaultEntry = defaultStore[defaultSessionKey];
+            if (!defaultEntry?.codexRenameTopicRequestId?.trim()) {
+              const fallbackEntry = Object.entries(defaultStore).find(([, entry]) =>
+                entry?.codexRenameTopicRequestId?.trim(),
+              );
+              if (fallbackEntry) {
+                [defaultSessionKey, defaultEntry] = fallbackEntry;
+              }
+            }
+            if (defaultEntry?.codexRenameTopicRequestId?.trim()) {
+              storePath = defaultStorePath;
+              sessionStore = defaultStore;
+              effectiveSessionKey = defaultSessionKey;
+              renameEntry = defaultEntry;
+            }
+          }
+        }
+        const requestId =
+          renameEntry?.codexRenameTopicRequestId?.trim() || codexRenameCallback.requestToken.trim();
+        const requestTokenMatches =
+          requestId != null &&
+          matchesCodexRenameActionRequestToken(requestId, codexRenameCallback.requestToken);
+        const optionIndex = codexRenameCallback.action === "withProject" ? 0 : 1;
+        const optionName = requestTokenMatches
+          ? renameEntry?.codexRenameTopicOptions?.[optionIndex]?.trim()
+          : undefined;
+        if (!optionName) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex topic rename prompt is no longer active.");
+          return;
+        }
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          const entry = store[effectiveSessionKey];
+          if (!entry) {
+            return;
+          }
+          delete entry.codexRenameTopicRequestId;
+          delete entry.codexRenameTopicOptions;
+          entry.updatedAt = Date.now();
+          store[effectiveSessionKey] = entry;
+        }).catch(() => undefined);
+        const syntheticMessage = buildSyntheticTextMessage({
+          base: callbackMessage,
+          from: callback.from,
+          text: `/codex_rename --sync --topic-only ${optionName}`,
         });
         await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
           forceWasMentioned: true,

@@ -1302,6 +1302,54 @@ describe("handleCodexCommand", () => {
     expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
   });
 
+  it("prompts for topic-only rename options when /codex_rename --sync has no name", async () => {
+    const params = buildParams("/codex_rename --sync", {}, { MessageThreadId: 1364 });
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    readCodexAppServerThreadStateMock.mockResolvedValueOnce({
+      threadId: "thread-123",
+      threadName: "Plan TASKS doc refresh",
+      cwd: "/repo/openclaw",
+    });
+
+    const result = await handleCodexCommand(params, true);
+    const store = loadSessionStore(storePath);
+
+    expect(result?.reply?.text).toBe(
+      "Choose how to rename this Telegram topic. The Codex thread name will stay as: Plan TASKS doc refresh",
+    );
+    expect(result?.reply?.channelData).toEqual({
+      telegram: {
+        buttons: [
+          [
+            {
+              text: "Plan TASKS doc refresh (openclaw)",
+              callback_data: expect.stringMatching(/^cdxrn:p:/),
+            },
+          ],
+          [
+            {
+              text: "Plan TASKS doc refresh",
+              callback_data: expect.stringMatching(/^cdxrn:t:/),
+            },
+          ],
+        ],
+      },
+    });
+    expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
+    expect(store[params.sessionKey]?.codexRenameTopicRequestId).toBeTruthy();
+    expect(store[params.sessionKey]?.codexRenameTopicOptions).toEqual([
+      "Plan TASKS doc refresh (openclaw)",
+      "Plan TASKS doc refresh",
+    ]);
+  });
+
   it("accepts Telegram smart-dash --sync for /codex_rename and requests topic rename", async () => {
     const params = buildParams("/codex_rename —sync Better topic name");
     params.sessionEntry = {
@@ -1324,6 +1372,26 @@ describe("handleCodexCommand", () => {
         name: "Better topic name",
       }),
     );
+  });
+
+  it("supports internal topic-only rename without mutating the Codex thread name", async () => {
+    const params = buildParams("/codex_rename --sync --topic-only Better topic name");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Renamed topic to: Better topic name");
+    expect(result?.reply?.channelData).toEqual({
+      telegram: { renameTopicTo: "Better topic name" },
+    });
+    expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
   });
 
   it("starts Codex compaction through thread/compact/start", async () => {

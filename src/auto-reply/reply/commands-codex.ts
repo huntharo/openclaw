@@ -18,6 +18,10 @@ import {
   type CodexPlanAction,
 } from "../../agents/codex-app-server-plan-actions.js";
 import {
+  buildCodexRenameActionCallbackData,
+  type CodexRenameTopicAction,
+} from "../../agents/codex-app-server-rename-actions.js";
+import {
   buildCodexReviewActionCallbackData,
   type CodexReviewAction,
 } from "../../agents/codex-app-server-review-actions.js";
@@ -107,6 +111,8 @@ type SessionMutation = {
   codexReviewActionRequestId?: string;
   codexReviewActions?: CodexReviewAction[];
   codexPlanPromptRequestId?: string;
+  codexRenameTopicRequestId?: string;
+  codexRenameTopicOptions?: string[];
 };
 
 type CodexPlanPromptAction = {
@@ -118,6 +124,11 @@ type CodexPlanDelivery = {
   payloads: ReplyPayload[];
   promptRequestId: string;
   attachmentFallbackText?: string;
+};
+
+type CodexRenameTopicOption = {
+  action: CodexRenameTopicAction;
+  name: string;
 };
 
 type CodexTargetSession = {
@@ -185,26 +196,33 @@ function normalizeCodexOptionDashes(text: string): string {
   return text.replace(/[\u2010-\u2015\u2212]/g, "-");
 }
 
-function parseCodexRenameArguments(argsText: string): { name: string; syncTopic: boolean } | null {
+function parseCodexRenameArguments(
+  argsText: string,
+): { name?: string; syncTopic: boolean; topicOnly: boolean } | null {
   const normalized = normalizeCodexOptionDashes(argsText).trim();
   if (!normalized) {
     return null;
   }
   const tokens = normalized.split(/\s+/).filter(Boolean);
   let syncTopic = false;
+  let topicOnly = false;
   const nameTokens: string[] = [];
   for (const token of tokens) {
     if (token === "--sync" || token === "-sync") {
       syncTopic = true;
       continue;
     }
+    if (token === "--topic-only") {
+      topicOnly = true;
+      continue;
+    }
     nameTokens.push(token);
   }
   const name = nameTokens.join(" ").trim();
-  if (!name) {
+  if (!name && !syncTopic) {
     return null;
   }
-  return { name, syncTopic };
+  return name ? { name, syncTopic, topicOnly } : { syncTopic, topicOnly };
 }
 
 function buildPendingInputReplay(entry: HandleCommandsParams["sessionEntry"]): string | undefined {
@@ -1376,6 +1394,37 @@ function buildCodexReviewActionButtons(params: {
   ]);
 }
 
+function buildCodexRenameTopicOptions(params: {
+  threadName: string;
+  projectName: string;
+}): CodexRenameTopicOption[] {
+  return [
+    {
+      action: "withProject",
+      name: `${params.threadName} (${params.projectName})`,
+    },
+    {
+      action: "threadOnly",
+      name: params.threadName,
+    },
+  ];
+}
+
+function buildCodexRenameTopicButtons(params: {
+  requestId: string;
+  options: CodexRenameTopicOption[];
+}): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> {
+  return params.options.map((option) => [
+    {
+      text: truncateCodexButtonLabel(option.name),
+      callback_data: buildCodexRenameActionCallbackData({
+        requestId: params.requestId,
+        action: option.action,
+      }),
+    },
+  ]);
+}
+
 const CODEX_PLAN_INLINE_TEXT_LIMIT = 2600;
 const CODEX_PLAN_PROGRESS_DELAY_MS = 12_000;
 const CODEX_DIRECT_TELEGRAM_TYPING_INTERVAL_MS = 4_500;
@@ -1865,6 +1914,22 @@ async function updateCodexPlanPromptState(params: {
   );
 }
 
+async function updateCodexRenameTopicState(params: {
+  commandParams: HandleCommandsParams;
+  sessionKey: string;
+  requestId?: string;
+  options?: string[];
+}): Promise<void> {
+  await updateCodexSession(
+    params.commandParams,
+    {
+      codexRenameTopicRequestId: params.requestId,
+      codexRenameTopicOptions: params.options,
+    },
+    params.sessionKey,
+  );
+}
+
 async function runCodexSlashCommandDirectly(params: {
   commandParams: HandleCommandsParams;
   slashName: string;
@@ -2149,6 +2214,69 @@ async function handleCodexRenameCommand(
   }
   const workspaceDir =
     sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+  if (!parsed.name) {
+    if (params.command.surface !== "telegram" || typeof params.ctx.MessageThreadId !== "number") {
+      return stopWithText(
+        "Topic-only sync prompts are only available in Telegram topics. Use /codex_rename --sync <name> to rename both the Codex thread and the topic.",
+      );
+    }
+    const threadState = await readCodexAppServerThreadState({
+      config: params.cfg,
+      sessionKey: target.sessionKey,
+      workspaceDir,
+      threadId,
+    });
+    const threadName = threadState.threadName?.trim();
+    if (!threadName) {
+      return stopWithText(
+        "Codex rename sync options are unavailable until the bound thread has a name.",
+      );
+    }
+    const projectName = path.basename(workspaceDir.replace(/[\\/]+$/, "").trim()) || "Project";
+    const requestId = crypto.randomUUID();
+    const options = buildCodexRenameTopicOptions({
+      threadName,
+      projectName,
+    });
+    await updateCodexRenameTopicState({
+      commandParams: params,
+      sessionKey: target.sessionKey,
+      requestId,
+      options: options.map((option) => option.name),
+    });
+    return {
+      shouldContinue: false,
+      reply: {
+        text: `Choose how to rename this Telegram topic. The Codex thread name will stay as: ${threadName}`,
+        channelData: {
+          telegram: {
+            buttons: buildCodexRenameTopicButtons({
+              requestId,
+              options,
+            }),
+          },
+        },
+      },
+    };
+  }
+  await updateCodexRenameTopicState({
+    commandParams: params,
+    sessionKey: target.sessionKey,
+    requestId: undefined,
+    options: undefined,
+  });
+  if (parsed.topicOnly) {
+    return {
+      shouldContinue: false,
+      reply: {
+        text: `Renamed topic to: ${parsed.name}`,
+        channelData:
+          parsed.syncTopic && params.command.surface === "telegram"
+            ? { telegram: { renameTopicTo: parsed.name } }
+            : undefined,
+      },
+    };
+  }
   await setCodexAppServerThreadName({
     config: params.cfg,
     sessionKey: target.sessionKey,

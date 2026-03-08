@@ -445,6 +445,51 @@ describe("dispatchTelegramMessage draft streaming", () => {
     );
   });
 
+  it("bypasses preview finalization when the final payload renames a Telegram topic", async () => {
+    const draftStream = createDraftStream(1001);
+    createTelegramDraftStream
+      .mockImplementationOnce(() => draftStream)
+      .mockImplementationOnce(() => createDraftStream());
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({ text: "Renamed topic to: Better topic" });
+        await dispatcherOptions.deliver(
+          {
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          },
+          { kind: "final" },
+        );
+        return { queuedFinal: true };
+      },
+    );
+    deliverReplies.mockResolvedValue({ delivered: true });
+    editMessageTelegram.mockResolvedValue({ ok: true, chatId: "123", messageId: "1001" });
+
+    await dispatchWithContext({ context: createContext(), streamMode: "partial" });
+
+    expect(editMessageTelegram).not.toHaveBeenCalled();
+    expect(deliverReplies).toHaveBeenCalledTimes(1);
+    expect(deliverReplies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replies: [
+          expect.objectContaining({
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          }),
+        ],
+      }),
+    );
+  });
+
   it.each([
     { label: "default account config", telegramCfg: {} },
     { label: "account blockStreaming override", telegramCfg: { blockStreaming: true } },

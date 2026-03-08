@@ -180,6 +180,10 @@ export type SessionEntry = {
   codexReviewActions?: CodexReviewAction[];
   /** Last actionable Codex plan prompt id exposed to channel buttons. */
   codexPlanPromptRequestId?: string;
+  /** Last actionable Codex topic-rename prompt id exposed to channel buttons. */
+  codexRenameTopicRequestId?: string;
+  /** Topic-name options offered by the last actionable Codex rename prompt. */
+  codexRenameTopicOptions?: string[];
   label?: string;
   displayName?: string;
   channel?: string;
