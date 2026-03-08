@@ -937,6 +937,50 @@ describe("handleCodexCommand", () => {
     expect(store[params.sessionKey]?.codexPlanPromptRequestId).toBeTruthy();
   });
 
+  it("normalizes telegram targets before sending direct Codex typing cues", async () => {
+    const params = buildParams(
+      "/codex_plan break this into phases",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "telegram:-1003841603622",
+        To: "telegram:-1003841603622",
+        MessageThreadId: "1364",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    runCodexAppServerAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Fallback assistant summary" }],
+      meta: {
+        agentMeta: {
+          sessionId: "thread-123",
+        },
+        codexPlanArtifact: {
+          explanation: "Break the work into safe increments.",
+          steps: [{ step: "Capture the current behavior", status: "completed" }],
+          markdown: "# Plan\n\n- Patch the command",
+        },
+      },
+    });
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: false });
+    expect(sendChatActionMock).toHaveBeenCalledWith(
+      "-1003841603622",
+      "typing",
+      expect.objectContaining({ message_thread_id: 1364 }),
+    );
+  });
+
   it("delivers large /codex_plan results as a markdown attachment plus a separate prompt", async () => {
     const params = buildParams(
       "/codex_plan write the full rollout document",

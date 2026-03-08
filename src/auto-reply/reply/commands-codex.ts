@@ -70,6 +70,7 @@ import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolveTelegramAccount } from "../../telegram/accounts.js";
 import { buildTypingThreadParams } from "../../telegram/bot/helpers.js";
 import { createTelegramSendChatActionHandler } from "../../telegram/sendchataction-401-backoff.js";
+import { parseTelegramTarget } from "../../telegram/targets.js";
 import { shortenHomePath } from "../../utils.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveAcpCommandBindingContext } from "./commands-acp/context.js";
@@ -1592,6 +1593,7 @@ async function sendCodexReplies(params: {
       });
       if (account.enabled && account.token) {
         const bot = new Bot(account.token);
+        const typingChatId = parseTelegramTarget(route.to).chatId;
         const typingThreadId =
           typeof route.threadId === "number"
             ? route.threadId
@@ -1608,7 +1610,7 @@ async function sendCodexReplies(params: {
           logger: (message) => logVerbose(`telegram: ${message}`),
         });
         await sendChatActionHandler
-          .sendChatAction(route.to, "typing", buildTypingThreadParams(typingThreadId))
+          .sendChatAction(typingChatId, "typing", buildTypingThreadParams(typingThreadId))
           .catch((error) => {
             logVerbose(`Failed to send direct Codex typing cue: ${String(error)}`);
           });
