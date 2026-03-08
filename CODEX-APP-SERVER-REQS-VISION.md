@@ -81,6 +81,9 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 - Choosing one of those `/codex_rename --sync` no-name options must rename only the channel topic; it must not rename the remote Codex thread and must not clear the existing thread name.
 - Treat many of these as client-side features rather than "ask Codex to answer a slash command."
 - Only relay a mirrored command as a normal turn when the Codex source or protocol clearly indicates it is actually implemented that way.
+- `/codex_compact` should acknowledge immediately, keep typing alive while compaction runs, and report starting and final context usage.
+- Compact progress updates should only repeat context usage when the usage snapshot actually changes.
+- `/codex_status` should show bound-thread context usage from real App Server token-usage events when available; if no real snapshot has arrived yet, it should say that the value is unavailable rather than inventing one.
 
 ### B) Approvals
 

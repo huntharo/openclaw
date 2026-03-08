@@ -251,6 +251,10 @@ Current implementation notes:
   - Telegram delivery then calls `editForumTopic(...)` so the topic title matches the Codex thread title after the rename succeeds
 - `/codex_compact`
   - handled in [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts) via `thread/compact/start`
+  - startup ack and final completion are emitted from `handleCodexCompactCommand`
+  - compaction progress is driven by `compactCodexAppServerThread(...)` in [src/agents/codex-app-server-runner.ts](src/agents/codex-app-server-runner.ts)
+  - context usage is sourced from `thread/tokenUsage/updated` parsing in `extractThreadTokenUsageSnapshot(...)`, persisted through the shared runner metadata path, and rendered locally in `/codex_status`
+  - keepalive progress messages only include `Latest context usage: ...` when the usage snapshot changed from the last emitted snapshot
 
 ### 3) Relayed turn commands
 
