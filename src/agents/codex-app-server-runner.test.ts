@@ -783,6 +783,12 @@ describe("turn steer methods", () => {
   });
 });
 
+describe("turn interrupt methods", () => {
+  it("uses only the documented turn/interrupt rpc method", () => {
+    expect(__testing.turnInterruptMethods).toEqual(["turn/interrupt"]);
+  });
+});
+
 describe("mergeAssistantReplyAndEmit", () => {
   it("emits cumulative preview text for snapshot-style partials", async () => {
     const onPartialReply = vi.fn();

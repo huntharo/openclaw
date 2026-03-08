@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   clearActiveCodexAppServerRun,
+  interruptCodexAppServerRunBySessionKey,
   isCodexAppServerRunActive,
   isCodexAppServerRunStreaming,
   queueCodexAppServerMessage,
@@ -89,5 +90,29 @@ describe("codex app server run registry", () => {
       expect(submitPendingInput).toHaveBeenCalledWith({ actionIndex: 1 });
     });
     clearActiveCodexAppServerRun("s4", handle, "agent:main:telegram:group:1:topic:10");
+  });
+
+  it("interrupts active runs by session key", async () => {
+    const interrupt = vi.fn().mockResolvedValue(undefined);
+    const handle = {
+      queueMessage: vi.fn().mockResolvedValue(true),
+      submitPendingInput: vi.fn().mockResolvedValue(true),
+      interrupt,
+      isStreaming: () => true,
+      isAwaitingInput: () => false,
+    };
+    setActiveCodexAppServerRun("s5", handle, "agent:main:telegram:group:1:topic:11");
+
+    expect(interruptCodexAppServerRunBySessionKey("agent:main:telegram:group:1:topic:11")).toBe(
+      true,
+    );
+    await vi.waitFor(() => {
+      expect(interrupt).toHaveBeenCalledTimes(1);
+    });
+
+    clearActiveCodexAppServerRun("s5", handle, "agent:main:telegram:group:1:topic:11");
+    expect(interruptCodexAppServerRunBySessionKey("agent:main:telegram:group:1:topic:11")).toBe(
+      false,
+    );
   });
 });

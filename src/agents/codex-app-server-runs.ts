@@ -70,6 +70,15 @@ export function interruptCodexAppServerRun(sessionId: string): boolean {
   return true;
 }
 
+export function interruptCodexAppServerRunBySessionKey(sessionKey: string): boolean {
+  const handle = ACTIVE_CODEX_RUNS_BY_SESSION_KEY.get(sessionKey);
+  if (!handle) {
+    return false;
+  }
+  void handle.interrupt();
+  return true;
+}
+
 export function isCodexAppServerRunActive(sessionId: string): boolean {
   return ACTIVE_CODEX_RUNS.has(sessionId);
 }

@@ -24,6 +24,10 @@ export const CODEX_BUILT_IN_MIRRORED_COMMANDS = [
     description: "Run Codex review on the current changes.",
   },
   {
+    baseName: "stop",
+    description: "Stop the active Codex turn.",
+  },
+  {
     baseName: "rename",
     description: "Rename the current Codex thread.",
   },

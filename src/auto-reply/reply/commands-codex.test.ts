@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
+import {
+  clearActiveCodexAppServerRun,
+  setActiveCodexAppServerRun,
+} from "../../agents/codex-app-server-runs.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
@@ -178,10 +182,19 @@ describe("handleCodexCommand", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    clearActiveCodexAppServerRun("session-stop", stopHandle, "stop-session-key");
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  const stopHandle = {
+    queueMessage: vi.fn().mockResolvedValue(true),
+    submitPendingInput: vi.fn().mockResolvedValue(true),
+    interrupt: vi.fn().mockResolvedValue(undefined),
+    isStreaming: () => true,
+    isAwaitingInput: () => false,
+  };
 
   function buildParams(
     commandBody: string,
@@ -774,7 +787,7 @@ describe("handleCodexCommand", () => {
 
     expect(result?.reply?.text).toContain("Pending input: req-123");
     expect(result?.reply?.text).toContain("Approve deploy?");
-    expect(result?.reply?.text).toContain("Mirrored commands: built-in=13");
+    expect(result?.reply?.text).toContain("Mirrored commands: built-in=14 discovered=0");
     expect(
       (result?.reply?.channelData as { telegram?: { buttons?: unknown[][] } } | undefined)?.telegram
         ?.buttons,
@@ -1337,6 +1350,46 @@ describe("handleCodexCommand", () => {
 
     expect(result?.reply?.text).toBe("Fast mode is on.");
     expect(setCodexAppServerThreadServiceTierMock).not.toHaveBeenCalled();
+  });
+
+  it("stops the active bound Codex run through the session-key registry", async () => {
+    const params = buildParams("/codex_stop");
+    params.sessionKey = "stop-session-key";
+    params.sessionEntry = {
+      sessionId: "session-stop",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    stopHandle.interrupt.mockClear();
+    setActiveCodexAppServerRun("session-stop", stopHandle, "stop-session-key");
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Stopping Codex now.");
+    await vi.waitFor(() => {
+      expect(stopHandle.interrupt).toHaveBeenCalledTimes(1);
+    });
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("reports when /codex_stop has no active Codex run to interrupt", async () => {
+    const params = buildParams("/codex_stop");
+    params.sessionEntry = {
+      sessionId: "session-stop-idle",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("No active Codex run to stop.");
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
 
   it("strips the Telegram bot suffix before reading /codex_skills locally", async () => {

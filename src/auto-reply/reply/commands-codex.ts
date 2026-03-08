@@ -41,6 +41,7 @@ import {
   type PendingCodexUserInputState,
   type CodexAppServerThreadSummary,
 } from "../../agents/codex-app-server-runner.js";
+import { interruptCodexAppServerRunBySessionKey } from "../../agents/codex-app-server-runs.js";
 import {
   getCodexAppServerAvailabilityError,
   getCodexAppServerRuntimeStatus,
@@ -145,6 +146,7 @@ function resolveHelpText(): string {
     "/codex_skills [input]",
     "/codex_plan [input]",
     "/codex_review [input]",
+    "/codex_stop",
     "/codex_status",
     "/codex_rename [input]",
     "/codex_init [input]",
@@ -1659,6 +1661,24 @@ async function handleCodexFastCommand(
   return stopWithText(formatCodexFastModeSetText(effectiveTier));
 }
 
+async function handleCodexStopCommand(params: HandleCommandsParams): Promise<CommandHandlerResult> {
+  const target = resolveCodexBoundSession(params);
+  if ("error" in target) {
+    return stopWithText(target.error);
+  }
+  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
+  const threadId = sessionEntry?.codexThreadId?.trim();
+  if (!threadId) {
+    return stopWithText(
+      "Codex stop is unavailable until a Codex thread is started or joined in this conversation.",
+    );
+  }
+  if (!interruptCodexAppServerRunBySessionKey(target.sessionKey)) {
+    return stopWithText("No active Codex run to stop.");
+  }
+  return stopWithText("Stopping Codex now.");
+}
+
 async function handleCodexMirroredStatusCommand(
   params: HandleCommandsParams,
 ): Promise<CommandHandlerResult> {
@@ -2138,6 +2158,9 @@ export const handleCodexCommand: CommandHandler = async (params, allowTextComman
     }
     if (invocation.baseName === "plan") {
       return await handleCodexPlanCommand(params, invocation.argsText);
+    }
+    if (invocation.baseName === "stop") {
+      return await handleCodexStopCommand(params);
     }
     if (invocation.baseName === "model") {
       const trimmedArgs = invocation.argsText.trim();

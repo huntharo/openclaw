@@ -26,6 +26,7 @@ import { stableStringify } from "./stable-stringify.js";
 const log = createSubsystemLogger("agent/codex-app-server");
 const DEFAULT_PROTOCOL_VERSION = "1.0";
 const TURN_STEER_METHODS = ["turn/steer"] as const;
+const TURN_INTERRUPT_METHODS = ["turn/interrupt"] as const;
 
 type JsonRpcId = string | number;
 
@@ -2735,7 +2736,7 @@ export async function startCodexAppServerReview(params: {
       if (reviewThreadId) {
         await requestWithFallbacks({
           client,
-          methods: ["turn/interrupt"],
+          methods: [...TURN_INTERRUPT_METHODS],
           payloads: [
             { threadId: reviewThreadId, turnId: turnId || undefined },
             { thread_id: reviewThreadId, turn_id: turnId || undefined },
@@ -3114,7 +3115,7 @@ export async function runCodexAppServerAgent(
       await params.onInterrupted?.();
       await requestWithFallbacks({
         client,
-        methods: ["turn/interrupt", "thread/interrupt"],
+        methods: [...TURN_INTERRUPT_METHODS],
         payloads: [
           { threadId, turnId: turnId || undefined },
           { thread_id: threadId, turn_id: turnId || undefined },
@@ -3401,6 +3402,7 @@ export const __testing = {
   extractThreadsFromValue,
   extractThreadState,
   extractThreadReplayFromReadResult,
+  turnInterruptMethods: TURN_INTERRUPT_METHODS,
   formatRateLimitWindowName,
   isTransportClosedError,
   isMethodUnavailableError,
