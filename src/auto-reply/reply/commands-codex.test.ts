@@ -7,6 +7,7 @@ import {
   clearActiveCodexAppServerRun,
   setActiveCodexAppServerRun,
 } from "../../agents/codex-app-server-runs.js";
+import { buildCodexPlanActionCallbackData } from "../../agents/codex-app-server-plan-actions.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
@@ -1084,6 +1085,15 @@ describe("handleCodexCommand", () => {
         },
       }),
     );
+    const summaryPayload = routeReplyMock.mock.calls
+      .map((call) => call[0]?.payload)
+      .find(
+        (payload) =>
+          typeof payload?.text === "string" &&
+          payload.text.includes("Plan ready.") &&
+          payload.text.includes("Plan preview:"),
+      );
+    expect(summaryPayload?.text).toContain("# Plan");
   });
 
   it("falls back to an inline summary when large /codex_plan attachment delivery fails", async () => {
@@ -1144,6 +1154,16 @@ describe("handleCodexCommand", () => {
       ),
     ).toBe(true);
     expect(sentTexts.some((text) => text.includes("Implement this plan?"))).toBe(true);
+  });
+
+  it("builds compact callback data for codex plan prompt buttons", () => {
+    const data = buildCodexPlanActionCallbackData({
+      requestId: "e5fabf01-fa5a-43bf-bae0-ed79bda87c3e",
+      action: "implement",
+    });
+
+    expect(Buffer.byteLength(data, "utf8")).toBeLessThanOrEqual(64);
+    expect(data).toMatch(/^cdxpl:y:[A-Za-z0-9_-]{6,20}$/);
   });
 
   it("routes /codex_review through review/start and sends finding actions", async () => {

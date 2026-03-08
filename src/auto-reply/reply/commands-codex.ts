@@ -1417,6 +1417,17 @@ function formatCodexPlanInlineText(plan: CodexAppServerPlanArtifact): string {
   return lines.join("\n").trim();
 }
 
+function buildCodexPlanMarkdownPreview(markdown: string, maxChars: number): string | undefined {
+  const trimmed = markdown.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxChars).trimEnd()}\n\n[Preview truncated. Open the attachment for the full plan.]`;
+}
+
 async function buildCodexPlanDelivery(
   plan: CodexAppServerPlanArtifact,
 ): Promise<CodexPlanDelivery> {
@@ -1440,6 +1451,10 @@ async function buildCodexPlanDelivery(
   const stepsText = formatCodexPlanSteps(plan.steps);
   if (stepsText) {
     summaryLines.push("", stepsText);
+  }
+  const summaryPreview = buildCodexPlanMarkdownPreview(plan.markdown, 1400);
+  if (summaryPreview) {
+    summaryLines.push("", "Plan preview:", "", summaryPreview);
   }
   summaryLines.push("", "The full plan is attached as Markdown.");
   const tempDir = resolvePreferredOpenClawTmpDir();

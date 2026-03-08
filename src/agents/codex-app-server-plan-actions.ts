@@ -1,6 +1,12 @@
+import { createHash } from "node:crypto";
+
 export type CodexPlanAction = "implement" | "stay";
 
 const CALLBACK_PREFIX = "cdxpl";
+
+function buildRequestToken(requestId: string): string {
+  return createHash("sha1").update(requestId).digest("base64url").slice(0, 10);
+}
 
 function encodeAction(action: CodexPlanAction): string {
   return action === "implement" ? "y" : "n";
@@ -20,7 +26,7 @@ export function buildCodexPlanActionCallbackData(params: {
   requestId: string;
   action: CodexPlanAction;
 }): string {
-  return `${CALLBACK_PREFIX}:${encodeAction(params.action)}:${params.requestId.trim()}`;
+  return `${CALLBACK_PREFIX}:${encodeAction(params.action)}:${buildRequestToken(params.requestId)}`;
 }
 
 export function parseCodexPlanActionCallbackData(data: string): {
@@ -49,5 +55,5 @@ export function matchesCodexPlanActionRequestToken(
   requestId: string,
   requestToken: string,
 ): boolean {
-  return requestId.trim() === requestToken.trim();
+  return buildRequestToken(requestId) === requestToken.trim();
 }
