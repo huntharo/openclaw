@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { escapeRegExp, formatEnvelopeTimestamp } from "../../test/helpers/envelope-timestamp.js";
 import { expectInboundContextContract } from "../../test/helpers/inbound-contract.js";
 import { buildCodexPendingInputCallbackData } from "../agents/codex-app-server-pending-input.js";
+import { buildCodexPlanActionCallbackData } from "../agents/codex-app-server-plan-actions.js";
 import {
   listNativeCommandSpecs,
   listNativeCommandSpecsForConfig,
@@ -549,6 +550,7 @@ describe("createTelegramBot", () => {
     createTelegramBot({
       token: "tok",
       config: {
+        session: { store: storePath },
         channels: {
           telegram: {
             dmPolicy: "open",
@@ -633,6 +635,7 @@ describe("createTelegramBot", () => {
     createTelegramBot({
       token: "tok",
       config: {
+        session: { store: storePath },
         channels: {
           telegram: {
             dmPolicy: "open",
@@ -676,6 +679,129 @@ describe("createTelegramBot", () => {
       "Waiting for what to do differently. Reply with the instruction you want sent to Codex instead.",
       expect.objectContaining({ message_thread_id: 1364 }),
     );
+  });
+
+  it("routes Codex plan prompt implement buttons into a deterministic follow-up message", async () => {
+    onSpy.mockClear();
+    sendMessageSpy.mockClear();
+    editMessageReplyMarkupSpy.mockClear();
+    replySpy.mockClear();
+    const storePath = resolveStorePath(undefined, { agentId: "pwrdrvr" });
+    await updateSessionStore(storePath, (store) => {
+      store["agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364"] = {
+        sessionId: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+        updatedAt: Date.now(),
+        codexPlanPromptRequestId: "plan-prompt-1",
+      };
+    });
+    sessionBindingServiceMock.resolveByConversation.mockReturnValue({
+      bindingId: "binding-codex-plan-1",
+      targetSessionKey: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+    });
+
+    createTelegramBot({
+      token: "tok",
+      config: {
+        channels: {
+          telegram: {
+            dmPolicy: "open",
+            allowFrom: ["*"],
+            groupPolicy: "open",
+            groups: { "*": { requireMention: false } },
+          },
+        },
+      },
+    });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-plan-1",
+        data: buildCodexPlanActionCallbackData({
+          requestId: "plan-prompt-1",
+          action: "implement",
+        }),
+        from: { id: 42, first_name: "Ada", username: "ada_bot" },
+        message: {
+          chat: { id: -1003841603622, type: "supergroup", title: "PwrDrvr", is_forum: true },
+          date: 1736380800,
+          message_id: 101,
+          message_thread_id: 1364,
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(editMessageReplyMarkupSpy).toHaveBeenCalledWith(-1003841603622, 101, {
+      reply_markup: { inline_keyboard: [] },
+    });
+    expect(submitAgentRunPendingInputBySessionKeyMock).not.toHaveBeenCalled();
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    expect(replySpy.mock.calls[0]?.[0]?.Body).toContain("Implement the plan.");
+  });
+
+  it("clears Codex plan prompt buttons without editing the plan body when staying in plan mode", async () => {
+    onSpy.mockClear();
+    sendMessageSpy.mockClear();
+    editMessageReplyMarkupSpy.mockClear();
+    replySpy.mockClear();
+    const storePath = resolveStorePath(undefined, { agentId: "pwrdrvr" });
+    await updateSessionStore(storePath, (store) => {
+      store["agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364"] = {
+        sessionId: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+        updatedAt: Date.now(),
+        codexPlanPromptRequestId: "plan-prompt-2",
+      };
+    });
+    sessionBindingServiceMock.resolveByConversation.mockReturnValue({
+      bindingId: "binding-codex-plan-2",
+      targetSessionKey: "agent:pwrdrvr:codex:binding:telegram:default:-1003841603622:topic:1364",
+    });
+
+    createTelegramBot({
+      token: "tok",
+      config: {
+        channels: {
+          telegram: {
+            dmPolicy: "open",
+            allowFrom: ["*"],
+            groupPolicy: "open",
+            groups: { "*": { requireMention: false } },
+          },
+        },
+      },
+    });
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "cbq-codex-plan-2",
+        data: buildCodexPlanActionCallbackData({
+          requestId: "plan-prompt-2",
+          action: "stay",
+        }),
+        from: { id: 42, first_name: "Ada", username: "ada_bot" },
+        message: {
+          chat: { id: -1003841603622, type: "supergroup", title: "PwrDrvr", is_forum: true },
+          date: 1736380800,
+          message_id: 102,
+          message_thread_id: 1364,
+        },
+      },
+      me: { username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(editMessageReplyMarkupSpy).toHaveBeenCalledWith(-1003841603622, 102, {
+      reply_markup: { inline_keyboard: [] },
+    });
+    expect(sendMessageSpy).toHaveBeenCalledWith(-1003841603622, "Staying in Plan mode.", undefined);
+    expect(replySpy).not.toHaveBeenCalled();
   });
 
   it("includes sender identity in group envelope headers", async () => {

@@ -178,6 +178,8 @@ export type SessionEntry = {
   codexReviewActionRequestId?: string;
   /** Channel action prompts derived from the most recent Codex review. */
   codexReviewActions?: CodexReviewAction[];
+  /** Last actionable Codex plan prompt id exposed to channel buttons. */
+  codexPlanPromptRequestId?: string;
   label?: string;
   displayName?: string;
   channel?: string;

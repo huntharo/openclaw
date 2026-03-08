@@ -119,6 +119,16 @@ export type CodexAppServerCollaborationMode = {
   };
 };
 
+export type CodexAppServerPlanStep = {
+  step: string;
+  status: "pending" | "inProgress" | "completed";
+};
+
+export type CodexAppServerPlanArtifact = {
+  explanation?: string;
+  steps: CodexAppServerPlanStep[];
+  markdown: string;
+};
 export type CodexAppServerThreadSummary = {
   threadId: string;
   title?: string;
@@ -575,6 +585,67 @@ type AssistantNotificationText = {
   text: string;
   itemId?: string;
 };
+
+function extractPlanDeltaNotification(value: unknown): { itemId?: string; delta: string } {
+  return {
+    itemId: extractAssistantItemId(value),
+    delta: collectStreamingText(value),
+  };
+}
+
+function extractTurnPlanUpdate(value: unknown): {
+  explanation?: string;
+  steps: CodexAppServerPlanStep[];
+} {
+  const record = asRecord(value);
+  const planRecord = asRecord(record?.plan);
+  const rawPlan = Array.isArray(record?.plan)
+    ? record.plan
+    : Array.isArray(planRecord?.steps)
+      ? planRecord.steps
+      : [];
+  const steps = rawPlan
+    .map((entry) => {
+      const stepRecord = asRecord(entry);
+      const step = pickString(stepRecord ?? {}, ["step", "title", "text"]);
+      const statusRaw =
+        pickString(stepRecord ?? {}, ["status"], { trim: true })?.toLowerCase() ?? "pending";
+      if (!step) {
+        return null;
+      }
+      const status =
+        statusRaw === "inprogress" || statusRaw === "in_progress"
+          ? "inProgress"
+          : statusRaw === "completed"
+            ? "completed"
+            : "pending";
+      return { step, status } satisfies CodexAppServerPlanStep;
+    })
+    .filter(Boolean) as CodexAppServerPlanStep[];
+  return {
+    explanation:
+      pickString(planRecord ?? {}, ["explanation"], { trim: true }) ??
+      pickString(record ?? {}, ["explanation"], { trim: true }) ??
+      findFirstNestedString(value, ["explanation"]),
+    steps,
+  };
+}
+
+function extractCompletedPlanText(value: unknown): { itemId?: string; text?: string } {
+  const record = asRecord(value);
+  if (!record) {
+    return {};
+  }
+  const item = asRecord(record.item) ?? record;
+  const itemType = pickString(item, ["type"])?.toLowerCase();
+  if (itemType !== "plan") {
+    return {};
+  }
+  return {
+    itemId: extractAssistantItemId(item),
+    text: pickString(item, ["text"], { trim: false }) ?? collectStreamingText(item),
+  };
+}
 
 function extractAssistantItemId(value: unknown): string | undefined {
   const record = asRecord(value);
@@ -2958,6 +3029,10 @@ export async function runCodexAppServerAgent(
   let turnId = "";
   let assistantText = "";
   let assistantItemId = "";
+  let planExplanation = "";
+  let planSteps: CodexAppServerPlanStep[] = [];
+  const planDraftByItemId = new Map<string, string>();
+  let finalPlanMarkdown = "";
   let awaitingInput = false;
   let interrupted = false;
   let completed = false;
@@ -3139,6 +3214,34 @@ export async function runCodexAppServerAgent(
       awaitingInput = false;
       await params.onPendingUserInput?.(null);
       return;
+    }
+
+    if (methodLower === "turn/plan/updated") {
+      const planUpdate = extractTurnPlanUpdate(notificationParams);
+      planExplanation = planUpdate.explanation?.trim() ?? planExplanation;
+      if (planUpdate.steps.length > 0) {
+        planSteps = planUpdate.steps;
+      }
+    }
+
+    if (methodLower === "item/plan/delta") {
+      const planDelta = extractPlanDeltaNotification(notificationParams);
+      if (planDelta.itemId && planDelta.delta) {
+        const existing = planDraftByItemId.get(planDelta.itemId) ?? "";
+        planDraftByItemId.set(planDelta.itemId, `${existing}${planDelta.delta}`);
+      }
+      return;
+    }
+
+    if (methodLower === "item/completed") {
+      const completedPlan = extractCompletedPlanText(notificationParams);
+      if (completedPlan.text?.trim()) {
+        finalPlanMarkdown = completedPlan.text.trim();
+        if (completedPlan.itemId) {
+          planDraftByItemId.set(completedPlan.itemId, finalPlanMarkdown);
+        }
+        return;
+      }
     }
 
     const assistantNotification = extractAssistantNotificationText(methodLower, notificationParams);
@@ -3354,10 +3457,22 @@ export async function runCodexAppServerAgent(
     }
 
     return {
-      payloads: assistantText ? [{ text: assistantText }] : undefined,
+      payloads:
+        finalPlanMarkdown || planDraftByItemId.size > 0 || planSteps.length > 0
+          ? undefined
+          : assistantText
+            ? [{ text: assistantText }]
+            : undefined,
       meta: {
         durationMs: Date.now() - startedAt,
         aborted: interrupted,
+        codexPlanArtifact: finalPlanMarkdown
+          ? {
+              explanation: planExplanation || undefined,
+              steps: planSteps,
+              markdown: finalPlanMarkdown,
+            }
+          : undefined,
         agentMeta: {
           sessionId: threadId,
           provider: "codex-app-server",
@@ -3397,8 +3512,11 @@ export const __testing = {
   extractAssistantNotificationText,
   extractExperimentalFeatureSummaries,
   extractMcpServerSummaries,
+  extractCompletedPlanText,
   extractRateLimitSummaries,
   extractSkillSummaries,
+  extractPlanDeltaNotification,
+  extractTurnPlanUpdate,
   extractThreadsFromValue,
   extractThreadState,
   extractThreadReplayFromReadResult,

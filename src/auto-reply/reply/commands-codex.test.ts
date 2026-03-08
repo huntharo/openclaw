@@ -800,7 +800,7 @@ describe("handleCodexCommand", () => {
     ]);
   });
 
-  it("runs /codex_plan as a plan-mode Codex turn", async () => {
+  it("runs /codex_plan as a plan-mode Codex turn and delivers the final plan card", async () => {
     const params = buildParams(
       "/codex_plan break this into phases",
       {},
@@ -819,10 +819,27 @@ describe("handleCodexCommand", () => {
       codexProjectKey: "/repo/openclaw",
       codexAutoRoute: true,
     };
+    runCodexAppServerAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Fallback assistant summary" }],
+      meta: {
+        agentMeta: {
+          sessionId: "thread-123",
+        },
+        codexPlanArtifact: {
+          explanation: "Break the work into safe increments.",
+          steps: [
+            { step: "Capture the current behavior", status: "completed" },
+            { step: "Patch Telegram delivery", status: "inProgress" },
+            { step: "Verify with tests", status: "pending" },
+          ],
+          markdown: "# Plan\n\n- Patch the command\n- Verify the callback flow",
+        },
+      },
+    });
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result).toEqual({ shouldContinue: false, reply: { text: "Codex reply" } });
+    expect(result).toEqual({ shouldContinue: false });
     expect(routeReplyMock).toHaveBeenCalledWith(
       expect.objectContaining({
         payload: {
@@ -830,6 +847,43 @@ describe("handleCodexCommand", () => {
         },
       }),
     );
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          text: expect.stringContaining("Break the work into safe increments."),
+        }),
+      }),
+    );
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: {
+          text: "Implement this plan?",
+          channelData: {
+            telegram: {
+              buttons: [
+                [
+                  {
+                    text: "Yes, implement this plan",
+                    callback_data: expect.stringMatching(/^cdxpl:y:/),
+                  },
+                ],
+                [
+                  {
+                    text: "No, stay in Plan mode",
+                    callback_data: expect.stringMatching(/^cdxpl:n:/),
+                  },
+                ],
+              ],
+            },
+          },
+        },
+      }),
+    );
+    expect(
+      routeReplyMock.mock.calls.some(
+        (call) => call[0]?.payload?.text === "Fallback assistant summary",
+      ),
+    ).toBe(false);
     expect(runCodexAppServerAgentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "break this into phases",
@@ -846,6 +900,64 @@ describe("handleCodexCommand", () => {
       }),
     );
     expect(runCodexAppServerAgentMock.mock.calls[0]?.[0]).not.toHaveProperty("timeoutMs");
+    const store = loadSessionStore(storePath);
+    expect(store[params.sessionKey]?.codexPlanPromptRequestId).toBeTruthy();
+  });
+
+  it("delivers large /codex_plan results as a markdown attachment plus a separate prompt", async () => {
+    const params = buildParams(
+      "/codex_plan write the full rollout document",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    runCodexAppServerAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Fallback assistant summary" }],
+      meta: {
+        agentMeta: {
+          sessionId: "thread-123",
+        },
+        codexPlanArtifact: {
+          explanation: "This needs the full rollout guide attached.",
+          steps: [{ step: "Write the rollout", status: "inProgress" }],
+          markdown: `# Plan\n\n${"Long section.\n".repeat(500)}`,
+        },
+      },
+    });
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: false });
+    const mediaPayload = routeReplyMock.mock.calls
+      .map((call) => call[0]?.payload)
+      .find((payload) => typeof payload?.mediaUrl === "string");
+    expect(mediaPayload?.mediaUrl).toMatch(/codex-plan-.*\.md$/);
+    const attachmentBody = await fs.readFile(String(mediaPayload?.mediaUrl), "utf8");
+    expect(attachmentBody).toContain("# Plan");
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: {
+          text: "Implement this plan?",
+          channelData: {
+            telegram: {
+              buttons: expect.any(Array),
+            },
+          },
+        },
+      }),
+    );
   });
 
   it("routes /codex_review through review/start and sends finding actions", async () => {

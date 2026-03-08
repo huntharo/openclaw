@@ -34,6 +34,14 @@ export type EmbeddedPiRunMeta = {
   durationMs: number;
   agentMeta?: EmbeddedPiAgentMeta;
   aborted?: boolean;
+  codexPlanArtifact?: {
+    explanation?: string;
+    steps?: Array<{
+      step: string;
+      status: "pending" | "inProgress" | "completed";
+    }>;
+    markdown: string;
+  };
   systemPromptReport?: SessionSystemPromptReport;
   error?: {
     kind:

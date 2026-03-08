@@ -979,6 +979,72 @@ describe("extractAssistantNotificationText", () => {
   });
 });
 
+describe("plan notifications", () => {
+  it("extracts structured plan updates from turn/plan/updated", () => {
+    expect(
+      __testing.extractTurnPlanUpdate({
+        plan: {
+          explanation: "Break the work into safe increments.",
+          steps: [
+            { step: "Capture the current behavior", status: "completed" },
+            { step: "Patch Telegram delivery", status: "inProgress" },
+            { step: "Verify with tests", status: "pending" },
+          ],
+        },
+      }),
+    ).toEqual({
+      explanation: "Break the work into safe increments.",
+      steps: [
+        { step: "Capture the current behavior", status: "completed" },
+        { step: "Patch Telegram delivery", status: "inProgress" },
+        { step: "Verify with tests", status: "pending" },
+      ],
+    });
+  });
+
+  it("extracts plan delta text without treating it as assistant prose", () => {
+    expect(
+      __testing.extractPlanDeltaNotification({
+        item: {
+          id: "plan-item-1",
+          type: "plan",
+          delta: "## Plan\n- add the handler",
+        },
+      }),
+    ).toEqual({
+      itemId: "plan-item-1",
+      delta: "## Plan\n- add the handler",
+    });
+    expect(
+      __testing.extractAssistantNotificationText("item/plan/delta", {
+        item: {
+          id: "plan-item-1",
+          type: "plan",
+          delta: "## Plan\n- add the handler",
+        },
+      }),
+    ).toEqual({
+      mode: "ignore",
+      text: "",
+    });
+  });
+
+  it("extracts the final markdown plan from completed plan items", () => {
+    expect(
+      __testing.extractCompletedPlanText({
+        item: {
+          id: "plan-item-2",
+          type: "plan",
+          text: "# /codex_stop Plan\n\nImplement the handler.",
+        },
+      }),
+    ).toEqual({
+      itemId: "plan-item-2",
+      text: "# /codex_stop Plan\n\nImplement the handler.",
+    });
+  });
+});
+
 describe("extractThreadReplayFromReadResult", () => {
   it("parses userMessage and agentMessage items from thread/read turns", () => {
     expect(

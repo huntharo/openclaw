@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
 import {
@@ -11,6 +13,10 @@ import {
   describeCodexPendingInputAction,
   type CodexPendingUserInputAction,
 } from "../../agents/codex-app-server-pending-input.js";
+import {
+  buildCodexPlanActionCallbackData,
+  type CodexPlanAction,
+} from "../../agents/codex-app-server-plan-actions.js";
 import {
   buildCodexReviewActionCallbackData,
   type CodexReviewAction,
@@ -34,6 +40,7 @@ import {
   type CodexAppServerAccountSummary,
   type CodexAppServerExperimentalFeatureSummary,
   type CodexAppServerMcpServerSummary,
+  type CodexAppServerPlanArtifact,
   type CodexAppServerRateLimitSummary,
   type CodexAppServerSkillSummary,
   type CodexAppServerThreadState,
@@ -93,6 +100,17 @@ type SessionMutation = {
   pendingUserInputAwaitingSteer?: boolean;
   codexReviewActionRequestId?: string;
   codexReviewActions?: CodexReviewAction[];
+  codexPlanPromptRequestId?: string;
+};
+
+type CodexPlanPromptAction = {
+  action: CodexPlanAction;
+  label: string;
+};
+
+type CodexPlanDelivery = {
+  payloads: ReplyPayload[];
+  promptRequestId: string;
 };
 
 type CodexTargetSession = {
@@ -1340,6 +1358,91 @@ function buildCodexReviewActionButtons(params: {
   ]);
 }
 
+const CODEX_PLAN_INLINE_TEXT_LIMIT = 2600;
+const CODEX_PLAN_PROGRESS_DELAY_MS = 12_000;
+
+function buildCodexPlanPromptActions(): CodexPlanPromptAction[] {
+  return [
+    { action: "implement", label: "Yes, implement this plan" },
+    { action: "stay", label: "No, stay in Plan mode" },
+  ];
+}
+
+function buildCodexPlanPromptButtons(params: {
+  requestId: string;
+}): ReadonlyArray<ReadonlyArray<{ text: string; callback_data: string }>> {
+  return buildCodexPlanPromptActions().map((action) => [
+    {
+      text: action.label,
+      callback_data: buildCodexPlanActionCallbackData({
+        requestId: params.requestId,
+        action: action.action,
+      }),
+    },
+  ]);
+}
+
+function formatCodexPlanSteps(steps: CodexAppServerPlanArtifact["steps"]): string | undefined {
+  if (steps.length === 0) {
+    return undefined;
+  }
+  const lines = ["Plan steps:"];
+  for (const step of steps) {
+    const marker =
+      step.status === "completed" ? "[x]" : step.status === "inProgress" ? "[>]" : "[ ]";
+    lines.push(`- ${marker} ${step.step}`);
+  }
+  return lines.join("\n");
+}
+
+function formatCodexPlanInlineText(plan: CodexAppServerPlanArtifact): string {
+  const lines: string[] = ["Plan"];
+  if (plan.explanation?.trim()) {
+    lines.push("", plan.explanation.trim());
+  }
+  const stepsText = formatCodexPlanSteps(plan.steps);
+  if (stepsText) {
+    lines.push("", stepsText);
+  }
+  if (plan.markdown.trim()) {
+    lines.push("", plan.markdown.trim());
+  }
+  return lines.join("\n").trim();
+}
+
+async function buildCodexPlanDelivery(
+  plan: CodexAppServerPlanArtifact,
+): Promise<CodexPlanDelivery> {
+  const promptRequestId = crypto.randomUUID();
+  const promptButtons = buildCodexPlanPromptButtons({ requestId: promptRequestId });
+  const inlineText = formatCodexPlanInlineText(plan);
+  const promptPayload: ReplyPayload = {
+    text: "Implement this plan?",
+    channelData: { telegram: { buttons: promptButtons } },
+  };
+  if (inlineText.length <= CODEX_PLAN_INLINE_TEXT_LIMIT) {
+    return {
+      payloads: [{ text: inlineText }, promptPayload],
+      promptRequestId,
+    };
+  }
+  const summaryLines = ["Plan ready."];
+  if (plan.explanation?.trim()) {
+    summaryLines.push("", plan.explanation.trim());
+  }
+  const stepsText = formatCodexPlanSteps(plan.steps);
+  if (stepsText) {
+    summaryLines.push("", stepsText);
+  }
+  summaryLines.push("", "The full plan is attached as Markdown.");
+  const tempPath = path.join(os.tmpdir(), `codex-plan-${promptRequestId}.md`);
+  await fs.writeFile(tempPath, `${plan.markdown.trim()}\n`, "utf8");
+  return {
+    payloads: [{ text: summaryLines.join("\n").trim() }, { mediaUrl: tempPath }, promptPayload],
+    promptRequestId,
+  };
+}
+
 function truncateCodexButtonLabel(text: string, maxChars = 48): string {
   const trimmed = text.trim();
   if (trimmed.length <= maxChars) {
@@ -1509,6 +1612,20 @@ async function updateCodexReviewActionState(params: {
     {
       codexReviewActionRequestId: params.requestId,
       codexReviewActions: params.actions,
+    },
+    params.sessionKey,
+  );
+}
+
+async function updateCodexPlanPromptState(params: {
+  commandParams: HandleCommandsParams;
+  sessionKey: string;
+  requestId?: string;
+}): Promise<void> {
+  await updateCodexSession(
+    params.commandParams,
+    {
+      codexPlanPromptRequestId: params.requestId,
     },
     params.sessionKey,
   );
@@ -1930,6 +2047,11 @@ async function handleCodexPlanCommand(
         threadId,
       }).catch(() => undefined)
     : undefined;
+  await updateCodexPlanPromptState({
+    commandParams: params,
+    sessionKey: target.sessionKey,
+    requestId: undefined,
+  });
   await sendCodexReplies({
     commandParams: params,
     sessionKey: target.sessionKey,
@@ -1941,38 +2063,74 @@ async function handleCodexPlanCommand(
   }).catch((error) => {
     logVerbose(`Failed to send Codex plan start message: ${String(error)}`);
   });
-  const result = await runCodexAppServerAgent({
-    sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
-    sessionKey: target.sessionKey,
-    prompt: trimmedArgs,
-    model: resolveStoredCodexModel(sessionEntry) || params.model,
-    workspaceDir,
-    config: params.cfg,
-    runId: crypto.randomUUID(),
-    existingThreadId: threadId,
-    collaborationMode: resolveCodexPlanCollaborationMode({
-      sessionEntry,
-      threadState,
-      fallbackModel: params.model,
-    }),
-    onToolResult: async (payload) => {
-      if (!payload.text?.trim() && !payload.channelData) {
+  let keepaliveSent = false;
+  let planVisible = false;
+  let questionVisible = false;
+  const progressTimer = setTimeout(() => {
+    void (async () => {
+      if (planVisible || questionVisible || keepaliveSent) {
         return;
       }
+      keepaliveSent = true;
       await sendCodexReplies({
         commandParams: params,
         sessionKey: target.sessionKey,
-        payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+        payloads: [{ text: "Codex is still planning..." }],
+      }).catch((error) => {
+        logVerbose(`Failed to send Codex plan progress update: ${String(error)}`);
       });
-    },
-    onPendingUserInput: async (pending) => {
-      await updateCodexPendingInputState({
-        commandParams: params,
+    })();
+  }, CODEX_PLAN_PROGRESS_DELAY_MS);
+  const result = await (async () => {
+    try {
+      return await runCodexAppServerAgent({
+        sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
         sessionKey: target.sessionKey,
-        pending,
+        prompt: trimmedArgs,
+        model: resolveStoredCodexModel(sessionEntry) || params.model,
+        workspaceDir,
+        config: params.cfg,
+        runId: crypto.randomUUID(),
+        existingThreadId: threadId,
+        collaborationMode: resolveCodexPlanCollaborationMode({
+          sessionEntry,
+          threadState,
+          fallbackModel: params.model,
+        }),
+        onToolResult: async (payload) => {
+          if (!payload.text?.trim() && !payload.channelData) {
+            return;
+          }
+          if (
+            (
+              payload.channelData as
+                | { codexAppServer?: { interactiveRequest?: boolean } }
+                | undefined
+            )?.codexAppServer?.interactiveRequest
+          ) {
+            questionVisible = true;
+          }
+          await sendCodexReplies({
+            commandParams: params,
+            sessionKey: target.sessionKey,
+            payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+          });
+        },
+        onPendingUserInput: async (pending) => {
+          if (pending) {
+            questionVisible = true;
+          }
+          await updateCodexPendingInputState({
+            commandParams: params,
+            sessionKey: target.sessionKey,
+            pending,
+          });
+        },
       });
-    },
-  });
+    } finally {
+      clearTimeout(progressTimer);
+    }
+  })();
   const resolvedThreadId = result.meta?.agentMeta?.sessionId?.trim();
   if (resolvedThreadId) {
     await updateCodexSession(
@@ -1984,6 +2142,37 @@ async function handleCodexPlanCommand(
         codexProjectKey: workspaceDir,
       },
       target.sessionKey,
+    );
+  }
+  const planArtifact = result.meta?.codexPlanArtifact;
+  if (planArtifact?.markdown.trim()) {
+    planVisible = true;
+    const delivery = await buildCodexPlanDelivery({
+      explanation: planArtifact.explanation,
+      steps: planArtifact.steps ?? [],
+      markdown: planArtifact.markdown,
+    });
+    await updateCodexPlanPromptState({
+      commandParams: params,
+      sessionKey: target.sessionKey,
+      requestId: delivery.promptRequestId,
+    });
+    const routed = await sendCodexReplies({
+      commandParams: params,
+      sessionKey: target.sessionKey,
+      payloads: delivery.payloads,
+    }).catch((error) => {
+      logVerbose(`Failed to route Codex plan output: ${String(error)}`);
+      return false;
+    });
+    if (routed) {
+      return { shouldContinue: false };
+    }
+    return stopWithText(
+      delivery.payloads
+        .map((payload) => payload.text)
+        .filter(Boolean)
+        .join("\n\n"),
     );
   }
   const reply = result.payloads?.find(

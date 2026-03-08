@@ -9,6 +9,7 @@ import {
   parseCodexPendingInputCallbackData,
   buildCodexPendingUserInputActions,
 } from "../agents/codex-app-server-pending-input.js";
+import { parseCodexPlanActionCallbackData } from "../agents/codex-app-server-plan-actions.js";
 import {
   matchesCodexReviewActionRequestToken,
   parseCodexReviewActionCallbackData,
@@ -1351,6 +1352,93 @@ export const registerTelegramHandlers = ({
           return;
         }
 
+        return;
+      }
+
+      const codexPlanCallback = parseCodexPlanActionCallbackData(data);
+      if (codexPlanCallback) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex plan prompt is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex plan prompt is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        const storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
+        const sessionStore = loadSessionStore(storePath);
+        let effectiveSessionKey = targetSessionKey;
+        let planEntry = sessionStore[effectiveSessionKey];
+        if (!planEntry?.codexPlanPromptRequestId?.trim()) {
+          const fallbackEntry = Object.entries(sessionStore).find(([, entry]) =>
+            entry?.codexPlanPromptRequestId?.trim(),
+          );
+          if (fallbackEntry) {
+            [effectiveSessionKey, planEntry] = fallbackEntry;
+          }
+        }
+        const requestId =
+          planEntry?.codexPlanPromptRequestId?.trim() || codexPlanCallback.requestToken.trim();
+        if (!requestId) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex plan prompt is no longer active.");
+          return;
+        }
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          let cleared = false;
+          for (const [storeKey, entry] of Object.entries(store)) {
+            if (!entry || entry.codexPlanPromptRequestId?.trim() !== requestId) {
+              continue;
+            }
+            delete entry.codexPlanPromptRequestId;
+            entry.updatedAt = Date.now();
+            store[storeKey] = entry;
+            cleared = true;
+          }
+          if (cleared) {
+            return;
+          }
+          const entry = store[effectiveSessionKey];
+          if (!entry) {
+            return;
+          }
+          delete entry.codexPlanPromptRequestId;
+          entry.updatedAt = Date.now();
+          store[effectiveSessionKey] = entry;
+        }).catch(() => undefined);
+        if (codexPlanCallback.action === "stay") {
+          await replyToCallbackChat("Staying in Plan mode.");
+          return;
+        }
+        const syntheticMessage = buildSyntheticTextMessage({
+          base: callbackMessage,
+          from: callback.from,
+          text: "Implement the plan.",
+        });
+        await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
+          forceWasMentioned: true,
+          messageIdOverride: callback.id,
+        });
         return;
       }
 
