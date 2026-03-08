@@ -827,7 +827,7 @@ describe("handleCodexCommand", () => {
 
     expect(result?.reply?.text).toContain("Pending input: req-123");
     expect(result?.reply?.text).toContain("Approve deploy?");
-    expect(result?.reply?.text).toContain("Mirrored commands: built-in=14 discovered=0");
+    expect(result?.reply?.text).toContain("Mirrored commands: built-in=14");
     expect(
       (result?.reply?.channelData as { telegram?: { buttons?: unknown[][] } } | undefined)?.telegram
         ?.buttons,

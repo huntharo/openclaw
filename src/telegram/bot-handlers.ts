@@ -35,8 +35,6 @@ import { shouldDebounceTextInbound } from "../channels/inbound-debounce-policy.j
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { loadConfig } from "../config/config.js";
 import { writeConfigFile } from "../config/io.js";
-<<<<<<< HEAD
-import { loadSessionStore, resolveStorePath, updateSessionStore } from "../config/sessions.js";
 import {
   loadSessionStore,
   resolveSessionStoreEntry,
