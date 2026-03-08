@@ -1105,6 +1105,34 @@ describe("runReplyAgent messaging tool suppression", () => {
     expect(store[sessionKey]?.inputTokens).toBe(111);
     expect(store[sessionKey]?.outputTokens).toBe(22);
   });
+
+  it("persists context window size from agentMeta when a fresh prompt snapshot is available", async () => {
+    const storePath = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-store-")),
+      "sessions.json",
+    );
+    const sessionKey = "main";
+    const entry: SessionEntry = { sessionId: "session", updatedAt: Date.now() };
+    await saveSessionStore(storePath, { [sessionKey]: entry });
+
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "hello world!" }],
+      meta: {
+        agentMeta: {
+          promptTokens: 139_000,
+          contextTokensUsed: 258_000,
+          model: "openai/gpt-5.4",
+          provider: "codex-app-server",
+        },
+      },
+    });
+
+    await createRun("slack", { storePath, sessionKey });
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[sessionKey]?.totalTokens).toBe(139_000);
+    expect(store[sessionKey]?.totalTokensFresh).toBe(true);
+    expect(store[sessionKey]?.contextTokens).toBe(258_000);
+  });
 });
 
 describe("runReplyAgent reminder commitment guard", () => {
