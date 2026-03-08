@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { Bot } from "grammy";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
@@ -65,6 +64,7 @@ import {
 import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
+import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolveTelegramAccount } from "../../telegram/accounts.js";
@@ -115,6 +115,7 @@ type CodexPlanPromptAction = {
 type CodexPlanDelivery = {
   payloads: ReplyPayload[];
   promptRequestId: string;
+  attachmentFallbackText?: string;
 };
 
 type CodexTargetSession = {
@@ -1439,12 +1440,100 @@ async function buildCodexPlanDelivery(
     summaryLines.push("", stepsText);
   }
   summaryLines.push("", "The full plan is attached as Markdown.");
-  const tempPath = path.join(os.tmpdir(), `codex-plan-${promptRequestId}.md`);
+  const tempDir = resolvePreferredOpenClawTmpDir();
+  await fs.mkdir(tempDir, { recursive: true, mode: 0o700 });
+  const tempPath = path.join(tempDir, `codex-plan-${promptRequestId}.md`);
   await fs.writeFile(tempPath, `${plan.markdown.trim()}\n`, "utf8");
+  const fallbackLines = [
+    "I couldn't attach the full Markdown plan here, so here's a condensed inline summary instead.",
+  ];
+  if (plan.explanation?.trim()) {
+    fallbackLines.push("", plan.explanation.trim());
+  }
+  if (stepsText) {
+    fallbackLines.push("", stepsText);
+  }
+  const markdownPreview = plan.markdown.trim();
+  if (markdownPreview) {
+    const maxPreviewChars = 1800;
+    const preview =
+      markdownPreview.length > maxPreviewChars
+        ? `${markdownPreview.slice(0, maxPreviewChars).trimEnd()}\n\n[Truncated]`
+        : markdownPreview;
+    fallbackLines.push("", preview);
+  }
   return {
     payloads: [{ text: summaryLines.join("\n").trim() }, { mediaUrl: tempPath }, promptPayload],
     promptRequestId,
+    attachmentFallbackText: fallbackLines.join("\n").trim(),
   };
+}
+
+async function sendCodexPlanDelivery(params: {
+  commandParams: HandleCommandsParams;
+  sessionKey: string;
+  delivery: CodexPlanDelivery;
+}): Promise<boolean> {
+  try {
+    if (
+      params.delivery.payloads.length <= 2 ||
+      !params.delivery.payloads.some((payload) => Boolean(payload.mediaUrl))
+    ) {
+      await sendCodexReplies({
+        commandParams: params.commandParams,
+        sessionKey: params.sessionKey,
+        payloads: params.delivery.payloads,
+      });
+      return true;
+    }
+
+    const [summaryPayload, mediaPayload, promptPayload] = params.delivery.payloads;
+    if (!summaryPayload || !mediaPayload || !promptPayload) {
+      return false;
+    }
+
+    await sendCodexReplies({
+      commandParams: params.commandParams,
+      sessionKey: params.sessionKey,
+      payloads: [summaryPayload],
+    });
+
+    const attachmentSent = await sendCodexReplies({
+      commandParams: params.commandParams,
+      sessionKey: params.sessionKey,
+      payloads: [mediaPayload],
+    }).catch((error) => {
+      logVerbose(`Failed to route Codex plan attachment: ${String(error)}`);
+      return false;
+    });
+
+    if (!attachmentSent && params.delivery.attachmentFallbackText?.trim()) {
+      await sendCodexReplies({
+        commandParams: params.commandParams,
+        sessionKey: params.sessionKey,
+        payloads: [{ text: params.delivery.attachmentFallbackText.trim() }],
+      });
+    }
+
+    await sendCodexReplies({
+      commandParams: params.commandParams,
+      sessionKey: params.sessionKey,
+      payloads: [promptPayload],
+    });
+    return true;
+  } catch (error) {
+    logVerbose(`Failed to route Codex plan output: ${String(error)}`);
+    await sendCodexReplies({
+      commandParams: params.commandParams,
+      sessionKey: params.sessionKey,
+      payloads: [
+        {
+          text: "I couldn't deliver the final Codex plan cleanly. Please rerun /codex_plan or resume the thread in Codex CLI.",
+        },
+      ],
+    }).catch(() => undefined);
+    return false;
+  }
 }
 
 function truncateCodexButtonLabel(text: string, maxChars = 48): string {
@@ -2196,23 +2285,13 @@ async function handleCodexPlanCommand(
       sessionKey: target.sessionKey,
       requestId: delivery.promptRequestId,
     });
-    const routed = await sendCodexReplies({
+    const routed = await sendCodexPlanDelivery({
       commandParams: params,
       sessionKey: target.sessionKey,
-      payloads: delivery.payloads,
-    }).catch((error) => {
-      logVerbose(`Failed to route Codex plan output: ${String(error)}`);
-      return false;
+      delivery,
     });
-    if (routed) {
-      return { shouldContinue: false };
-    }
-    return stopWithText(
-      delivery.payloads
-        .map((payload) => payload.text)
-        .filter(Boolean)
-        .join("\n\n"),
-    );
+    void routed;
+    return { shouldContinue: false };
   }
   const reply = result.payloads?.find(
     (payload) => payload.text?.trim() || payload.mediaUrl || payload.mediaUrls?.length,

@@ -9,6 +9,7 @@ import {
 } from "../../agents/codex-app-server-runs.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
+import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const discoverCodexAppServerThreadsMock = vi.hoisted(() => vi.fn());
@@ -976,6 +977,7 @@ describe("handleCodexCommand", () => {
       .map((call) => call[0]?.payload)
       .find((payload) => typeof payload?.mediaUrl === "string");
     expect(mediaPayload?.mediaUrl).toMatch(/codex-plan-.*\.md$/);
+    expect(String(mediaPayload?.mediaUrl).startsWith(resolvePreferredOpenClawTmpDir())).toBe(true);
     const attachmentBody = await fs.readFile(String(mediaPayload?.mediaUrl), "utf8");
     expect(attachmentBody).toContain("# Plan");
     expect(routeReplyMock).toHaveBeenCalledWith(
@@ -990,6 +992,66 @@ describe("handleCodexCommand", () => {
         },
       }),
     );
+  });
+
+  it("falls back to an inline summary when large /codex_plan attachment delivery fails", async () => {
+    const params = buildParams(
+      "/codex_plan write the full rollout document",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "1234",
+        To: "1234",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+    runCodexAppServerAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Fallback assistant summary" }],
+      meta: {
+        agentMeta: {
+          sessionId: "thread-123",
+        },
+        codexPlanArtifact: {
+          explanation: "This needs the full rollout guide attached.",
+          steps: [{ step: "Write the rollout", status: "inProgress" }],
+          markdown: `# Plan\n\n${"Long section.\n".repeat(500)}`,
+        },
+      },
+    });
+    routeReplyMock
+      .mockResolvedValueOnce({ ok: true, messageId: "m-start" })
+      .mockResolvedValueOnce({ ok: true, messageId: "m-summary" })
+      .mockResolvedValueOnce({
+        ok: false,
+        error:
+          "Failed to route reply to telegram: Local media path is not under an allowed directory",
+      })
+      .mockResolvedValueOnce({ ok: true, messageId: "m-fallback" })
+      .mockResolvedValueOnce({ ok: true, messageId: "m-prompt" });
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result).toEqual({ shouldContinue: false });
+    const sentTexts = routeReplyMock.mock.calls
+      .map((call) => call[0]?.payload?.text)
+      .filter((text): text is string => typeof text === "string");
+    expect(sentTexts.filter((text) => text.startsWith("Plan ready.")).length).toBe(1);
+    expect(
+      sentTexts.some((text) =>
+        text.includes(
+          "I couldn't attach the full Markdown plan here, so here's a condensed inline summary instead.",
+        ),
+      ),
+    ).toBe(true);
+    expect(sentTexts.some((text) => text.includes("Implement this plan?"))).toBe(true);
   });
 
   it("routes /codex_review through review/start and sends finding actions", async () => {
