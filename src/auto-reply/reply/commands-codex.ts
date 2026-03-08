@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Bot } from "grammy";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
 import {
   CODEX_BUILT_IN_MIRRORED_COMMANDS,
@@ -66,6 +67,9 @@ import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { resolveTelegramAccount } from "../../telegram/accounts.js";
+import { buildTypingThreadParams } from "../../telegram/bot/helpers.js";
+import { createTelegramSendChatActionHandler } from "../../telegram/sendchataction-401-backoff.js";
 import { shortenHomePath } from "../../utils.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveAcpCommandBindingContext } from "./commands-acp/context.js";
@@ -1485,7 +1489,42 @@ async function sendCodexReplies(params: {
   if (!route) {
     return false;
   }
+  let typingTriggered = false;
   for (const payload of params.payloads) {
+    if (
+      !typingTriggered &&
+      route.channel === "telegram" &&
+      (payload.text?.trim() || payload.mediaUrl || payload.mediaUrls?.length)
+    ) {
+      typingTriggered = true;
+      const account = resolveTelegramAccount({
+        cfg: params.commandParams.cfg,
+        accountId: route.accountId,
+      });
+      if (account.enabled && account.token) {
+        const bot = new Bot(account.token);
+        const typingThreadId =
+          typeof route.threadId === "number"
+            ? route.threadId
+            : typeof route.threadId === "string" && /^\d+$/.test(route.threadId)
+              ? Number.parseInt(route.threadId, 10)
+              : undefined;
+        const sendChatActionHandler = createTelegramSendChatActionHandler({
+          sendChatActionFn: (chatId, action, threadParams) =>
+            bot.api.sendChatAction(
+              chatId,
+              action,
+              threadParams as Parameters<typeof bot.api.sendChatAction>[2],
+            ),
+          logger: (message) => logVerbose(`telegram: ${message}`),
+        });
+        await sendChatActionHandler
+          .sendChatAction(route.to, "typing", buildTypingThreadParams(typingThreadId))
+          .catch((error) => {
+            logVerbose(`Failed to send direct Codex typing cue: ${String(error)}`);
+          });
+      }
+    }
     const result = await routeReply({
       payload,
       channel: route.channel,

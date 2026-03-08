@@ -30,6 +30,9 @@ const getCodexAppServerAvailabilityErrorMock = vi.hoisted(() =>
   vi.fn<() => string | null>(() => null),
 );
 const routeReplyMock = vi.hoisted(() => vi.fn());
+const sendChatActionMock = vi.hoisted(() => vi.fn(async () => undefined));
+const resolveTelegramAccountMock = vi.hoisted(() => vi.fn());
+const createTelegramSendChatActionHandlerMock = vi.hoisted(() => vi.fn());
 const runCommandWithTimeoutMock = vi.hoisted(() => vi.fn());
 const sessionBindingServiceMock = vi.hoisted(() => ({
   bind: vi.fn(),
@@ -79,6 +82,24 @@ vi.mock("./route-reply.js", () => ({
   isRoutableChannel: (channel: string | undefined) => Boolean(channel && channel !== "webchat"),
   routeReply: (...args: unknown[]) => routeReplyMock(...args),
 }));
+
+vi.mock("../../telegram/accounts.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../telegram/accounts.js")>();
+  return {
+    ...actual,
+    resolveTelegramAccount: (...args: unknown[]) => resolveTelegramAccountMock(...args),
+  };
+});
+
+vi.mock("../../telegram/sendchataction-401-backoff.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../telegram/sendchataction-401-backoff.js")>();
+  return {
+    ...actual,
+    createTelegramSendChatActionHandler: (...args: unknown[]) =>
+      createTelegramSendChatActionHandlerMock(...args),
+  };
+});
 
 const { handleCodexCommand } = await import("./commands-codex.js");
 
@@ -144,6 +165,16 @@ describe("handleCodexCommand", () => {
     getCodexAppServerAvailabilityErrorMock.mockReset().mockReturnValue(null);
     getCodexAppServerRuntimeStatusMock.mockReset().mockReturnValue({ state: "unknown" });
     routeReplyMock.mockReset().mockResolvedValue({ ok: true, messageId: "m-1" });
+    sendChatActionMock.mockReset().mockResolvedValue(undefined);
+    resolveTelegramAccountMock.mockReset().mockReturnValue({
+      accountId: "default",
+      enabled: true,
+      token: "telegram-token",
+    });
+    createTelegramSendChatActionHandlerMock.mockReset().mockReturnValue({
+      sendChatAction: sendChatActionMock,
+      reset: vi.fn(),
+    });
     runCommandWithTimeoutMock.mockReset().mockResolvedValue({
       code: 0,
       stdout: "/repo/openclaw/.git\n",
@@ -847,6 +878,7 @@ describe("handleCodexCommand", () => {
         },
       }),
     );
+    expect(sendChatActionMock).toHaveBeenCalledWith("1234", "typing", undefined);
     expect(routeReplyMock).toHaveBeenCalledWith(
       expect.objectContaining({
         payload: expect.objectContaining({
