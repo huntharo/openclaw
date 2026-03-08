@@ -166,6 +166,9 @@ The local Codex source review on March 7, 2026 changed the implementation direct
 - `/codex_compact`
   - classification: structured App Server operation
   - implementation note: use `thread/compact/start`, not a relayed conversational turn
+  - implementation note: acknowledge start immediately, keep typing alive while compaction runs, relay `contextCompaction` started/completed progress, and report starting/final context usage snapshots when available
+  - implementation note: context usage should come from persisted `thread/tokenUsage/updated` snapshots (`last_token_usage` plus `model_context_window`), not `thread/resume`
+  - implementation note: progress updates should emit usage only when the usage snapshot actually changes, so Telegram does not get duplicate "still compacting" noise
 - `/codex_plan`
   - classification: client-side command
   - implementation note: switch collaboration mode or plan-state client-side; do not assume `/plan` is a conversational turn command
