@@ -61,6 +61,7 @@ Protocol assumptions reflected in current code:
   - `handleCodexCommand`
 - Action coverage in handler:
   - `/codex new|spawn`
+  - `/codex_resume`
   - `/codex join`
   - `/codex steer`
   - `/codex status`
@@ -86,6 +87,10 @@ Protocol assumptions reflected in current code:
   - `extractThreadReplayFromReadResult`
   - `extractConversationMessages` (used to compute last user/assistant replay)
   - `extractSlashCommands`
+- `/codex_resume` design seam:
+  - [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - should reuse `parseListArguments`, `discoverCodexAppServerThreads`, `pickBestThread`, `readCodexAppServerThreadContext`, `buildThreadReplayPayloads`, and `buildPendingInputReplay`
+  - target shape: replace the current `/codex list` plus `/codex join` operator flow with a single resume-oriented command while keeping the same deterministic selection and replay internals
 
 ### 5) Active Run Registry + Control Bridge
 
@@ -182,6 +187,7 @@ Protocol assumptions reflected in current code:
 - Run control API is session-key keyed; correct binding resolution is mandatory for approval callbacks.
 - Approval rendering and callback encoding are deterministic and strongly typed in code paths; they should not depend on model interpretation.
 - Thread replay shown by `/codex join` is extracted from structured thread/read data, not synthesized by LLM summarization.
+- `/codex_resume` should keep that same deterministic replay behavior and should not ask an LLM to choose which thread to resume.
 
 ## Mirrored Command Split
 
@@ -294,8 +300,30 @@ This section maps the refined March 6, 2026 requirements into concrete code seam
   - expand `~/...` to home before discovery
   - validate directory existence before exact-path filtering
   - keep filtering deterministic and avoid LLM-mediated path matching in the critical path
+  - carry this behavior forward into `/codex_resume` before `/codex list` is retired
 
-### 2) Approval replay de-duplication on join and restart
+### 2) `/codex_resume` as the replacement for list plus join
+
+- Command parse and dispatch seam:
+  - [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - `handleCodexCommand`
+  - `parseListArguments`
+- Selection and replay seam:
+  - [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
+  - `pickBestThread`
+  - `summarizeThreadBinding`
+  - `buildThreadReplayPayloads`
+  - `buildPendingInputReplay`
+- Discovery seam:
+  - [src/agents/codex-app-server-runner.ts](src/agents/codex-app-server-runner.ts)
+  - `discoverCodexAppServerThreads`
+- Design intent:
+  - `/codex_resume` should mirror the Codex TUI `/resume` default scope rule: current project or worktree when already bound, all threads when unbound, and `--all` to disable the implied scope
+  - a single positional argument should resolve as exact thread id when it matches the Codex guid shape, otherwise as free-form filter text
+  - the no-arg case should behave like a picker or list with action buttons rather than forcing the operator to copy thread ids manually
+  - once stable, `/codex list` and `/codex join` should become compatibility shims or be removed entirely
+
+### 3) Approval replay de-duplication on join and restart
 
 - Replay emit seam:
   - [src/auto-reply/reply/commands-codex.ts](src/auto-reply/reply/commands-codex.ts)
@@ -312,7 +340,7 @@ This section maps the refined March 6, 2026 requirements into concrete code seam
   - replay pending approvals once per unresolved request id
   - if an existing dialog is still actionable for the same request id, do not duplicate it
 
-### 3) Monitoring across threads
+### 4) Monitoring across threads
 
 - Existing data sources:
   - [src/agents/codex-app-server-runner.ts](src/agents/codex-app-server-runner.ts)
@@ -326,7 +354,7 @@ This section maps the refined March 6, 2026 requirements into concrete code seam
   - add a monitor aggregator that merges recent thread activity, pending approvals, binding metadata, and workspace or branch status
   - support poll mode for non-active thread visibility if App Server does not push enough events to passive clients
 
-### 4) Telegram handler boundary cleanup
+### 5) Telegram handler boundary cleanup
 
 - Current heavy integration point:
   - [src/telegram/bot-handlers.ts](src/telegram/bot-handlers.ts)

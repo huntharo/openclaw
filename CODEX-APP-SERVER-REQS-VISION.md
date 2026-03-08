@@ -16,6 +16,7 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 - Telegram is the first target UX, but the control plane should remain reusable
 - messages presented to the user should be actionable (e.g. copy/pasting a GUID out of a list response to compose a `/codex join` command is... not cool)
 - messages presented to the user should pack the most meaninful data first due to truncation (e.g. binding message should say "Codex: [thread name] and then have the other info after that as it will be truncated on mobile)
+- thread resume UX should feel like Codex TUI `/resume`, with current-project scoping by default and a lightweight picker flow rather than separate "list, copy GUID, then join" steps
 
 ## Non-Negotiable Principles
 
@@ -44,16 +45,26 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 
 ### A) Command And Session Control
 
-1. Keep `/codex list` and add optional `--cwd <path>`.
+1. Add `/codex_resume` as the primary thread-selection and rebinding command.
 
-- `--cwd` supports `~/...` expansion on macOS.
+- With no args, `/codex_resume` should act like a picker/list view with buttons.
+- In a bound conversation, `/codex_resume` should default to the bound thread project or worktree scope.
+- In an unbound conversation, `/codex_resume` should default to searching all threads.
+- `--all` disables the implied current-project filter.
+- `--cwd <path>` supports `~/...` expansion on macOS and overrides the implied scope.
 - Validate that the directory exists before using it as a discovery filter.
 - If the path is invalid, provide operator-friendly guidance.
+- A single free-form positional argument should be interpreted as:
+  - exact thread id when it matches a Codex thread-guid pattern
+  - otherwise a free-form filter over visible threads
+- `--sync` should carry through list buttons and explicit resume targets, and should rename the current topic using `Thread Name (Project Name)` once the binding succeeds.
 
 2. Thread targeting and navigation aids.
 
 - Provide a button or action to jump to an already-joined topic for a selected thread.
 - If a thread is not bound in the current surface, allow creating or opening a topic binding for it.
+- `/codex_resume` should replace the current "run `/codex list`, copy a GUID, then `/codex join`" operator flow.
+- `/codex list` and `/codex join` can remain temporarily for compatibility, but they should be considered transitional compatibility shims once `/codex_resume` is in place.
 
 3. Binding persistence and route correctness.
 
@@ -70,6 +81,7 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
   - `/codex_experimental`
   - `/codex_skills`
   - `/codex_review`
+  - `/codex_resume`
   - `/codex_stop`
   - `/codex_rename`
   - `/codex_init`
@@ -79,6 +91,7 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
   - `/codex_mcp`
 - `/codex_rename --sync` with no explicit name should present two topic-only rename options, `Thread Name (Project Name)` and `Thread Name`, via typed callback buttons.
 - Choosing one of those `/codex_rename --sync` no-name options must rename only the channel topic; it must not rename the remote Codex thread and must not clear the existing thread name.
+- `/codex_resume` should be treated as a client-side operator command layered over thread discovery and binding state, not a conversational turn and not a new protocol-level slash relay.
 - Treat many of these as client-side features rather than "ask Codex to answer a slash command."
 - Only relay a mirrored command as a normal turn when the Codex source or protocol clearly indicates it is actually implemented that way.
 - `/codex_compact` should acknowledge immediately, keep typing alive while compaction runs, and report starting and final context usage.
@@ -146,14 +159,19 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 
 ## Acceptance Criteria
 
-1. `/codex list --cwd ~/repo` resolves and filters correctly after home expansion.
-2. Approval dialog shows a deterministic command code block and typed choices.
-3. Button and text-based approval submissions both work during live pending input.
-4. After restart, a bound topic still routes normal messages to Codex.
-5. After restart or join, an unresolved pending approval is replayed once, with no duplicates.
-6. Monitor view shows at least pending approvals and navigation metadata per entry.
-7. Inline monitor approval submits to the correct thread and request without rebinding side effects.
-8. `/focus` and `/unfocus` flows do not orphan Codex bindings.
+1. `/codex_resume` with no args produces a picker-style list with action buttons.
+2. `/codex_resume --cwd ~/repo` resolves and filters correctly after home expansion.
+3. `/codex_resume --all` skips implied current-project filtering in a bound conversation.
+4. `/codex_resume <thread-id>` binds that exact thread when it exists.
+5. `/codex_resume <filter text>` binds the best visible matching thread when a filter is supplied.
+6. `/codex_resume --sync <thread-id>` binds and renames the current topic using `Thread Name (Project Name)`.
+7. Approval dialog shows a deterministic command code block and typed choices.
+8. Button and text-based approval submissions both work during live pending input.
+9. After restart, a bound topic still routes normal messages to Codex.
+10. After restart or join, an unresolved pending approval is replayed once, with no duplicates.
+11. Monitor view shows at least pending approvals and navigation metadata per entry.
+12. Inline monitor approval submits to the correct thread and request without rebinding side effects.
+13. `/focus` and `/unfocus` flows do not orphan Codex bindings.
 
 ## Delivery Priorities
 
@@ -166,7 +184,8 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 2. Operator ergonomics second.
 
 - jump-to-topic navigation
-- improved `/codex list --cwd`
+- improved `/codex_resume --cwd`
+- replacement of `/codex list` plus `/codex join` with a single picker or resume flow
 - pinned binding message consistency
 
 3. Multi-thread operations third.
@@ -187,6 +206,7 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
 3. What stable thread status signals can be used for monitor digest freshness without expensive thread reads?
 4. What is the most reliable way to detect whether an approval dialog with a request id already exists and remains actionable on Telegram?
 5. Which mirrored commands should remain client-side in OpenClaw even though they appear as slash commands in Codex TUI?
+6. Once `/codex_resume` is stable, what is the cleanest compatibility sunset path for `/codex list` and `/codex join`?
 
 ## References
 

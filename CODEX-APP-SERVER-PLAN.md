@@ -48,6 +48,7 @@ This plan defines a new Codex App Server integration that follows the `/acp` mod
   - Approvals are a first-class feature from day one, including buttons plus free-form replies.
 - Initial command surface to plan around:
   - `/codex spawn` or `/codex new`
+  - `/codex_resume`
   - `/codex join`
   - `/codex steer`
   - `/codex status`
@@ -111,6 +112,14 @@ This plan defines a new Codex App Server integration that follows the `/acp` mod
   - binds the current conversation to the selected thread
   - replays recent thread state into the topic when appropriate
   - if the thread is waiting on approval/input, replays that prompt into Telegram
+- `/codex_resume`
+  - becomes the primary operator command for resuming or reattaching to an existing Codex thread
+  - with no args, renders a list or picker view with buttons
+  - defaults to current project or worktree scoping in a bound conversation unless `--all` is supplied
+  - accepts `--cwd <path>` to override the implied scope
+  - accepts a single positional argument that is interpreted as thread id when it matches the Codex guid shape, otherwise as free-form filter text
+  - reuses the existing bind-and-replay flow once a target thread is selected
+  - `--sync` should rename the current topic using `Thread Name (Project Name)` after successful rebinding
 - `/codex steer`
   - sends instructions to the bound or explicitly targeted Codex thread/session
 - `/codex status`
@@ -122,6 +131,7 @@ This plan defines a new Codex App Server integration that follows the `/acp` mod
   - remains supported
   - filters by project and text where possible
   - uses documented discovery/read flows first
+  - transitional note: once `/codex_resume` fully replaces the list-plus-join flow, `/codex list` should be removed or downgraded to a compatibility alias
 - Mirrored slash commands
   - discover Codex and MCP-defined slash commands via App Server discovery
   - expose them as prefixed OpenClaw commands like `/codex_<name>`
@@ -172,6 +182,9 @@ The local Codex source review on March 7, 2026 changed the implementation direct
 - `/codex_plan`
   - classification: client-side command
   - implementation note: switch collaboration mode or plan-state client-side; do not assume `/plan` is a conversational turn command
+- `/codex_resume`
+  - classification: client-side command
+  - implementation note: emulate the Codex TUI resume picker semantics locally by using thread discovery plus local bind-and-replay state; do not treat this as a new App Server conversational turn
 - `/codex_steer`
   - classification: structured App Server operation
   - implementation note: send a clarifying or corrective instruction through `turn/steer`, typically against the currently active run, so Codex continues with the new guidance
@@ -261,6 +274,11 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [x] Reclassify mirrored `/codex_*` commands by implementation type: client-side, structured RPC, or relayed turn.
 - [x] Reimplement `/codex_status` as a client-side status view built from App Server state instead of relayed slash text.
 - [x] Reimplement `/codex_fast` as a client-side `serviceTier` control instead of relayed slash text.
+- [ ] Add `/codex_resume` as the primary picker-style thread selection command, preserving current `/codex list` filtering, buttons, and bind-and-replay behavior.
+- [ ] Teach `/codex_resume` the Codex TUI-style scope rules: current project by default when bound, `--all` to disable that scope, and explicit `--cwd` override.
+- [ ] Teach `/codex_resume` to infer exact thread id versus free-form filter text from a single positional argument.
+- [ ] Teach `/codex_resume --sync` to carry synchronized-topic rename behavior through list buttons and explicit resume targets.
+- [ ] After `/codex_resume` is stable, remove `/codex list` and `/codex join` or reduce them to thin compatibility aliases, and update help text plus button callbacks accordingly.
 - [ ] Reimplement `/codex_model` as a client-side model selection and summary flow backed by App Server state.
 - [ ] Reimplement `/codex_permissions` as a client-side permissions or approval-policy control instead of relayed slash text.
 - [x] Reimplement `/codex_experimental` as a client-side experimental-feature view or toggle backed by structured runtime state.
