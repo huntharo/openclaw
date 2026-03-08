@@ -1261,6 +1261,91 @@ describe("handleCodexCommand", () => {
     expect(store[params.sessionKey]?.codexReviewActionRequestId).toBeTruthy();
   });
 
+  it("starts a periodic telegram typing heartbeat for /codex_review", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const params = buildParams(
+        "/codex_review",
+        {},
+        {
+          Surface: "telegram",
+          Provider: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          To: "telegram:-1003841603622",
+          MessageThreadId: "1364",
+        },
+      );
+      params.sessionEntry = {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "thread-123",
+        codexProjectKey: "/repo/openclaw",
+        codexAutoRoute: true,
+      };
+
+      const result = await handleCodexCommand(params, true);
+
+      expect(result).toEqual({ shouldContinue: false });
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 4_500);
+      expect(clearIntervalSpy).toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("sends a delayed progress update for long /codex_review runs", async () => {
+    vi.useFakeTimers();
+    const params = buildParams(
+      "/codex_review",
+      {},
+      {
+        Surface: "telegram",
+        Provider: "telegram",
+        OriginatingTo: "telegram:-1003841603622",
+        To: "telegram:-1003841603622",
+        MessageThreadId: "1364",
+      },
+    );
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    let resolveReview:
+      | ((value: { reviewText: string; reviewThreadId: string; turnId: string }) => void)
+      | undefined;
+    startCodexAppServerReviewMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveReview = resolve;
+        }),
+    );
+
+    const commandPromise = handleCodexCommand(params, true);
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    const sentTexts = routeReplyMock.mock.calls
+      .map((call) => call[0]?.payload?.text)
+      .filter((text): text is string => typeof text === "string");
+    expect(sentTexts).toContain("Codex is still reviewing...");
+
+    resolveReview?.({
+      reviewText: "Looks solid overall.",
+      reviewThreadId: "thread-123",
+      turnId: "turn-123",
+    });
+
+    const result = await commandPromise;
+    expect(result).toEqual({ shouldContinue: false });
+  });
+
   it("renames the bound Codex thread through thread/name/set", async () => {
     const params = buildParams("/codex_rename Better thread title");
     params.sessionEntry = {
