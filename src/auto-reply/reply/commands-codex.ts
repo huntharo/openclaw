@@ -47,6 +47,7 @@ import {
   type CodexAppServerCollaborationMode,
   type PendingCodexUserInputState,
   type CodexAppServerThreadSummary,
+  isCodexAppServerMissingThreadError,
 } from "../../agents/codex-app-server-runner.js";
 import { interruptCodexAppServerRunBySessionKey } from "../../agents/codex-app-server-runs.js";
 import {
@@ -1022,23 +1023,33 @@ function formatCodexMirroredStatusText(params: {
   entry: HandleCommandsParams["sessionEntry"];
   errors: string[];
   projectFolder?: string;
+  worktreeFolder?: string;
+  bindingActive?: boolean;
 }): string {
   const lines = ["OpenAI Codex"];
+  lines.push(`Binding: ${params.bindingActive ? "active" : "none"}`);
   if (params.threadState?.threadName?.trim()) {
     lines.push(`Thread: ${params.threadState.threadName.trim()}`);
   }
-  lines.push(`Model: ${formatCodexModelText(params.threadState)}`);
+  if (params.threadState) {
+    lines.push(`Model: ${formatCodexModelText(params.threadState)}`);
+  }
   lines.push(`Project folder: ${params.projectFolder ?? "unknown"}`);
   lines.push(
     `Worktree folder: ${shortenHomePath(
-      params.threadState?.cwd?.trim() || params.entry?.codexProjectKey?.trim() || "unknown",
+      params.worktreeFolder?.trim() ||
+        params.threadState?.cwd?.trim() ||
+        params.entry?.codexProjectKey?.trim() ||
+        "unknown",
     )}`,
   );
-  lines.push(
-    `Fast mode: ${formatCodexFastModeValue(
-      params.threadState?.serviceTier ?? params.entry?.codexServiceTier,
-    )}`,
-  );
+  if (params.threadState || params.entry?.codexServiceTier) {
+    lines.push(
+      `Fast mode: ${formatCodexFastModeValue(
+        params.threadState?.serviceTier ?? params.entry?.codexServiceTier,
+      )}`,
+    );
+  }
   const permissions = formatCodexPermissions({
     approvalPolicy: params.threadState?.approvalPolicy,
     sandbox: params.threadState?.sandbox,
@@ -1047,9 +1058,10 @@ function formatCodexMirroredStatusText(params: {
     lines.push(`Permissions: ${permissions}`);
   }
   lines.push(`Account: ${formatCodexAccountText(params.account)}`);
-  lines.push(
-    `Session: ${params.threadState?.threadId?.trim() || params.entry?.codexThreadId?.trim() || "unknown"}`,
-  );
+  const sessionId = params.threadState?.threadId?.trim() || params.entry?.codexThreadId?.trim();
+  if (sessionId) {
+    lines.push(`Session: ${sessionId}`);
+  }
   const visibleRateLimits = selectVisibleCodexRateLimits({
     rateLimits: params.rateLimits,
     currentModel: params.threadState?.model,
@@ -2022,32 +2034,58 @@ async function handleCodexMirroredStatusCommand(
   params: HandleCommandsParams,
 ): Promise<CommandHandlerResult> {
   const target = resolveCodexBoundSession(params);
-  if ("error" in target) {
-    return stopWithText(target.error);
-  }
-  const sessionEntry = resolveStoredSessionEntry(params, target.sessionKey) ?? params.sessionEntry;
-  const threadId = sessionEntry?.codexThreadId?.trim();
-  if (!threadId) {
-    return stopWithText(
-      "Codex status is unavailable until a Codex thread is started or joined in this conversation.",
-    );
-  }
+  const bound = !("error" in target);
+  const sessionKey = bound ? target.sessionKey : params.sessionKey;
+  const sessionEntry =
+    (bound ? resolveStoredSessionEntry(params, target.sessionKey) : undefined) ??
+    params.sessionEntry;
   const workspaceDir =
-    sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
+    sessionEntry?.codexProjectKey?.trim() ||
+    (bound ? target.projectKey : undefined) ||
+    params.workspaceDir;
+  const threadId = bound ? sessionEntry?.codexThreadId?.trim() : undefined;
+  let threadState: CodexAppServerThreadState | undefined;
   const errors: string[] = [];
-  const [threadState, account, rateLimits] = await Promise.all([
-    readCodexAppServerThreadState({
-      config: params.cfg,
-      sessionKey: target.sessionKey,
-      workspaceDir,
-      threadId,
-    }).catch((error) => {
+  if (bound && threadId) {
+    try {
+      threadState = await readCodexAppServerThreadState({
+        config: params.cfg,
+        sessionKey,
+        workspaceDir,
+        threadId,
+      });
+    } catch (error) {
+      if (isCodexAppServerMissingThreadError(error)) {
+        await unbindCodexConversation(params);
+        await updateCodexSession(
+          params,
+          {
+            providerOverride: undefined,
+            codexThreadId: undefined,
+            codexAutoRoute: false,
+            pendingUserInputRequestId: undefined,
+            pendingUserInputOptions: undefined,
+            pendingUserInputActions: undefined,
+            pendingUserInputExpiresAt: undefined,
+            pendingUserInputPromptText: undefined,
+            pendingUserInputMethod: undefined,
+            pendingUserInputAwaitingSteer: undefined,
+            codexReviewActionRequestId: undefined,
+            codexReviewActions: undefined,
+          },
+          sessionKey,
+        );
+        return stopWithText(
+          "Codex binding cleared because the remote thread no longer exists. This conversation is no longer bound.",
+        );
+      }
       errors.push(`thread state unavailable: ${String(error)}`);
-      return undefined;
-    }),
+    }
+  }
+  const [account, rateLimits] = await Promise.all([
     readCodexAppServerAccount({
       config: params.cfg,
-      sessionKey: target.sessionKey,
+      sessionKey,
       workspaceDir,
     }).catch((error) => {
       errors.push(`account unavailable: ${String(error)}`);
@@ -2055,7 +2093,7 @@ async function handleCodexMirroredStatusCommand(
     }),
     readCodexAppServerRateLimits({
       config: params.cfg,
-      sessionKey: target.sessionKey,
+      sessionKey,
       workspaceDir,
     }).catch((error) => {
       errors.push(`rate limits unavailable: ${String(error)}`);
@@ -2063,17 +2101,19 @@ async function handleCodexMirroredStatusCommand(
     }),
   ]);
   const projectFolder = await resolveCodexProjectFolder(threadState?.cwd ?? workspaceDir);
-  await updateCodexSession(
-    params,
-    {
-      providerOverride: "codex-app-server",
-      codexAutoRoute: true,
-      codexServiceTier: normalizeCodexServiceTier(
-        threadState?.serviceTier ?? sessionEntry?.codexServiceTier,
-      ),
-    },
-    target.sessionKey,
-  );
+  if (bound) {
+    await updateCodexSession(
+      params,
+      {
+        providerOverride: "codex-app-server",
+        codexAutoRoute: true,
+        codexServiceTier: normalizeCodexServiceTier(
+          threadState?.serviceTier ?? sessionEntry?.codexServiceTier,
+        ),
+      },
+      sessionKey,
+    );
+  }
   return stopWithText(
     formatCodexMirroredStatusText({
       threadState,
@@ -2082,6 +2122,8 @@ async function handleCodexMirroredStatusCommand(
       entry: sessionEntry,
       errors,
       projectFolder,
+      worktreeFolder: workspaceDir,
+      bindingActive: bound,
     }),
   );
 }

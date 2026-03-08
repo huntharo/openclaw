@@ -18,6 +18,10 @@ import {
   resolveCodexAppServerSettings,
   type CodexAppServerSettings,
 } from "./codex-app-server-config.js";
+import {
+  isCodexAppServerMissingThreadError,
+  readCodexAppServerThreadState,
+} from "./codex-app-server-runner.js";
 import { normalizeProviderId } from "./model-selection.js";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
@@ -459,6 +463,107 @@ async function repairCodexBoundSessionEntry(params: {
   return true;
 }
 
+async function clearCodexBoundSessionEntry(params: {
+  cfg: OpenClawConfig;
+  store: Record<string, Record<string, unknown>>;
+  sessionKey: string;
+  entry: Record<string, unknown>;
+  now: number;
+}): Promise<void> {
+  const target = resolveGatewaySessionStoreTarget({
+    cfg: params.cfg,
+    key: params.sessionKey,
+  });
+  await updateSessionStore(target.storePath, (nextStore) => {
+    const liveTarget = resolveGatewaySessionStoreTarget({
+      cfg: params.cfg,
+      key: params.sessionKey,
+      store: nextStore,
+    });
+    const storeKey =
+      [liveTarget.canonicalKey, ...liveTarget.storeKeys].find(
+        (candidate) => nextStore[candidate],
+      ) ?? liveTarget.canonicalKey;
+    const entry = nextStore[storeKey];
+    if (!entry) {
+      return;
+    }
+    delete entry.providerOverride;
+    delete entry.codexThreadId;
+    entry.codexAutoRoute = false;
+    entry.pendingUserInputRequestId = undefined;
+    entry.pendingUserInputOptions = undefined;
+    entry.pendingUserInputActions = undefined;
+    entry.pendingUserInputExpiresAt = undefined;
+    entry.pendingUserInputPromptText = undefined;
+    entry.pendingUserInputMethod = undefined;
+    entry.pendingUserInputAwaitingSteer = undefined;
+    entry.codexReviewActionRequestId = undefined;
+    entry.codexReviewActions = undefined;
+    entry.updatedAt = params.now;
+    nextStore[storeKey] = entry;
+  });
+  params.store[params.sessionKey] = {
+    ...params.entry,
+    providerOverride: undefined,
+    codexThreadId: undefined,
+    codexAutoRoute: false,
+    pendingUserInputRequestId: undefined,
+    pendingUserInputOptions: undefined,
+    pendingUserInputActions: undefined,
+    pendingUserInputExpiresAt: undefined,
+    pendingUserInputPromptText: undefined,
+    pendingUserInputMethod: undefined,
+    pendingUserInputAwaitingSteer: undefined,
+    codexReviewActionRequestId: undefined,
+    codexReviewActions: undefined,
+    updatedAt: params.now,
+  };
+}
+
+async function validateCodexBoundThread(params: {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  entry: Record<string, unknown>;
+  validateThread?: (params: {
+    cfg: OpenClawConfig;
+    sessionKey: string;
+    workspaceDir?: string;
+    threadId: string;
+  }) => Promise<void>;
+}): Promise<{ missing: boolean }> {
+  const threadId =
+    typeof params.entry.codexThreadId === "string" ? params.entry.codexThreadId.trim() : "";
+  if (!threadId) {
+    return { missing: false };
+  }
+  const workspaceDir =
+    typeof params.entry.codexProjectKey === "string" ? params.entry.codexProjectKey : undefined;
+  try {
+    if (params.validateThread) {
+      await params.validateThread({
+        cfg: params.cfg,
+        sessionKey: params.sessionKey,
+        workspaceDir,
+        threadId,
+      });
+    } else {
+      await readCodexAppServerThreadState({
+        config: params.cfg,
+        sessionKey: params.sessionKey,
+        workspaceDir,
+        threadId,
+      });
+    }
+    return { missing: false };
+  } catch (error) {
+    if (isCodexAppServerMissingThreadError(error)) {
+      return { missing: true };
+    }
+    throw error;
+  }
+}
+
 export async function reconcileCodexBoundSessionsOnStartup(params: {
   cfg: OpenClawConfig;
   listBindings?: () => SessionBindingRecord[];
@@ -466,6 +571,12 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
   bindBinding?: (params: {
     targetSessionKey: string;
     conversation: SessionBindingRecord["conversation"];
+  }) => Promise<void>;
+  validateThread?: (params: {
+    cfg: OpenClawConfig;
+    sessionKey: string;
+    workspaceDir?: string;
+    threadId: string;
   }) => Promise<void>;
 }): Promise<CodexBoundSessionReconcileResult> {
   const bindings = (params.listBindings ?? listPersistedCodexBindingsOnStartup)().filter(
@@ -507,6 +618,36 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
       continue;
     }
     try {
+      const threadStatus = await validateCodexBoundThread({
+        cfg: params.cfg,
+        sessionKey,
+        entry: existing,
+        validateThread: params.validateThread,
+      });
+      if (threadStatus.missing) {
+        staleSessionKeys.add(sessionKey);
+        removed += await (params.unbindBinding ?? unbindCodexStartupBinding)(binding.bindingId);
+        await clearCodexBoundSessionEntry({
+          cfg: params.cfg,
+          store,
+          sessionKey,
+          entry: existing,
+          now,
+        });
+        continue;
+      }
+    } catch (error) {
+      failed += 1;
+      failureDetails.push(
+        formatCodexStartupFailureDetail({
+          sessionKey,
+          conversationId: binding.conversation.conversationId,
+          error,
+        }),
+      );
+      continue;
+    }
+    try {
       if (
         await repairCodexBoundSessionEntry({
           cfg: params.cfg,
@@ -539,6 +680,35 @@ export async function reconcileCodexBoundSessionsOnStartup(params: {
       continue;
     }
     checked += 1;
+    try {
+      const threadStatus = await validateCodexBoundThread({
+        cfg: params.cfg,
+        sessionKey,
+        entry: entry as Record<string, unknown>,
+        validateThread: params.validateThread,
+      });
+      if (threadStatus.missing) {
+        staleSessionKeys.add(sessionKey);
+        await clearCodexBoundSessionEntry({
+          cfg: params.cfg,
+          store,
+          sessionKey,
+          entry: entry as Record<string, unknown>,
+          now,
+        });
+        continue;
+      }
+    } catch (error) {
+      failed += 1;
+      failureDetails.push(
+        formatCodexStartupFailureDetail({
+          sessionKey,
+          conversationId: conversation.conversationId,
+          error,
+        }),
+      );
+      continue;
+    }
     try {
       await bindCodexStartupBindingWithRetry({
         targetSessionKey: sessionKey,

@@ -463,4 +463,86 @@ describe("initializeCodexAppServerRuntime", () => {
       expect.stringContaining(`${sessionKey} (-100200300:topic:77)`),
     ]);
   });
+
+  it("removes and clears stale bindings when the remote codex thread no longer exists", async () => {
+    const sessionKey = "agent:main:codex:binding:telegram:default:deadbeefcafefeed";
+    await fs.writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "session-stale",
+            updatedAt: Date.now() - 60_000,
+            providerOverride: "codex-app-server",
+            codexThreadId: "thread-dead",
+            codexProjectKey: "/repo/openclaw",
+            codexAutoRoute: true,
+            channel: "telegram",
+            groupId: "-100200300:topic:88",
+            origin: {
+              accountId: "default",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    const unbindBinding = vi.fn(async () => 1);
+
+    const result = await reconcileCodexBoundSessionsOnStartup({
+      cfg: {
+        session: {
+          store: storePath,
+        },
+      },
+      listBindings: () => [
+        {
+          bindingId: "telegram:stale",
+          targetSessionKey: sessionKey,
+          targetKind: "session",
+          conversation: {
+            channel: "telegram",
+            accountId: "default",
+            conversationId: "-100200300:topic:88",
+            parentConversationId: "-100200300",
+          },
+          status: "active",
+          boundAt: Date.now() - 60_000,
+        },
+      ],
+      unbindBinding,
+      validateThread: vi.fn(async () => {
+        throw new Error(
+          "codex app server rpc error (-32600): no rollout found for thread id thread-dead",
+        );
+      }),
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      repaired: 0,
+      removed: 1,
+      failed: 0,
+      staleSessionKeys: [sessionKey],
+      failureDetails: [],
+    });
+    expect(unbindBinding).toHaveBeenCalledWith("telegram:stale");
+
+    const restored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
+    expect(
+      restored[sessionKey] as {
+        providerOverride?: string;
+        codexThreadId?: string;
+        codexAutoRoute?: boolean;
+      },
+    ).toEqual(
+      expect.objectContaining({
+        codexAutoRoute: false,
+      }),
+    );
+    expect(restored[sessionKey]).not.toHaveProperty("providerOverride");
+    expect(restored[sessionKey]).not.toHaveProperty("codexThreadId");
+  });
 });

@@ -205,6 +205,17 @@ export type CodexAppServerRateLimitSummary = {
   windowMinutes?: number;
 };
 
+export function isCodexAppServerMissingThreadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("no rollout found for thread id") ||
+    normalized.includes("thread not found") ||
+    normalized.includes("no thread found") ||
+    normalized.includes("unknown thread id")
+  );
+}
+
 type RunCodexAppServerAgentParams = {
   sessionId: string;
   sessionKey?: string;
@@ -2460,28 +2471,19 @@ function buildThreadResumePayloads(params: {
   cwd?: string;
   serviceTier?: string | null;
 }): Array<Record<string, unknown>> {
-  const payloads: Array<Record<string, unknown>> = [];
   const base: Record<string, unknown> = {
     threadId: params.threadId,
   };
-  const snake: Record<string, unknown> = {
-    thread_id: params.threadId,
-  };
   if (typeof params.model === "string" && params.model.trim()) {
     base.model = params.model.trim();
-    snake.model = params.model.trim();
   }
   if (typeof params.cwd === "string" && params.cwd.trim()) {
     base.cwd = params.cwd.trim();
-    snake.cwd = params.cwd.trim();
   }
   if (params.serviceTier !== undefined) {
     base.serviceTier = params.serviceTier;
-    snake.serviceTier = params.serviceTier;
-    snake.service_tier = params.serviceTier;
   }
-  payloads.push(base, snake);
-  return payloads;
+  return [base];
 }
 
 async function withInitializedCodexClient<T>(
@@ -3520,6 +3522,7 @@ export const __testing = {
   extractThreadsFromValue,
   extractThreadState,
   extractThreadReplayFromReadResult,
+  isCodexAppServerMissingThreadError,
   turnInterruptMethods: TURN_INTERRUPT_METHODS,
   formatRateLimitWindowName,
   isTransportClosedError,

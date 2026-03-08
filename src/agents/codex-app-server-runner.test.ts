@@ -272,7 +272,7 @@ describe("buildThreadResumePayloads", () => {
       __testing.buildThreadResumePayloads({
         threadId: "thread-123",
       }),
-    ).toEqual([{ threadId: "thread-123" }, { thread_id: "thread-123" }]);
+    ).toEqual([{ threadId: "thread-123" }]);
   });
 
   it("does not add cwd when changing service tier on an existing thread", () => {
@@ -281,10 +281,20 @@ describe("buildThreadResumePayloads", () => {
         threadId: "thread-123",
         serviceTier: "fast",
       }),
-    ).toEqual([
-      { threadId: "thread-123", serviceTier: "fast" },
-      { thread_id: "thread-123", serviceTier: "fast", service_tier: "fast" },
-    ]);
+    ).toEqual([{ threadId: "thread-123", serviceTier: "fast" }]);
+  });
+});
+
+describe("isCodexAppServerMissingThreadError", () => {
+  it("detects the codex missing-thread rollout error without matching field errors", () => {
+    expect(
+      __testing.isCodexAppServerMissingThreadError(
+        new Error("codex app server rpc error (-32600): no rollout found for thread id abc"),
+      ),
+    ).toBe(true);
+    expect(
+      __testing.isCodexAppServerMissingThreadError(new Error("missing field `threadId`")),
+    ).toBe(false);
   });
 });
 

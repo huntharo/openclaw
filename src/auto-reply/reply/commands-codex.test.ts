@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCodexBoundSessionKey } from "../../agents/codex-app-server-bindings.js";
+import { buildCodexPlanActionCallbackData } from "../../agents/codex-app-server-plan-actions.js";
 import {
   clearActiveCodexAppServerRun,
   setActiveCodexAppServerRun,
 } from "../../agents/codex-app-server-runs.js";
-import { buildCodexPlanActionCallbackData } from "../../agents/codex-app-server-plan-actions.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
@@ -22,6 +22,7 @@ const readCodexAppServerMcpServersMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerModelsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerRateLimitsMock = vi.hoisted(() => vi.fn());
 const readCodexAppServerSkillsMock = vi.hoisted(() => vi.fn());
+const isCodexAppServerMissingThreadErrorMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadNameMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadServiceTierMock = vi.hoisted(() => vi.fn());
 const startCodexAppServerThreadCompactionMock = vi.hoisted(() => vi.fn());
@@ -48,6 +49,8 @@ const sessionBindingServiceMock = vi.hoisted(() => ({
 vi.mock("../../agents/codex-app-server-runner.js", () => ({
   discoverCodexAppServerThreads: (...args: unknown[]) => discoverCodexAppServerThreadsMock(...args),
   isCodexAppServerProvider: (provider: string) => provider === "codex-app-server",
+  isCodexAppServerMissingThreadError: (...args: unknown[]) =>
+    isCodexAppServerMissingThreadErrorMock(...args),
   startCodexAppServerThreadCompaction: (...args: unknown[]) =>
     startCodexAppServerThreadCompactionMock(...args),
   readCodexAppServerThreadContext: (...args: unknown[]) =>
@@ -143,6 +146,10 @@ describe("handleCodexCommand", () => {
       },
     ]);
     readCodexAppServerSkillsMock.mockReset().mockResolvedValue([]);
+    isCodexAppServerMissingThreadErrorMock.mockReset().mockImplementation((error: unknown) => {
+      const text = error instanceof Error ? error.message : String(error);
+      return text.toLowerCase().includes("no rollout found for thread id");
+    });
     setCodexAppServerThreadNameMock.mockReset().mockResolvedValue(undefined);
     setCodexAppServerThreadServiceTierMock.mockReset().mockResolvedValue({
       threadId: "thread-123",
@@ -1476,6 +1483,25 @@ describe("handleCodexCommand", () => {
     expect(readCodexAppServerRateLimitsMock).toHaveBeenCalled();
   });
 
+  it("renders useful account and limit info for /codex_status when unbound", async () => {
+    const params = buildParams("/codex_status");
+
+    const result = await handleCodexCommand(params, true);
+    const text = result?.reply?.text ?? "";
+
+    expect(text).toContain("OpenAI Codex");
+    expect(text).toContain("Binding: none");
+    expect(text).toContain("Project folder: /repo/openclaw");
+    expect(text).toContain("Worktree folder: /tmp");
+    expect(text).toContain("Account: user@example.com (pro)");
+    expect(text).toContain("5h limit: 96% left");
+    expect(text).not.toContain("Codex status is unavailable until");
+    expect(text).not.toContain("Session:");
+    expect(readCodexAppServerThreadStateMock).not.toHaveBeenCalled();
+    expect(readCodexAppServerAccountMock).toHaveBeenCalled();
+    expect(readCodexAppServerRateLimitsMock).toHaveBeenCalled();
+  });
+
   it("hides non-matching model-specific usage rows in /codex_status", async () => {
     const params = buildParams("/codex_status");
     params.sessionEntry = {
@@ -1714,7 +1740,82 @@ describe("handleCodexCommand", () => {
     expect(result?.reply?.text).toBe("No active Codex run to stop.");
     expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
+  it("clears a stale codex binding when /codex_status finds a missing remote thread", async () => {
+    const boundSessionKey = buildCodexBoundSessionKey({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "-100200300:topic:88",
+      agentId: "main",
+    });
+    await updateSessionStore(storePath, (store) => {
+      store[boundSessionKey] = {
+        sessionId: "session-stale",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "thread-dead",
+        codexProjectKey: "/repo/openclaw",
+        codexAutoRoute: true,
+      };
+    });
+    sessionBindingServiceMock.resolveByConversation.mockReturnValue({
+      bindingId: "telegram:stale",
+      targetSessionKey: boundSessionKey,
+      targetKind: "session",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "-100200300:topic:88",
+        parentConversationId: "-100200300",
+      },
+      status: "active",
+      boundAt: Date.now(),
+      metadata: {},
+    });
+    sessionBindingServiceMock.unbind.mockResolvedValue([{ bindingId: "telegram:stale" }]);
+    const params = buildParams(
+      "/codex_status",
+      {},
+      {
+        OriginatingTo: "telegram:-100200300",
+        To: "telegram:-100200300",
+        MessageThreadId: 88,
+      },
+    );
+    readCodexAppServerThreadStateMock.mockRejectedValueOnce(
+      new Error("codex app server rpc error (-32600): no rollout found for thread id thread-dead"),
+    );
 
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe(
+      "Codex binding cleared because the remote thread no longer exists. This conversation is no longer bound.",
+    );
+    expect(sessionBindingServiceMock.unbind).toHaveBeenCalledWith({
+      bindingId: "telegram:stale",
+      reason: "codex-detach",
+    });
+    const store = loadSessionStore(storePath);
+    expect(store[boundSessionKey]?.codexAutoRoute).toBe(false);
+    expect(store[boundSessionKey]?.providerOverride).toBeUndefined();
+    expect(store[boundSessionKey]?.codexThreadId).toBeUndefined();
+  });
+
+  it("rejects unknown mirrored Codex commands without attempting discovery", async () => {
+    const params = buildParams("/codex_plan_mode");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+    };
+
+    const result = await handleCodexCommand(params, true);
+
+    expect(result?.reply?.text).toBe("Unknown Codex mirrored command: /codex_plan_mode");
+    expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
+  });
   it("strips the Telegram bot suffix before reading /codex_skills locally", async () => {
     const params = buildParams("/codex_skills@huntharo_bot");
     params.sessionEntry = {
