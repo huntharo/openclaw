@@ -70,6 +70,7 @@ import { loadSessionStore, updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
+import { logWarn } from "../../logger.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolveTelegramAccount } from "../../telegram/accounts.js";
@@ -144,6 +145,31 @@ function stopWithText(text: string): CommandHandlerResult {
     shouldContinue: false,
     reply: { text },
   };
+}
+
+function isCodexTransportClosedError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized.includes("stdio not connected") ||
+    normalized.includes("websocket not connected") ||
+    normalized.includes("stdio closed") ||
+    normalized.includes("websocket closed") ||
+    normalized.includes("socket closed") ||
+    normalized.includes("broken pipe")
+  );
+}
+
+function formatCodexInterruptedText(kind: "plan" | "review"): string {
+  return `Codex ${kind} was interrupted before it finished.`;
+}
+
+function formatCodexFailureText(kind: "plan" | "review", error: unknown): string {
+  if (isCodexTransportClosedError(error)) {
+    return `Codex ${kind} failed because the App Server connection closed. Please retry the command or rejoin the thread.`;
+  }
+  const message = error instanceof Error ? error.message.trim() : String(error).trim();
+  return message ? `Codex ${kind} failed: ${message}` : `Codex ${kind} failed.`;
 }
 
 function continueWithPrompt(params: HandleCommandsParams, prompt: string): CommandHandlerResult {
@@ -2477,59 +2503,66 @@ async function handleCodexPlanCommand(
       });
     })();
   }, CODEX_PLAN_PROGRESS_DELAY_MS);
-  const result = await (async () => {
-    try {
-      return await runCodexAppServerAgent({
-        sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
-        sessionKey: target.sessionKey,
-        prompt: trimmedArgs,
-        model: resolveStoredCodexModel(sessionEntry) || params.model,
-        workspaceDir,
-        config: params.cfg,
-        runId: crypto.randomUUID(),
-        existingThreadId: threadId,
-        collaborationMode: resolveCodexPlanCollaborationMode({
-          sessionEntry,
-          threadState,
-          fallbackModel: params.model,
-        }),
-        onToolResult: async (payload) => {
-          if (!payload.text?.trim() && !payload.channelData) {
-            return;
-          }
-          if (
-            (
-              payload.channelData as
-                | { codexAppServer?: { interactiveRequest?: boolean } }
-                | undefined
-            )?.codexAppServer?.interactiveRequest
-          ) {
-            questionVisible = true;
-          }
-          await directTyping?.refresh();
-          await sendCodexReplies({
-            commandParams: params,
-            sessionKey: target.sessionKey,
-            payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
-          });
-        },
-        onPendingUserInput: async (pending) => {
-          if (pending) {
-            questionVisible = true;
+  let result;
+  try {
+    result = await (async () => {
+      try {
+        return await runCodexAppServerAgent({
+          sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
+          sessionKey: target.sessionKey,
+          prompt: trimmedArgs,
+          model: resolveStoredCodexModel(sessionEntry) || params.model,
+          workspaceDir,
+          config: params.cfg,
+          runId: crypto.randomUUID(),
+          existingThreadId: threadId,
+          collaborationMode: resolveCodexPlanCollaborationMode({
+            sessionEntry,
+            threadState,
+            fallbackModel: params.model,
+          }),
+          onToolResult: async (payload) => {
+            if (!payload.text?.trim() && !payload.channelData) {
+              return;
+            }
+            if (
+              (
+                payload.channelData as
+                  | { codexAppServer?: { interactiveRequest?: boolean } }
+                  | undefined
+              )?.codexAppServer?.interactiveRequest
+            ) {
+              questionVisible = true;
+            }
             await directTyping?.refresh();
-          }
-          await updateCodexPendingInputState({
-            commandParams: params,
-            sessionKey: target.sessionKey,
-            pending,
-          });
-        },
-      });
-    } finally {
-      clearTimeout(progressTimer);
-      directTyping?.stop();
-    }
-  })();
+            await sendCodexReplies({
+              commandParams: params,
+              sessionKey: target.sessionKey,
+              payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+            });
+          },
+          onPendingUserInput: async (pending) => {
+            if (pending) {
+              questionVisible = true;
+              await directTyping?.refresh();
+            }
+            await updateCodexPendingInputState({
+              commandParams: params,
+              sessionKey: target.sessionKey,
+              pending,
+            });
+          },
+        });
+      } finally {
+        clearTimeout(progressTimer);
+        directTyping?.stop();
+      }
+    })();
+  } catch (error) {
+    const text = formatCodexFailureText("plan", error);
+    logWarn(text);
+    return stopWithText(text);
+  }
   const resolvedThreadId = result.meta?.agentMeta?.sessionId?.trim();
   if (resolvedThreadId) {
     await updateCodexSession(
@@ -2544,6 +2577,11 @@ async function handleCodexPlanCommand(
     );
   }
   const planArtifact = result.meta?.codexPlanArtifact;
+  if (result.meta?.aborted) {
+    const text = formatCodexInterruptedText("plan");
+    logWarn(text);
+    return stopWithText(text);
+  }
   if (planArtifact?.markdown.trim()) {
     planVisible = true;
     const delivery = await buildCodexPlanDelivery({
@@ -2623,47 +2661,59 @@ async function handleCodexReviewCommand(
       });
     })();
   }, CODEX_REVIEW_PROGRESS_DELAY_MS);
-  const reviewResult = await (async () => {
-    try {
-      return await startCodexAppServerReview({
-        sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
-        sessionKey: target.sessionKey,
-        workspaceDir,
-        config: params.cfg,
-        runId: crypto.randomUUID(),
-        threadId,
-        target: argsText.trim()
-          ? { type: "custom", instructions: argsText.trim() }
-          : { type: "uncommittedChanges" },
-        onToolResult: async (payload) => {
-          if (!payload.text?.trim() && !payload.channelData) {
-            return;
-          }
-          reviewVisible = true;
-          await directTyping?.refresh();
-          await sendCodexReplies({
-            commandParams: params,
-            sessionKey: target.sessionKey,
-            payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
-          });
-        },
-        onPendingUserInput: async (pending) => {
-          if (pending) {
+  let reviewResult;
+  try {
+    reviewResult = await (async () => {
+      try {
+        return await startCodexAppServerReview({
+          sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
+          sessionKey: target.sessionKey,
+          workspaceDir,
+          config: params.cfg,
+          runId: crypto.randomUUID(),
+          threadId,
+          target: argsText.trim()
+            ? { type: "custom", instructions: argsText.trim() }
+            : { type: "uncommittedChanges" },
+          onToolResult: async (payload) => {
+            if (!payload.text?.trim() && !payload.channelData) {
+              return;
+            }
             reviewVisible = true;
             await directTyping?.refresh();
-          }
-          await updateCodexPendingInputState({
-            commandParams: params,
-            sessionKey: target.sessionKey,
-            pending,
-          });
-        },
-      });
-    } finally {
-      clearTimeout(progressTimer);
-      directTyping?.stop();
-    }
-  })();
+            await sendCodexReplies({
+              commandParams: params,
+              sessionKey: target.sessionKey,
+              payloads: [{ text: payload.text?.trim(), channelData: payload.channelData }],
+            });
+          },
+          onPendingUserInput: async (pending) => {
+            if (pending) {
+              reviewVisible = true;
+              await directTyping?.refresh();
+            }
+            await updateCodexPendingInputState({
+              commandParams: params,
+              sessionKey: target.sessionKey,
+              pending,
+            });
+          },
+        });
+      } finally {
+        clearTimeout(progressTimer);
+        directTyping?.stop();
+      }
+    })();
+  } catch (error) {
+    const text = formatCodexFailureText("review", error);
+    logWarn(text);
+    return stopWithText(text);
+  }
+  if (reviewResult.aborted) {
+    const text = formatCodexInterruptedText("review");
+    logWarn(text);
+    return stopWithText(text);
+  }
   const parsed = parseCodexReviewOutput(reviewResult.reviewText);
   const reviewRequestId = crypto.randomUUID();
   const reviewActions = buildCodexReviewActions(parsed.findings);

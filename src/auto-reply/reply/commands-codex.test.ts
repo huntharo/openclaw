@@ -1037,6 +1037,92 @@ describe("handleCodexCommand", () => {
     }
   });
 
+  it("stops typing and returns an error reply when /codex_plan disconnects", async () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const params = buildParams(
+        "/codex_plan break this into phases",
+        {},
+        {
+          Surface: "telegram",
+          Provider: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          To: "telegram:-1003841603622",
+          MessageThreadId: "1364",
+        },
+      );
+      params.sessionEntry = {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "thread-123",
+        codexProjectKey: "/repo/openclaw",
+        codexAutoRoute: true,
+      };
+      runCodexAppServerAgentMock.mockRejectedValueOnce(
+        new Error("codex app server stdio not connected"),
+      );
+
+      const result = await handleCodexCommand(params, true);
+
+      expect(clearIntervalSpy).toHaveBeenCalled();
+      expect(result).toEqual({
+        shouldContinue: false,
+        reply: {
+          text: "Codex plan failed because the App Server connection closed. Please retry the command or rejoin the thread.",
+        },
+      });
+    } finally {
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("stops typing and returns an interrupted reply when /codex_plan aborts", async () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const params = buildParams(
+        "/codex_plan break this into phases",
+        {},
+        {
+          Surface: "telegram",
+          Provider: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          To: "telegram:-1003841603622",
+          MessageThreadId: "1364",
+        },
+      );
+      params.sessionEntry = {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "thread-123",
+        codexProjectKey: "/repo/openclaw",
+        codexAutoRoute: true,
+      };
+      runCodexAppServerAgentMock.mockResolvedValueOnce({
+        payloads: [],
+        meta: {
+          aborted: true,
+          agentMeta: {
+            sessionId: "thread-123",
+          },
+        },
+      });
+
+      const result = await handleCodexCommand(params, true);
+
+      expect(clearIntervalSpy).toHaveBeenCalled();
+      expect(result).toEqual({
+        shouldContinue: false,
+        reply: {
+          text: "Codex plan was interrupted before it finished.",
+        },
+      });
+    } finally {
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
   it("delivers large /codex_plan results as a markdown attachment plus a separate prompt", async () => {
     const params = buildParams(
       "/codex_plan write the full rollout document",
@@ -1292,6 +1378,89 @@ describe("handleCodexCommand", () => {
       expect(clearIntervalSpy).toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("stops typing and returns an error reply when /codex_review disconnects", async () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const params = buildParams(
+        "/codex_review",
+        {},
+        {
+          Surface: "telegram",
+          Provider: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          To: "telegram:-1003841603622",
+          MessageThreadId: "1364",
+        },
+      );
+      params.sessionEntry = {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "thread-123",
+        codexProjectKey: "/repo/openclaw",
+        codexAutoRoute: true,
+      };
+      startCodexAppServerReviewMock.mockRejectedValueOnce(
+        new Error("codex app server stdio closed"),
+      );
+
+      const result = await handleCodexCommand(params, true);
+
+      expect(clearIntervalSpy).toHaveBeenCalled();
+      expect(result).toEqual({
+        shouldContinue: false,
+        reply: {
+          text: "Codex review failed because the App Server connection closed. Please retry the command or rejoin the thread.",
+        },
+      });
+    } finally {
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("stops typing and returns an interrupted reply when /codex_review aborts", async () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const params = buildParams(
+        "/codex_review",
+        {},
+        {
+          Surface: "telegram",
+          Provider: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          To: "telegram:-1003841603622",
+          MessageThreadId: "1364",
+        },
+      );
+      params.sessionEntry = {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "thread-123",
+        codexProjectKey: "/repo/openclaw",
+        codexAutoRoute: true,
+      };
+      startCodexAppServerReviewMock.mockResolvedValueOnce({
+        reviewText: "",
+        reviewThreadId: "thread-123",
+        turnId: "turn-123",
+        aborted: true,
+      });
+
+      const result = await handleCodexCommand(params, true);
+
+      expect(clearIntervalSpy).toHaveBeenCalled();
+      expect(result).toEqual({
+        shouldContinue: false,
+        reply: {
+          text: "Codex review was interrupted before it finished.",
+        },
+      });
+    } finally {
       clearIntervalSpy.mockRestore();
     }
   });

@@ -108,6 +108,7 @@ export type CodexAppServerReviewResult = {
   reviewText: string;
   reviewThreadId?: string;
   turnId?: string;
+  aborted?: boolean;
 };
 
 export type CodexAppServerCollaborationMode = {
@@ -2996,6 +2997,14 @@ export async function startCodexAppServerReview(params: {
     }
 
     const resolvedReviewText = reviewText || assistantText;
+    if (interrupted) {
+      return {
+        reviewText: resolvedReviewText.trim(),
+        reviewThreadId: reviewThreadId || undefined,
+        turnId: turnId || undefined,
+        aborted: true,
+      };
+    }
     if (!resolvedReviewText.trim()) {
       throw new Error("Codex review completed without review text.");
     }
@@ -3003,6 +3012,7 @@ export async function startCodexAppServerReview(params: {
       reviewText: resolvedReviewText.trim(),
       reviewThreadId: reviewThreadId || undefined,
       turnId: turnId || undefined,
+      aborted: false,
     };
   } finally {
     if (reviewThreadId) {
