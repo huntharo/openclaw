@@ -461,6 +461,7 @@ export async function runReplyAgent(params: {
       ? runResult.meta?.agentMeta?.sessionId?.trim()
       : undefined;
     const contextTokensUsed =
+      runResult.meta?.agentMeta?.contextTokensUsed ??
       agentCfgContextTokens ??
       lookupContextTokens(modelUsed) ??
       activeSessionEntry?.contextTokens ??

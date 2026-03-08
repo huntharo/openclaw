@@ -186,6 +186,33 @@ export type CodexAppServerThreadState = {
   reasoningEffort?: string;
 };
 
+export type CodexAppServerContextUsageSnapshot = {
+  totalTokens?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  contextWindow?: number;
+  remainingTokens?: number;
+  remainingPercent?: number;
+};
+
+export type CodexAppServerThreadCompactionProgress =
+  | {
+      phase: "started" | "completed";
+      itemId?: string;
+      usage?: CodexAppServerContextUsageSnapshot;
+    }
+  | {
+      phase: "usage";
+      usage: CodexAppServerContextUsageSnapshot;
+    };
+
+export type CodexAppServerThreadCompactionResult = {
+  itemId?: string;
+  usage?: CodexAppServerContextUsageSnapshot;
+};
+
 export type CodexAppServerAccountSummary = {
   type?: "apiKey" | "chatgpt";
   email?: string;
@@ -2129,6 +2156,88 @@ function extractThreadState(value: unknown): CodexAppServerThreadState {
   };
 }
 
+function extractThreadTokenUsageSnapshot(
+  value: unknown,
+): CodexAppServerContextUsageSnapshot | undefined {
+  const root =
+    asRecord(findFirstNestedValue(value, ["tokenUsage", "token_usage", "info"])) ?? asRecord(value);
+  if (!root) {
+    return undefined;
+  }
+  const currentUsage =
+    asRecord(findFirstNestedValue(root, ["last", "last_token_usage"])) ??
+    asRecord(root.last) ??
+    asRecord(root.last_token_usage) ??
+    asRecord(findFirstNestedValue(root, ["total", "total_token_usage"])) ??
+    asRecord(root.total) ??
+    asRecord(root.total_token_usage);
+  const totalTokens = pickFiniteNumber(currentUsage ?? {}, ["totalTokens", "total_tokens"]);
+  const inputTokens = pickFiniteNumber(currentUsage ?? {}, ["inputTokens", "input_tokens"]);
+  const cachedInputTokens = pickFiniteNumber(currentUsage ?? {}, [
+    "cachedInputTokens",
+    "cached_input_tokens",
+  ]);
+  const outputTokens = pickFiniteNumber(currentUsage ?? {}, ["outputTokens", "output_tokens"]);
+  const reasoningOutputTokens = pickFiniteNumber(currentUsage ?? {}, [
+    "reasoningOutputTokens",
+    "reasoning_output_tokens",
+  ]);
+  const contextWindow = pickFiniteNumber(root, ["modelContextWindow", "model_context_window"]);
+  if (
+    totalTokens === undefined &&
+    inputTokens === undefined &&
+    cachedInputTokens === undefined &&
+    outputTokens === undefined &&
+    reasoningOutputTokens === undefined &&
+    contextWindow === undefined
+  ) {
+    return undefined;
+  }
+  const remainingTokens =
+    typeof contextWindow === "number" && typeof totalTokens === "number"
+      ? Math.max(0, contextWindow - totalTokens)
+      : undefined;
+  const remainingPercent =
+    typeof contextWindow === "number" && contextWindow > 0 && typeof remainingTokens === "number"
+      ? Math.max(0, Math.min(100, Math.round((remainingTokens / contextWindow) * 100)))
+      : undefined;
+  return {
+    totalTokens,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    contextWindow,
+    remainingTokens,
+    remainingPercent,
+  };
+}
+
+function extractContextCompactionProgress(
+  method: string,
+  params: unknown,
+): { phase: "started" | "completed"; itemId?: string } | undefined {
+  const methodLower = method.trim().toLowerCase();
+  if (methodLower === "thread/compacted") {
+    return { phase: "completed" };
+  }
+  if (methodLower !== "item/started" && methodLower !== "item/completed") {
+    return undefined;
+  }
+  const item = asRecord(asRecord(params)?.item);
+  const itemType = pickString(item ?? {}, ["type"])
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (itemType !== "contextcompaction") {
+    return undefined;
+  }
+  return {
+    phase: methodLower === "item/started" ? "started" : "completed",
+    itemId: extractAssistantItemId(item),
+  };
+}
+
 function extractAccountSummary(value: unknown): CodexAppServerAccountSummary {
   const root = asRecord(value) ?? {};
   const account =
@@ -2607,6 +2716,150 @@ export async function startCodexAppServerThreadCompaction(params: {
   });
 }
 
+export async function compactCodexAppServerThread(params: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  workspaceDir?: string;
+  threadId: string;
+  onProgress?: (progress: CodexAppServerThreadCompactionProgress) => Promise<void> | void;
+}): Promise<CodexAppServerThreadCompactionResult> {
+  const settings = resolveCodexAppServerSettings(params.config);
+  if (!settings.enabled) {
+    throw new Error('Provider "codex-app-server" is disabled.');
+  }
+  const client = createJsonRpcClient(settings);
+  let latestUsage: CodexAppServerContextUsageSnapshot | undefined;
+  let compactionItemId = "";
+  let compactionCompleted = false;
+  let settleTimer: NodeJS.Timeout | undefined;
+  let resolveCompletion: (() => void) | undefined;
+  let rejectCompletion: ((error: Error) => void) | undefined;
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  const settleSoon = () => {
+    if (!resolveCompletion) {
+      return;
+    }
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+    }
+    // Give token-usage updates a brief chance to arrive after completion so
+    // clients can show final post-compaction context usage.
+    settleTimer = setTimeout(() => {
+      const resolve = resolveCompletion;
+      resolveCompletion = undefined;
+      rejectCompletion = undefined;
+      resolve?.();
+    }, TRAILING_NOTIFICATION_SETTLE_MS);
+  };
+  const fail = (message: string) => {
+    const reject = rejectCompletion;
+    resolveCompletion = undefined;
+    rejectCompletion = undefined;
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = undefined;
+    }
+    reject?.(new Error(message));
+  };
+
+  client.setNotificationHandler(async (method, notificationParams) => {
+    const methodLower = method.trim().toLowerCase();
+    const ids = extractIds(notificationParams);
+    if (ids.threadId && ids.threadId !== params.threadId) {
+      return;
+    }
+
+    const usage = extractThreadTokenUsageSnapshot(notificationParams);
+    if (usage) {
+      latestUsage = usage;
+      await params.onProgress?.({ phase: "usage", usage });
+      if (compactionCompleted) {
+        settleSoon();
+      }
+    }
+
+    const progress = extractContextCompactionProgress(methodLower, notificationParams);
+    if (progress) {
+      if (progress.itemId) {
+        compactionItemId = progress.itemId;
+      }
+      if (progress.phase === "completed") {
+        compactionCompleted = true;
+        await params.onProgress?.({
+          phase: "completed",
+          itemId: compactionItemId || progress.itemId,
+          usage: latestUsage,
+        });
+        settleSoon();
+        return;
+      }
+      await params.onProgress?.({
+        phase: "started",
+        itemId: compactionItemId || progress.itemId,
+        usage: latestUsage,
+      });
+      return;
+    }
+
+    if (methodLower === "turn/failed") {
+      const turn = asRecord(asRecord(notificationParams)?.turn);
+      const message =
+        pickString(asRecord(turn?.error) ?? {}, ["message"]) ?? "Codex thread compaction failed.";
+      fail(message);
+      return;
+    }
+
+    if (
+      (methodLower === "turn/completed" || methodLower === "turn/cancelled") &&
+      compactionCompleted
+    ) {
+      settleSoon();
+    }
+  });
+
+  try {
+    await client.connect();
+    await initializeCodexAppServerClient({
+      client,
+      settings,
+      sessionKey: params.sessionKey,
+    });
+    await requestWithFallbacks({
+      client,
+      methods: ["thread/resume"],
+      payloads: buildThreadResumePayloads({
+        threadId: params.threadId,
+      }),
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    await requestWithFallbacks({
+      client,
+      methods: ["thread/compact/start"],
+      payloads: [{ threadId: params.threadId }, { thread_id: params.threadId }],
+      timeoutMs: settings.requestTimeoutMs,
+    });
+    await completion;
+    return {
+      itemId: compactionItemId || undefined,
+      usage: latestUsage,
+    };
+  } finally {
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+    }
+    await requestWithFallbacks({
+      client,
+      methods: ["thread/unsubscribe"],
+      payloads: [{ threadId: params.threadId }, { thread_id: params.threadId }],
+      timeoutMs: settings.requestTimeoutMs,
+    }).catch(() => undefined);
+    await client.close().catch(() => undefined);
+  }
+}
+
 export async function readCodexAppServerAccount(params?: {
   config?: OpenClawConfig;
   sessionKey?: string;
@@ -3048,6 +3301,7 @@ export async function runCodexAppServerAgent(
   let awaitingInput = false;
   let interrupted = false;
   let completed = false;
+  let latestContextUsage: CodexAppServerContextUsageSnapshot | undefined;
   let notificationQueue = Promise.resolve();
   let pendingInput: LivePendingCodexUserInputState | null = null;
   let completeTurn: (() => void) | null = null;
@@ -3220,6 +3474,19 @@ export async function runCodexAppServerAgent(
     const ids = extractIds(notificationParams);
     threadId ||= ids.threadId ?? "";
     turnId ||= ids.runId ?? "";
+
+    const tokenUsage = extractThreadTokenUsageSnapshot(notificationParams);
+    if (tokenUsage) {
+      latestContextUsage = tokenUsage;
+      log.debug("codex token usage updated", {
+        sessionKey: params.sessionKey,
+        threadId: ids.threadId ?? threadId ?? undefined,
+        turnId: ids.runId ?? turnId ?? undefined,
+        totalTokens: tokenUsage.totalTokens,
+        contextWindow: tokenUsage.contextWindow,
+        remainingPercent: tokenUsage.remainingPercent,
+      });
+    }
 
     if (methodLower === "serverrequest/resolved") {
       pendingInput = null;
@@ -3489,6 +3756,8 @@ export async function runCodexAppServerAgent(
           sessionId: threadId,
           provider: "codex-app-server",
           model: params.model ?? "default",
+          promptTokens: latestContextUsage?.totalTokens,
+          contextTokensUsed: latestContextUsage?.contextWindow,
         },
       },
     };
@@ -3522,6 +3791,7 @@ export const __testing = {
   extractAccountSummary,
   extractOptionValues,
   extractAssistantNotificationText,
+  extractContextCompactionProgress,
   extractExperimentalFeatureSummaries,
   extractMcpServerSummaries,
   extractCompletedPlanText,
@@ -3531,6 +3801,7 @@ export const __testing = {
   extractTurnPlanUpdate,
   extractThreadsFromValue,
   extractThreadState,
+  extractThreadTokenUsageSnapshot,
   extractThreadReplayFromReadResult,
   isCodexAppServerMissingThreadError,
   turnInterruptMethods: TURN_INTERRUPT_METHODS,

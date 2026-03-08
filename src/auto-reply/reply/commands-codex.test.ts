@@ -25,7 +25,7 @@ const readCodexAppServerSkillsMock = vi.hoisted(() => vi.fn());
 const isCodexAppServerMissingThreadErrorMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadNameMock = vi.hoisted(() => vi.fn());
 const setCodexAppServerThreadServiceTierMock = vi.hoisted(() => vi.fn());
-const startCodexAppServerThreadCompactionMock = vi.hoisted(() => vi.fn());
+const compactCodexAppServerThreadMock = vi.hoisted(() => vi.fn());
 const startCodexAppServerReviewMock = vi.hoisted(() => vi.fn());
 const runCodexAppServerAgentMock = vi.hoisted(() => vi.fn());
 const getCodexAppServerRuntimeStatusMock = vi.hoisted(() => vi.fn(() => ({ state: "unknown" })));
@@ -51,8 +51,7 @@ vi.mock("../../agents/codex-app-server-runner.js", () => ({
   isCodexAppServerProvider: (provider: string) => provider === "codex-app-server",
   isCodexAppServerMissingThreadError: (...args: unknown[]) =>
     isCodexAppServerMissingThreadErrorMock(...args),
-  startCodexAppServerThreadCompaction: (...args: unknown[]) =>
-    startCodexAppServerThreadCompactionMock(...args),
+  compactCodexAppServerThread: (...args: unknown[]) => compactCodexAppServerThreadMock(...args),
   readCodexAppServerThreadContext: (...args: unknown[]) =>
     readCodexAppServerThreadContextMock(...args),
   readCodexAppServerThreadState: (...args: unknown[]) => readCodexAppServerThreadStateMock(...args),
@@ -156,7 +155,7 @@ describe("handleCodexCommand", () => {
       serviceTier: "fast",
       cwd: "/repo/openclaw",
     });
-    startCodexAppServerThreadCompactionMock.mockReset().mockResolvedValue(undefined);
+    compactCodexAppServerThreadMock.mockReset().mockResolvedValue({});
     startCodexAppServerReviewMock.mockReset().mockResolvedValue({
       reviewText:
         "Looks solid overall.\n\nFull review comments:\n\n- [P1] Prefer Stylize helpers — /tmp/file.rs:10-20\n  Use .dim()/.bold() chaining instead of manual Style.\n\n- [P2] Keep helper names consistent — /tmp/file.rs:30-35\n  Rename the helper to match the surrounding naming pattern.",
@@ -858,6 +857,8 @@ describe("handleCodexCommand", () => {
       codexThreadId: "thread-123",
       codexProjectKey: "/repo/openclaw",
       codexAutoRoute: true,
+      totalTokens: 139_000,
+      contextTokens: 258_000,
     };
     runCodexAppServerAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "Fallback assistant summary" }],
@@ -964,6 +965,8 @@ describe("handleCodexCommand", () => {
       codexThreadId: "thread-123",
       codexProjectKey: "/repo/openclaw",
       codexAutoRoute: true,
+      totalTokens: 139_000,
+      contextTokens: 258_000,
     };
     runCodexAppServerAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "Fallback assistant summary" }],
@@ -1648,8 +1651,8 @@ describe("handleCodexCommand", () => {
     expect(setCodexAppServerThreadNameMock).not.toHaveBeenCalled();
   });
 
-  it("starts Codex compaction through thread/compact/start", async () => {
-    const params = buildParams("/codex_compact");
+  it("runs Codex compaction with start, progress, and completion updates", async () => {
+    const params = buildParams("/codex_compact", {}, { OriginatingTo: "1234", To: "1234" });
     params.sessionEntry = {
       sessionId: "session-1",
       updatedAt: Date.now(),
@@ -1657,17 +1660,67 @@ describe("handleCodexCommand", () => {
       codexThreadId: "thread-123",
       codexProjectKey: "/repo/openclaw",
       codexAutoRoute: true,
+      totalTokens: 180_000,
+      totalTokensFresh: true,
+      contextTokens: 272_000,
     };
+    compactCodexAppServerThreadMock.mockImplementationOnce(async (call) => {
+      await call.onProgress?.({
+        phase: "started",
+        usage: {
+          totalTokens: 176_000,
+          contextWindow: 272_000,
+          remainingTokens: 96_000,
+          remainingPercent: 35,
+        },
+      });
+      return {
+        usage: {
+          totalTokens: 54_000,
+          inputTokens: 49_000,
+          outputTokens: 5_000,
+          contextWindow: 272_000,
+          remainingTokens: 218_000,
+          remainingPercent: 80,
+        },
+      };
+    });
 
     const result = await handleCodexCommand(params, true);
 
-    expect(result?.reply?.text).toBe("Started Codex thread compaction.");
-    expect(startCodexAppServerThreadCompactionMock).toHaveBeenCalledWith(
+    expect(result).toEqual({ shouldContinue: false });
+    expect(compactCodexAppServerThreadMock).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: "thread-123",
         workspaceDir: "/repo/openclaw",
       }),
     );
+    expect(sendChatActionMock).toHaveBeenCalledWith("1234", "typing", undefined);
+    expect(routeReplyMock.mock.calls[0]?.[0]).toMatchObject({
+      payload: {
+        text: expect.stringContaining("Starting Codex thread compaction."),
+      },
+    });
+    expect(routeReplyMock.mock.calls[0]?.[0]?.payload?.text).toContain(
+      "Starting context usage: 180k / 272k tokens used (66% full)",
+    );
+    expect(routeReplyMock.mock.calls[1]?.[0]?.payload?.text).toContain("Codex compaction started.");
+    expect(routeReplyMock.mock.calls[1]?.[0]?.payload?.text).toContain(
+      "Live context usage: 176k / 272k tokens used (65% full)",
+    );
+    expect(routeReplyMock.mock.calls[2]?.[0]?.payload?.text).toContain(
+      "Codex compaction completed.",
+    );
+    expect(routeReplyMock.mock.calls[2]?.[0]?.payload?.text).toContain(
+      "Final context usage: 54k / 272k tokens used (20% full)",
+    );
+    expect(loadSessionStore(storePath)[params.sessionKey]).toMatchObject({
+      totalTokens: 54_000,
+      totalTokensFresh: true,
+      contextTokens: 272_000,
+      inputTokens: 49_000,
+      outputTokens: 5_000,
+    });
     expect(runCodexAppServerAgentMock).not.toHaveBeenCalled();
   });
 
@@ -1778,6 +1831,8 @@ describe("handleCodexCommand", () => {
       codexThreadId: "thread-123",
       codexProjectKey: "/repo/openclaw",
       codexAutoRoute: true,
+      totalTokens: 139_000,
+      contextTokens: 258_000,
     };
 
     const result = await handleCodexCommand(params, true);
@@ -1788,6 +1843,7 @@ describe("handleCodexCommand", () => {
     expect(result?.reply?.text).toContain("Project folder: /repo/openclaw");
     expect(result?.reply?.text).toContain("Worktree folder: /repo/openclaw");
     expect(result?.reply?.text).toContain("Fast mode: off");
+    expect(result?.reply?.text).toContain("Context usage: 139k / 258k tokens used (54% full)");
     expect(result?.reply?.text).toContain("Permissions: Default");
     expect(result?.reply?.text).toContain("Account: user@example.com (pro)");
     expect(result?.reply?.text).toContain("Session: thread-123");
@@ -1822,6 +1878,25 @@ describe("handleCodexCommand", () => {
     expect(readCodexAppServerThreadStateMock).not.toHaveBeenCalled();
     expect(readCodexAppServerAccountMock).toHaveBeenCalled();
     expect(readCodexAppServerRateLimitsMock).toHaveBeenCalled();
+  });
+
+  it("does not render a partial context usage line when only the window size is known", async () => {
+    const params = buildParams("/codex_status");
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/openclaw",
+      codexAutoRoute: true,
+      contextTokens: 272_000,
+    };
+
+    const result = await handleCodexCommand(params, true);
+    const text = result?.reply?.text ?? "";
+
+    expect(text).not.toContain("Context usage: ? / 272k");
+    expect(text).toContain("Context usage: unavailable until Codex emits a token-usage update");
   });
 
   it("hides non-matching model-specific usage rows in /codex_status", async () => {

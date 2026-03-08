@@ -27,7 +27,7 @@ import {
 } from "../../agents/codex-app-server-review-actions.js";
 import {
   discoverCodexAppServerThreads,
-  startCodexAppServerThreadCompaction,
+  compactCodexAppServerThread,
   runCodexAppServerAgent,
   startCodexAppServerReview,
   readCodexAppServerAccount,
@@ -42,6 +42,7 @@ import {
   isCodexAppServerProvider,
   readCodexAppServerThreadContext,
   type CodexAppServerAccountSummary,
+  type CodexAppServerContextUsageSnapshot,
   type CodexAppServerExperimentalFeatureSummary,
   type CodexAppServerMcpServerSummary,
   type CodexAppServerPlanArtifact,
@@ -78,6 +79,7 @@ import { buildTypingThreadParams } from "../../telegram/bot/helpers.js";
 import { createTelegramSendChatActionHandler } from "../../telegram/sendchataction-401-backoff.js";
 import { parseTelegramTarget } from "../../telegram/targets.js";
 import { shortenHomePath } from "../../utils.js";
+import { formatTokenCount } from "../../utils/usage-format.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveAcpCommandBindingContext } from "./commands-acp/context.js";
 import type {
@@ -98,6 +100,11 @@ type CodexAction = "new" | "spawn" | "join" | "steer" | "status" | "detach" | "l
 type SessionMutation = {
   providerOverride?: string;
   modelOverride?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  totalTokensFresh?: boolean;
+  contextTokens?: number;
   codexThreadId?: string;
   codexProjectKey?: string;
   codexServiceTier?: string;
@@ -491,6 +498,27 @@ async function updateCodexSession(
   if (targetSessionKey === params.sessionKey) {
     params.sessionEntry = nextEntry;
   }
+}
+
+async function updateCodexSessionUsage(
+  params: HandleCommandsParams,
+  usage: CodexAppServerContextUsageSnapshot | undefined,
+  targetSessionKey = params.sessionKey,
+): Promise<void> {
+  if (!usage) {
+    return;
+  }
+  await updateCodexSession(
+    params,
+    {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      totalTokensFresh: typeof usage.totalTokens === "number",
+      contextTokens: usage.contextWindow,
+    },
+    targetSessionKey,
+  );
 }
 
 function resolveStoredSessionEntry(
@@ -1094,6 +1122,13 @@ function formatCodexMirroredStatusText(params: {
       )}`,
     );
   }
+  const contextUsage = resolveStoredCodexContextUsageSnapshot(params.entry);
+  const contextUsageText = formatCodexContextUsageSnapshot(contextUsage);
+  if (contextUsageText) {
+    lines.push(`Context usage: ${contextUsageText}`);
+  } else if (params.bindingActive) {
+    lines.push("Context usage: unavailable until Codex emits a token-usage update");
+  }
   const permissions = formatCodexPermissions({
     approvalPolicy: params.threadState?.approvalPolicy,
     sandbox: params.threadState?.sandbox,
@@ -1150,6 +1185,67 @@ async function resolveCodexProjectFolder(worktreeFolder?: string): Promise<strin
   } catch {
     return shortenHomePath(cwd);
   }
+}
+
+function resolveStoredCodexContextUsageSnapshot(
+  entry: HandleCommandsParams["sessionEntry"],
+): CodexAppServerContextUsageSnapshot | undefined {
+  if (!entry) {
+    return undefined;
+  }
+  const totalTokens =
+    typeof entry.totalTokens === "number" && Number.isFinite(entry.totalTokens)
+      ? entry.totalTokens
+      : undefined;
+  const contextWindow =
+    typeof entry.contextTokens === "number" && Number.isFinite(entry.contextTokens)
+      ? entry.contextTokens
+      : undefined;
+  if (totalTokens === undefined && contextWindow === undefined) {
+    return undefined;
+  }
+  const remainingTokens =
+    typeof totalTokens === "number" && typeof contextWindow === "number"
+      ? Math.max(0, contextWindow - totalTokens)
+      : undefined;
+  const remainingPercent =
+    typeof contextWindow === "number" && contextWindow > 0 && typeof remainingTokens === "number"
+      ? Math.max(0, Math.min(100, Math.round((remainingTokens / contextWindow) * 100)))
+      : undefined;
+  return {
+    totalTokens,
+    inputTokens: entry.inputTokens,
+    outputTokens: entry.outputTokens,
+    contextWindow,
+    remainingTokens,
+    remainingPercent,
+  };
+}
+
+function formatCodexContextUsageSnapshot(
+  usage?: CodexAppServerContextUsageSnapshot,
+): string | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const totalTokens = usage.totalTokens;
+  const contextWindow = usage.contextWindow;
+  if (typeof totalTokens !== "number") {
+    return undefined;
+  }
+  const totalLabel = typeof totalTokens === "number" ? formatTokenCount(totalTokens) : "?";
+  const contextLabel = typeof contextWindow === "number" ? formatTokenCount(contextWindow) : "?";
+  const percentFull =
+    typeof totalTokens === "number" && typeof contextWindow === "number" && contextWindow > 0
+      ? Math.max(0, Math.min(100, Math.round((totalTokens / contextWindow) * 100)))
+      : undefined;
+  const extras: string[] = [];
+  if (typeof percentFull === "number") {
+    extras.push(`${percentFull}% full`);
+  }
+  return `${totalLabel} / ${contextLabel} tokens used${
+    extras.length > 0 ? ` (${extras.join(", ")})` : ""
+  }`;
 }
 
 function formatModelSummaryLines(params: {
@@ -1454,6 +1550,8 @@ function buildCodexRenameTopicButtons(params: {
 const CODEX_PLAN_INLINE_TEXT_LIMIT = 2600;
 const CODEX_PLAN_PROGRESS_DELAY_MS = 12_000;
 const CODEX_REVIEW_PROGRESS_DELAY_MS = 12_000;
+const CODEX_COMPACT_PROGRESS_DELAY_MS = 12_000;
+const CODEX_COMPACT_PROGRESS_INTERVAL_MS = 15_000;
 const CODEX_DIRECT_TELEGRAM_TYPING_INTERVAL_MS = 4_500;
 
 function buildCodexPlanPromptActions(): CodexPlanPromptAction[] {
@@ -2339,13 +2437,133 @@ async function handleCodexCompactCommand(
   }
   const workspaceDir =
     sessionEntry?.codexProjectKey?.trim() || target.projectKey || params.workspaceDir;
-  await startCodexAppServerThreadCompaction({
-    config: params.cfg,
+  let startingUsage = resolveStoredCodexContextUsageSnapshot(sessionEntry);
+  const directTyping = createDirectCodexTelegramTypingController(params);
+  const startLines = ["Starting Codex thread compaction."];
+  const initialUsageText = formatCodexContextUsageSnapshot(startingUsage);
+  let lastEmittedUsageText = initialUsageText;
+  if (initialUsageText) {
+    startLines.push(`Starting context usage: ${initialUsageText}`);
+  }
+  startLines.push("I’ll report progress here as compaction events arrive.");
+  await sendCodexReplies({
+    commandParams: params,
     sessionKey: target.sessionKey,
-    workspaceDir,
-    threadId,
+    payloads: [{ text: startLines.join("\n") }],
+  }).catch((error) => {
+    logVerbose(`Failed to send Codex compact start message: ${String(error)}`);
   });
-  return stopWithText("Started Codex thread compaction.");
+  await directTyping?.start();
+  let latestUsage = startingUsage;
+  let startedVisible = false;
+  let keepaliveInterval: NodeJS.Timeout | undefined;
+  const sendCompactKeepalive = async () => {
+    await directTyping?.refresh();
+    const usageText = formatCodexContextUsageSnapshot(latestUsage);
+    const changedUsageText =
+      usageText && usageText !== lastEmittedUsageText ? usageText : undefined;
+    if (changedUsageText) {
+      lastEmittedUsageText = changedUsageText;
+    }
+    await sendCodexReplies({
+      commandParams: params,
+      sessionKey: target.sessionKey,
+      payloads: [
+        {
+          text: changedUsageText
+            ? `Codex is still compacting.\nLatest context usage: ${changedUsageText}`
+            : "Codex is still compacting.",
+        },
+      ],
+    }).catch((error) => {
+      logVerbose(`Failed to send Codex compact progress update: ${String(error)}`);
+    });
+  };
+  const progressTimer = setTimeout(() => {
+    void sendCompactKeepalive();
+    keepaliveInterval = setInterval(() => {
+      void sendCompactKeepalive();
+    }, CODEX_COMPACT_PROGRESS_INTERVAL_MS);
+  }, CODEX_COMPACT_PROGRESS_DELAY_MS);
+  try {
+    const result = await compactCodexAppServerThread({
+      config: params.cfg,
+      sessionKey: target.sessionKey,
+      workspaceDir,
+      threadId,
+      onProgress: async (progress) => {
+        if (progress.phase === "usage") {
+          latestUsage = progress.usage;
+          if (!startingUsage) {
+            startingUsage = progress.usage;
+          }
+          return;
+        }
+        if (progress.usage) {
+          latestUsage = progress.usage;
+          if (!startingUsage) {
+            startingUsage = progress.usage;
+          }
+        }
+        if (progress.phase === "started" && !startedVisible) {
+          startedVisible = true;
+          await directTyping?.refresh();
+          const usageText = formatCodexContextUsageSnapshot(latestUsage);
+          const changedUsageText =
+            usageText && usageText !== lastEmittedUsageText ? usageText : undefined;
+          if (changedUsageText) {
+            lastEmittedUsageText = changedUsageText;
+          }
+          await sendCodexReplies({
+            commandParams: params,
+            sessionKey: target.sessionKey,
+            payloads: [
+              {
+                text: changedUsageText
+                  ? `Codex compaction started.\nLive context usage: ${changedUsageText}`
+                  : "Codex compaction started.",
+              },
+            ],
+          }).catch((error) => {
+            logVerbose(`Failed to send Codex compact started update: ${String(error)}`);
+          });
+        }
+      },
+    });
+    clearTimeout(progressTimer);
+    if (keepaliveInterval) {
+      clearInterval(keepaliveInterval);
+      keepaliveInterval = undefined;
+    }
+    directTyping?.stop();
+    latestUsage = result.usage ?? latestUsage;
+    await updateCodexSessionUsage(params, latestUsage, target.sessionKey);
+    const finalLines = ["Codex compaction completed."];
+    const startingUsageText = formatCodexContextUsageSnapshot(startingUsage);
+    if (startingUsageText) {
+      finalLines.push(`Starting context usage: ${startingUsageText}`);
+    }
+    const finalUsageText = formatCodexContextUsageSnapshot(latestUsage);
+    if (finalUsageText) {
+      finalLines.push(`Final context usage: ${finalUsageText}`);
+    }
+    if (!startingUsageText && !finalUsageText) {
+      finalLines.push("Context usage snapshot was unavailable from the App Server.");
+    }
+    await sendCodexReplies({
+      commandParams: params,
+      sessionKey: target.sessionKey,
+      payloads: [{ text: finalLines.join("\n") }],
+    });
+    return { shouldContinue: false };
+  } catch (error) {
+    clearTimeout(progressTimer);
+    if (keepaliveInterval) {
+      clearInterval(keepaliveInterval);
+    }
+    directTyping?.stop();
+    return stopWithText(`Codex compaction failed: ${String(error)}`);
+  }
 }
 
 async function handleCodexSkillsCommand(
