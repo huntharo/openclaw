@@ -490,6 +490,71 @@ describe("dispatchTelegramMessage draft streaming", () => {
     );
   });
 
+  it("bypasses preview edits for forum-topic rename payloads after a streamed preview", async () => {
+    const draftStream = createDraftStream(1001);
+    createTelegramDraftStream
+      .mockImplementationOnce(() => draftStream)
+      .mockImplementationOnce(() => createDraftStream());
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({ text: "Renamed topic to: Better topic" });
+        await dispatcherOptions.deliver(
+          {
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          },
+          { kind: "final" },
+        );
+        return { queuedFinal: true };
+      },
+    );
+    deliverReplies.mockResolvedValue({ delivered: true });
+    editMessageTelegram.mockResolvedValue({ ok: true, chatId: "123", messageId: "1001" });
+
+    await dispatchWithContext({
+      context: createContext({
+        isGroup: true,
+        chatId: -1001234567890,
+        msg: {
+          chat: { id: -1001234567890, type: "supergroup", title: "Forum", is_forum: true },
+          message_id: 456,
+          message_thread_id: 280,
+        } as unknown as TelegramMessageContext["msg"],
+        primaryCtx: {
+          message: {
+            chat: { id: -1001234567890, type: "supergroup", title: "Forum", is_forum: true },
+          },
+        } as TelegramMessageContext["primaryCtx"],
+        threadSpec: { id: 280, scope: "forum" },
+        resolvedThreadId: 280,
+        replyThreadId: 280,
+      }),
+      streamMode: "partial",
+    });
+
+    expect(editMessageTelegram).not.toHaveBeenCalled();
+    expect(deliverReplies).toHaveBeenCalledTimes(1);
+    expect(deliverReplies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thread: { id: 280, scope: "forum" },
+        replies: [
+          expect.objectContaining({
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          }),
+        ],
+      }),
+    );
+  });
+
   it.each([
     { label: "default account config", telegramCfg: {} },
     { label: "account blockStreaming override", telegramCfg: { blockStreaming: true } },
