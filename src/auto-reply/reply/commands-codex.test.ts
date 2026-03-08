@@ -981,6 +981,54 @@ describe("handleCodexCommand", () => {
     );
   });
 
+  it("starts a periodic telegram typing heartbeat for /codex_plan", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const params = buildParams(
+        "/codex_plan break this into phases",
+        {},
+        {
+          Surface: "telegram",
+          Provider: "telegram",
+          OriginatingTo: "telegram:-1003841603622",
+          To: "telegram:-1003841603622",
+          MessageThreadId: "1364",
+        },
+      );
+      params.sessionEntry = {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        providerOverride: "codex-app-server",
+        codexThreadId: "thread-123",
+        codexProjectKey: "/repo/openclaw",
+        codexAutoRoute: true,
+      };
+      runCodexAppServerAgentMock.mockResolvedValueOnce({
+        payloads: [],
+        meta: {
+          agentMeta: {
+            sessionId: "thread-123",
+          },
+          codexPlanArtifact: {
+            explanation: "Break the work into safe increments.",
+            steps: [{ step: "Capture the current behavior", status: "completed" }],
+            markdown: "# Plan\n\n- Patch the command",
+          },
+        },
+      });
+
+      const result = await handleCodexCommand(params, true);
+
+      expect(result).toEqual({ shouldContinue: false });
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 4_500);
+      expect(clearIntervalSpy).toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
   it("delivers large /codex_plan results as a markdown attachment plus a separate prompt", async () => {
     const params = buildParams(
       "/codex_plan write the full rollout document",

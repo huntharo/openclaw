@@ -1366,6 +1366,7 @@ function buildCodexReviewActionButtons(params: {
 
 const CODEX_PLAN_INLINE_TEXT_LIMIT = 2600;
 const CODEX_PLAN_PROGRESS_DELAY_MS = 12_000;
+const CODEX_DIRECT_TELEGRAM_TYPING_INTERVAL_MS = 4_500;
 
 function buildCodexPlanPromptActions(): CodexPlanPromptAction[] {
   return [
@@ -1630,6 +1631,82 @@ async function sendCodexReplies(params: {
     }
   }
   return true;
+}
+
+type DirectCodexTelegramTypingController = {
+  start: () => Promise<void>;
+  refresh: () => Promise<void>;
+  stop: () => void;
+};
+
+function createDirectCodexTelegramTypingController(
+  params: HandleCommandsParams,
+): DirectCodexTelegramTypingController | undefined {
+  const route = resolveCodexReplyRoute(params);
+  if (!route || route.channel !== "telegram") {
+    return undefined;
+  }
+  const account = resolveTelegramAccount({
+    cfg: params.cfg,
+    accountId: route.accountId,
+  });
+  if (!account.enabled || !account.token) {
+    return undefined;
+  }
+  const bot = new Bot(account.token);
+  const typingChatId = parseTelegramTarget(route.to).chatId;
+  const typingThreadId =
+    typeof route.threadId === "number"
+      ? route.threadId
+      : typeof route.threadId === "string" && /^\d+$/.test(route.threadId)
+        ? Number.parseInt(route.threadId, 10)
+        : undefined;
+  const sendChatActionHandler = createTelegramSendChatActionHandler({
+    sendChatActionFn: (chatId, action, threadParams) =>
+      bot.api.sendChatAction(
+        chatId,
+        action,
+        threadParams as Parameters<typeof bot.api.sendChatAction>[2],
+      ),
+    logger: (message) => logVerbose(`telegram: ${message}`),
+  });
+  let interval: NodeJS.Timeout | undefined;
+  let stopped = false;
+
+  const sendTyping = async () => {
+    await sendChatActionHandler
+      .sendChatAction(typingChatId, "typing", buildTypingThreadParams(typingThreadId))
+      .catch((error) => {
+        logVerbose(`Failed to send direct Codex typing cue: ${String(error)}`);
+      });
+  };
+
+  return {
+    start: async () => {
+      if (stopped) {
+        return;
+      }
+      await sendTyping();
+      if (!interval) {
+        interval = setInterval(() => {
+          void sendTyping();
+        }, CODEX_DIRECT_TELEGRAM_TYPING_INTERVAL_MS);
+      }
+    },
+    refresh: async () => {
+      if (stopped) {
+        return;
+      }
+      await sendTyping();
+    },
+    stop: () => {
+      stopped = true;
+      if (interval) {
+        clearInterval(interval);
+        interval = undefined;
+      }
+    },
+  };
 }
 
 async function resolveStatusText(params: HandleCommandsParams): Promise<string> {
@@ -2177,6 +2254,7 @@ async function handleCodexPlanCommand(
         threadId,
       }).catch(() => undefined)
     : undefined;
+  const directTyping = createDirectCodexTelegramTypingController(params);
   await updateCodexPlanPromptState({
     commandParams: params,
     sessionKey: target.sessionKey,
@@ -2193,6 +2271,7 @@ async function handleCodexPlanCommand(
   }).catch((error) => {
     logVerbose(`Failed to send Codex plan start message: ${String(error)}`);
   });
+  await directTyping?.start();
   let keepaliveSent = false;
   let planVisible = false;
   let questionVisible = false;
@@ -2202,6 +2281,7 @@ async function handleCodexPlanCommand(
         return;
       }
       keepaliveSent = true;
+      await directTyping?.refresh();
       await sendCodexReplies({
         commandParams: params,
         sessionKey: target.sessionKey,
@@ -2240,6 +2320,7 @@ async function handleCodexPlanCommand(
           ) {
             questionVisible = true;
           }
+          await directTyping?.refresh();
           await sendCodexReplies({
             commandParams: params,
             sessionKey: target.sessionKey,
@@ -2249,6 +2330,7 @@ async function handleCodexPlanCommand(
         onPendingUserInput: async (pending) => {
           if (pending) {
             questionVisible = true;
+            await directTyping?.refresh();
           }
           await updateCodexPendingInputState({
             commandParams: params,
@@ -2259,6 +2341,7 @@ async function handleCodexPlanCommand(
       });
     } finally {
       clearTimeout(progressTimer);
+      directTyping?.stop();
     }
   })();
   const resolvedThreadId = result.meta?.agentMeta?.sessionId?.trim();
