@@ -264,7 +264,8 @@ Current status: functionally complete for the current Phase 1 scope. The command
 - [ ] Extend `/codex_skills` so discovered skills can be invoked cleanly, likely via `/codex_skills [skillname]`, bound `$[skillname]` routing, or both.
 - [x] Reimplement `/codex_review` using `review/start` instead of relayed slash text.
   - shipped shape: structured `review/start`, parsed finding blocks, and Telegram action buttons that synthesize deterministic "implement this finding" follow-ups
-- [ ] Reimplement `/codex_stop` as a structured interrupt flow backed by `turn/interrupt`, with correct operator-visible stop acknowledgements and any final Codex output that lands after interruption.
+- [x] Reimplement `/codex_stop` as a structured interrupt flow backed by `turn/interrupt`, with correct operator-visible stop acknowledgements and any final Codex output that lands after interruption.
+  - shipped shape: bound-session `/codex_stop` interrupts the active Codex run via the run registry and documented `turn/interrupt`, acknowledges immediately, and leaves trailing assistant output on the normal reply path
 - [x] Reimplement `/codex_rename` using `thread/name/set` instead of relayed slash text.
 - [ ] Reimplement `/codex_init` as the verified relayed turn-start path for Codex thread bootstrapping.
 - [x] Reimplement `/codex_compact` using `thread/compact/start` instead of relayed slash text.

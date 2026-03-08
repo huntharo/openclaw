@@ -70,6 +70,7 @@ OpenClaw should provide a best-in-class remote Codex operating experience:
   - `/codex_experimental`
   - `/codex_skills`
   - `/codex_review`
+  - `/codex_stop`
   - `/codex_rename`
   - `/codex_init`
   - `/codex_compact`
