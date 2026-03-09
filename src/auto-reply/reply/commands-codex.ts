@@ -49,6 +49,7 @@ import {
   type CodexAppServerRateLimitSummary,
   type CodexAppServerSkillSummary,
   type CodexAppServerThreadState,
+  type CodexAppServerThreadReplay,
   type CodexAppServerCollaborationMode,
   type PendingCodexUserInputState,
   type CodexAppServerThreadSummary,
@@ -3426,7 +3427,7 @@ async function bindCodexThreadToConversation(params: {
     threadId: thread.threadId,
   }).catch((error) => {
     logVerbose(`Failed to read Codex thread context for ${thread.threadId}: ${String(error)}`);
-    return {};
+    return {} as CodexAppServerThreadReplay;
   });
   const pendingReplay = buildPendingInputReplay(refreshedEntry);
   const payloads: ReplyPayload[] = [
