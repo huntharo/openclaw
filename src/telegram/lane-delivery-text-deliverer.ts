@@ -66,7 +66,6 @@ type DeliverLaneTextParams = {
   previewButtons?: TelegramInlineButtons;
   forceStandardDelivery?: boolean;
   allowPreviewUpdateForNonFinal?: boolean;
-  forceStandardDelivery?: boolean;
 };
 
 type TryUpdatePreviewParams = {
