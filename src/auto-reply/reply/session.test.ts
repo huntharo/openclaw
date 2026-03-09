@@ -1428,6 +1428,54 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     }
   });
 
+  it("preserves codex bindings across /new and /reset", async () => {
+    const storePath = await createStorePath("openclaw-reset-codex-bindings-");
+    const sessionKey = "agent:main:telegram:dm:user-codex";
+    const existingSessionId = "existing-session-codex";
+    const overrides = {
+      providerOverride: "codex-app-server",
+      codexThreadId: "thread-123",
+      codexProjectKey: "/repo/codex-thread",
+      codexAutoRoute: true,
+      pendingUserInputRequestId: "req-123",
+      pendingUserInputMethod: "item/commandExecution/requestApproval",
+    } as const;
+
+    for (const body of ["/new", "/reset"]) {
+      await seedSessionStoreWithOverrides({
+        storePath,
+        sessionKey,
+        sessionId: existingSessionId,
+        overrides: { ...overrides },
+      });
+
+      const cfg = {
+        session: { store: storePath, idleMinutes: 999 },
+      } as OpenClawConfig;
+
+      const result = await initSessionState({
+        ctx: {
+          Body: body,
+          RawBody: body,
+          CommandBody: body,
+          From: "user-codex",
+          To: "bot",
+          ChatType: "direct",
+          SessionKey: sessionKey,
+          Provider: "telegram",
+          Surface: "telegram",
+        },
+        cfg,
+        commandAuthorized: true,
+      });
+
+      expect(result.isNewSession, body).toBe(true);
+      expect(result.resetTriggered, body).toBe(true);
+      expect(result.sessionId, body).not.toBe(existingSessionId);
+      expect(result.sessionEntry, body).toMatchObject(overrides);
+    }
+  });
+
   it("archives the old session store entry on /new", async () => {
     const storePath = await createStorePath("openclaw-archive-old-");
     const sessionKey = "agent:main:telegram:dm:user-archive";

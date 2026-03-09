@@ -1,5 +1,24 @@
 import type { Message, ReactionTypeEmoji } from "@grammyjs/types";
-import { resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import {
+  resolveAgentDir,
+  resolveAgentIdFromSessionKey,
+  resolveDefaultAgentId,
+} from "../agents/agent-scope.js";
+import {
+  matchesCodexPendingInputRequestToken,
+  parseCodexPendingInputCallbackData,
+  buildCodexPendingUserInputActions,
+} from "../agents/codex-app-server-pending-input.js";
+import { parseCodexPlanActionCallbackData } from "../agents/codex-app-server-plan-actions.js";
+import {
+  matchesCodexRenameActionRequestToken,
+  parseCodexRenameActionCallbackData,
+} from "../agents/codex-app-server-rename-actions.js";
+import {
+  matchesCodexReviewActionRequestToken,
+  parseCodexReviewActionCallbackData,
+} from "../agents/codex-app-server-review-actions.js";
+import { submitAgentRunPendingInputBySessionKey } from "../agents/run-control.js";
 import {
   createInboundDebouncer,
   resolveInboundDebounceMs,
@@ -20,6 +39,7 @@ import {
   loadSessionStore,
   resolveSessionStoreEntry,
   resolveStorePath,
+  updateSessionStore,
 } from "../config/sessions.js";
 import type { DmPolicy } from "../config/types.base.js";
 import type {
@@ -28,6 +48,7 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import { danger, logVerbose, warn } from "../globals.js";
+import { getSessionBindingService } from "../infra/outbound/session-binding-service.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { MediaFetchError } from "../media/fetch.js";
 import { readChannelAllowFromStore } from "../pairing/pairing-store.js";
@@ -1088,6 +1109,19 @@ export const registerTelegramHandlers = ({
         }
         return await bot.api.deleteMessage(callbackMessage.chat.id, callbackMessage.message_id);
       };
+      const clearCallbackButtons = async () => {
+        const editReplyMarkupFn = (ctx as { editMessageReplyMarkup?: unknown })
+          .editMessageReplyMarkup;
+        const params = { reply_markup: { inline_keyboard: [] } };
+        if (typeof editReplyMarkupFn === "function") {
+          return await ctx.editMessageReplyMarkup(params);
+        }
+        return await bot.api.editMessageReplyMarkup(
+          callbackMessage.chat.id,
+          callbackMessage.message_id,
+          params,
+        );
+      };
       const replyToCallbackChat = async (
         text: string,
         params?: Parameters<typeof bot.api.sendMessage>[2],
@@ -1320,6 +1354,426 @@ export const registerTelegramHandlers = ({
           return;
         }
 
+        return;
+      }
+
+      const codexPlanCallback = parseCodexPlanActionCallbackData(data);
+      if (codexPlanCallback) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex plan prompt is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex plan prompt is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        const storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
+        const sessionStore = loadSessionStore(storePath);
+        let effectiveSessionKey = targetSessionKey;
+        let planEntry = sessionStore[effectiveSessionKey];
+        if (!planEntry?.codexPlanPromptRequestId?.trim()) {
+          const fallbackEntry = Object.entries(sessionStore).find(([, entry]) =>
+            entry?.codexPlanPromptRequestId?.trim(),
+          );
+          if (fallbackEntry) {
+            [effectiveSessionKey, planEntry] = fallbackEntry;
+          }
+        }
+        const requestId =
+          planEntry?.codexPlanPromptRequestId?.trim() || codexPlanCallback.requestToken.trim();
+        if (!requestId) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex plan prompt is no longer active.");
+          return;
+        }
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          let cleared = false;
+          for (const [storeKey, entry] of Object.entries(store)) {
+            if (!entry || entry.codexPlanPromptRequestId?.trim() !== requestId) {
+              continue;
+            }
+            delete entry.codexPlanPromptRequestId;
+            entry.updatedAt = Date.now();
+            store[storeKey] = entry;
+            cleared = true;
+          }
+          if (cleared) {
+            return;
+          }
+          const entry = store[effectiveSessionKey];
+          if (!entry) {
+            return;
+          }
+          delete entry.codexPlanPromptRequestId;
+          entry.updatedAt = Date.now();
+          store[effectiveSessionKey] = entry;
+        }).catch(() => undefined);
+        if (codexPlanCallback.action === "stay") {
+          await replyToCallbackChat("Staying in Plan mode.");
+          return;
+        }
+        const syntheticMessage = buildSyntheticTextMessage({
+          base: callbackMessage,
+          from: callback.from,
+          text: "Implement the plan.",
+        });
+        await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
+          forceWasMentioned: true,
+          messageIdOverride: callback.id,
+        });
+        return;
+      }
+
+      const codexReviewCallback = parseCodexReviewActionCallbackData(data);
+      if (codexReviewCallback) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex review is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex review is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        const storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
+        const sessionStore = loadSessionStore(storePath);
+        const reviewEntry = sessionStore[targetSessionKey];
+        const requestId = reviewEntry?.codexReviewActionRequestId?.trim();
+        const requestTokenMatches =
+          requestId != null &&
+          matchesCodexReviewActionRequestToken(requestId, codexReviewCallback.requestToken);
+        const action = requestTokenMatches
+          ? reviewEntry?.codexReviewActions?.[codexReviewCallback.actionIndex]
+          : undefined;
+        if (!action?.prompt?.trim()) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex review is no longer active.");
+          return;
+        }
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          const entry = store[targetSessionKey];
+          if (!entry) {
+            return;
+          }
+          delete entry.codexReviewActionRequestId;
+          delete entry.codexReviewActions;
+          entry.updatedAt = Date.now();
+          store[targetSessionKey] = entry;
+        }).catch(() => undefined);
+        const syntheticMessage = buildSyntheticTextMessage({
+          base: callbackMessage,
+          from: callback.from,
+          text: action.prompt,
+        });
+        await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
+          forceWasMentioned: true,
+          messageIdOverride: callback.id,
+        });
+        return;
+      }
+
+      const codexRenameCallback = parseCodexRenameActionCallbackData(data);
+      if (codexRenameCallback) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex topic rename prompt is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex topic rename prompt is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        let storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
+        let sessionStore = loadSessionStore(storePath);
+        let effectiveSessionKey = targetSessionKey;
+        let renameEntry = sessionStore[effectiveSessionKey];
+        if (!renameEntry?.codexRenameTopicRequestId?.trim()) {
+          const fallbackEntry = Object.entries(sessionStore).find(([, entry]) =>
+            entry?.codexRenameTopicRequestId?.trim(),
+          );
+          if (fallbackEntry) {
+            [effectiveSessionKey, renameEntry] = fallbackEntry;
+          }
+        }
+        if (!renameEntry?.codexRenameTopicRequestId?.trim()) {
+          const defaultStorePath = resolveStorePath(cfg.session?.store);
+          if (defaultStorePath !== storePath) {
+            const defaultStore = loadSessionStore(defaultStorePath);
+            let defaultSessionKey = targetSessionKey;
+            let defaultEntry = defaultStore[defaultSessionKey];
+            if (!defaultEntry?.codexRenameTopicRequestId?.trim()) {
+              const fallbackEntry = Object.entries(defaultStore).find(([, entry]) =>
+                entry?.codexRenameTopicRequestId?.trim(),
+              );
+              if (fallbackEntry) {
+                [defaultSessionKey, defaultEntry] = fallbackEntry;
+              }
+            }
+            if (defaultEntry?.codexRenameTopicRequestId?.trim()) {
+              storePath = defaultStorePath;
+              sessionStore = defaultStore;
+              effectiveSessionKey = defaultSessionKey;
+              renameEntry = defaultEntry;
+            }
+          }
+        }
+        const requestId =
+          renameEntry?.codexRenameTopicRequestId?.trim() || codexRenameCallback.requestToken.trim();
+        const requestTokenMatches =
+          requestId != null &&
+          matchesCodexRenameActionRequestToken(requestId, codexRenameCallback.requestToken);
+        const optionIndex = codexRenameCallback.action === "withProject" ? 0 : 1;
+        const optionName = requestTokenMatches
+          ? renameEntry?.codexRenameTopicOptions?.[optionIndex]?.trim()
+          : undefined;
+        if (!optionName) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex topic rename prompt is no longer active.");
+          return;
+        }
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          const entry = store[effectiveSessionKey];
+          if (!entry) {
+            return;
+          }
+          delete entry.codexRenameTopicRequestId;
+          delete entry.codexRenameTopicOptions;
+          entry.updatedAt = Date.now();
+          store[effectiveSessionKey] = entry;
+        }).catch(() => undefined);
+        const syntheticMessage = buildSyntheticTextMessage({
+          base: callbackMessage,
+          from: callback.from,
+          text: `/codex_rename --sync --topic-only ${optionName}`,
+        });
+        await processMessage(buildSyntheticContext(ctx, syntheticMessage), [], storeAllowFrom, {
+          forceWasMentioned: true,
+          messageIdOverride: callback.id,
+        });
+        return;
+      }
+
+      const codexCallback = parseCodexPendingInputCallbackData(data);
+      const legacyCodexOrdinalMatch = data.match(/^\s*([1-9]\d*)\s*$/);
+      if (codexCallback || legacyCodexOrdinalMatch) {
+        const callbackConversationThreadId = resolvedThreadId ?? messageThreadId ?? dmThreadId;
+        const conversationId =
+          callbackConversationThreadId != null
+            ? `${chatId}:topic:${callbackConversationThreadId}`
+            : !isGroup
+              ? String(chatId)
+              : undefined;
+        if (!conversationId) {
+          await replyToCallbackChat("This Codex input is no longer active.");
+          return;
+        }
+        const binding = getSessionBindingService().resolveByConversation({
+          channel: "telegram",
+          accountId: accountId ?? "default",
+          conversationId,
+        });
+        const targetSessionKey = binding?.targetSessionKey?.trim();
+        if (!targetSessionKey) {
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat("This Codex input is no longer active.");
+          return;
+        }
+        if (binding?.bindingId) {
+          getSessionBindingService().touch(binding.bindingId);
+        }
+        const storePath = resolveStorePath(cfg.session?.store, {
+          agentId: resolveAgentIdFromSessionKey(targetSessionKey),
+        });
+        const sessionStore = loadSessionStore(storePath);
+        const pendingEntry = sessionStore[targetSessionKey];
+        const requestId = pendingEntry?.pendingUserInputRequestId?.trim();
+        const pendingActions =
+          pendingEntry?.pendingUserInputActions?.filter(Boolean) ??
+          buildCodexPendingUserInputActions({
+            method: pendingEntry?.pendingUserInputMethod,
+            options: pendingEntry?.pendingUserInputOptions,
+          });
+        const actionIndex = codexCallback
+          ? codexCallback.actionIndex
+          : Number.parseInt(legacyCodexOrdinalMatch?.[1] ?? "", 10) - 1;
+        const replyParams =
+          callbackMessage.message_thread_id == null
+            ? undefined
+            : { message_thread_id: callbackMessage.message_thread_id };
+        const requestTokenMatches = codexCallback
+          ? requestId == null ||
+            matchesCodexPendingInputRequestToken(requestId, codexCallback.requestToken)
+          : true;
+        const fallbackAction =
+          codexCallback?.kind === "approvalAccept"
+            ? ({
+                kind: "approval",
+                decision: "accept",
+                responseDecision: "accept",
+                label: "Approve Once",
+              } as const)
+            : codexCallback?.kind === "approvalAcceptForSession"
+              ? ({
+                  kind: "approval",
+                  decision: "acceptForSession",
+                  responseDecision: "acceptForSession",
+                  label: "Approve for Session",
+                } as const)
+              : codexCallback?.kind === "approvalDecline"
+                ? ({
+                    kind: "approval",
+                    decision: "decline",
+                    responseDecision: "decline",
+                    label: "Decline",
+                  } as const)
+                : codexCallback?.kind === "approvalCancel"
+                  ? ({
+                      kind: "approval",
+                      decision: "cancel",
+                      responseDecision: "cancel",
+                      label: "Cancel",
+                    } as const)
+                  : codexCallback?.kind === "steer"
+                    ? ({ kind: "steer", label: "Tell Codex What To Do" } as const)
+                    : undefined;
+        const action = requestTokenMatches
+          ? (pendingActions?.[actionIndex] ?? fallbackAction)
+          : undefined;
+        if (!requestTokenMatches || !action) {
+          logVerbose(
+            `telegram: codex approval callback stale conversation=${conversationId} session=${targetSessionKey} actionIndex=${actionIndex}`,
+          );
+          await clearCallbackButtons().catch(() => undefined);
+          await updateSessionStore(storePath, (store) => {
+            const entry = store[targetSessionKey];
+            if (!entry) {
+              return;
+            }
+            entry.pendingUserInputAwaitingSteer = undefined;
+            entry.updatedAt = Date.now();
+            store[targetSessionKey] = entry;
+          }).catch(() => undefined);
+          await replyToCallbackChat("This Codex input is no longer active.");
+          return;
+        }
+        if (action.kind === "steer") {
+          logVerbose(
+            `telegram: codex approval callback steering conversation=${conversationId} session=${targetSessionKey}`,
+          );
+          await clearCallbackButtons().catch(() => undefined);
+          await updateSessionStore(storePath, (store) => {
+            const entry = store[targetSessionKey];
+            if (!entry) {
+              return;
+            }
+            entry.pendingUserInputAwaitingSteer = true;
+            entry.updatedAt = Date.now();
+            store[targetSessionKey] = entry;
+          }).catch(() => undefined);
+          await replyToCallbackChat(
+            "Waiting for what to do differently. Reply with the instruction you want sent to Codex instead.",
+            replyParams,
+          );
+          return;
+        }
+
+        const submitted = submitAgentRunPendingInputBySessionKey(targetSessionKey, { actionIndex });
+        if (!submitted) {
+          logVerbose(
+            `telegram: codex approval callback not submitted conversation=${conversationId} session=${targetSessionKey} actionIndex=${actionIndex}`,
+          );
+          await clearCallbackButtons().catch(() => undefined);
+          await replyToCallbackChat(
+            "Codex is not currently waiting on this input. Rejoin the thread or reply again once the prompt is active.",
+            replyParams,
+          );
+          return;
+        }
+
+        await clearCallbackButtons().catch(() => undefined);
+        await updateSessionStore(storePath, (store) => {
+          const entry = store[targetSessionKey];
+          if (!entry) {
+            return;
+          }
+          entry.pendingUserInputAwaitingSteer = false;
+          entry.updatedAt = Date.now();
+          store[targetSessionKey] = entry;
+        }).catch(() => undefined);
+        const ackText =
+          action.kind === "approval"
+            ? action.decision === "accept"
+              ? "Approved once."
+              : action.decision === "acceptForSession"
+                ? action.sessionPrefix
+                  ? `Approved for this session when the command matches: ${action.sessionPrefix}`
+                  : "Approved for this session."
+                : action.decision === "decline"
+                  ? "Declined."
+                  : "Cancelled."
+            : `Selected: ${action.label}`;
+        logVerbose(
+          `telegram: codex approval callback submitted conversation=${conversationId} session=${targetSessionKey} actionIndex=${actionIndex}`,
+        );
+        await replyToCallbackChat(ackText, replyParams);
         return;
       }
 

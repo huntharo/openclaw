@@ -378,6 +378,183 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(draftStream.stop).toHaveBeenCalled();
   });
 
+  it("sends post-approval Codex results as a new message after an interactive tool prompt", async () => {
+    const answerDraftStream = createSequencedDraftStream(1001);
+    const reasoningDraftStream = createDraftStream();
+    createTelegramDraftStream
+      .mockImplementationOnce(() => answerDraftStream)
+      .mockImplementationOnce(() => reasoningDraftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({
+          text: "Running the npm registry query now with escalation for network access.",
+        });
+        await dispatcherOptions.deliver(
+          { text: "Running the npm registry query now with escalation for network access." },
+          { kind: "final" },
+        );
+        await dispatcherOptions.deliver(
+          {
+            text: "Codex approval requested",
+            channelData: {
+              codexAppServer: {
+                interactiveRequest: true,
+              },
+              telegram: {
+                buttons: [[{ text: "Approve Once", callback_data: "cdxui:aa:0:token123" }]],
+              },
+            },
+          },
+          { kind: "tool" },
+        );
+        await dispatcherOptions.deliver(
+          { text: "Checked with npm view:\n\n- name: diver\n- version: 1.1.1" },
+          { kind: "final" },
+        );
+        return { queuedFinal: true };
+      },
+    );
+    deliverReplies.mockResolvedValue({ delivered: true });
+    editMessageTelegram.mockResolvedValue({ ok: true, chatId: "123", messageId: "1001" });
+
+    await dispatchWithContext({ context: createContext(), streamMode: "partial" });
+
+    expect(editMessageTelegram).toHaveBeenCalledTimes(1);
+    expect(editMessageTelegram).toHaveBeenCalledWith(
+      123,
+      1001,
+      "Running the npm registry query now with escalation for network access.",
+      expect.any(Object),
+    );
+    expect(deliverReplies).toHaveBeenCalledTimes(2);
+    expect(deliverReplies).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        replies: [expect.objectContaining({ text: "Codex approval requested" })],
+      }),
+    );
+    expect(deliverReplies).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        replies: [
+          expect.objectContaining({
+            text: "Checked with npm view:\n\n- name: diver\n- version: 1.1.1",
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("bypasses preview finalization when the final payload renames a Telegram topic", async () => {
+    const draftStream = createDraftStream(1001);
+    createTelegramDraftStream
+      .mockImplementationOnce(() => draftStream)
+      .mockImplementationOnce(() => createDraftStream());
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({ text: "Renamed topic to: Better topic" });
+        await dispatcherOptions.deliver(
+          {
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          },
+          { kind: "final" },
+        );
+        return { queuedFinal: true };
+      },
+    );
+    deliverReplies.mockResolvedValue({ delivered: true });
+    editMessageTelegram.mockResolvedValue({ ok: true, chatId: "123", messageId: "1001" });
+
+    await dispatchWithContext({ context: createContext(), streamMode: "partial" });
+
+    expect(editMessageTelegram).not.toHaveBeenCalled();
+    expect(deliverReplies).toHaveBeenCalledTimes(1);
+    expect(deliverReplies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replies: [
+          expect.objectContaining({
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("bypasses preview edits for forum-topic rename payloads after a streamed preview", async () => {
+    const draftStream = createDraftStream(1001);
+    createTelegramDraftStream
+      .mockImplementationOnce(() => draftStream)
+      .mockImplementationOnce(() => createDraftStream());
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({ text: "Renamed topic to: Better topic" });
+        await dispatcherOptions.deliver(
+          {
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          },
+          { kind: "final" },
+        );
+        return { queuedFinal: true };
+      },
+    );
+    deliverReplies.mockResolvedValue({ delivered: true });
+    editMessageTelegram.mockResolvedValue({ ok: true, chatId: "123", messageId: "1001" });
+
+    await dispatchWithContext({
+      context: createContext({
+        isGroup: true,
+        chatId: -1001234567890,
+        msg: {
+          chat: { id: -1001234567890, type: "supergroup", title: "Forum", is_forum: true },
+          message_id: 456,
+          message_thread_id: 280,
+        } as unknown as TelegramMessageContext["msg"],
+        primaryCtx: {
+          message: {
+            chat: { id: -1001234567890, type: "supergroup", title: "Forum", is_forum: true },
+          },
+        } as TelegramMessageContext["primaryCtx"],
+        threadSpec: { id: 280, scope: "forum" },
+        resolvedThreadId: 280,
+        replyThreadId: 280,
+      }),
+      streamMode: "partial",
+    });
+
+    expect(editMessageTelegram).not.toHaveBeenCalled();
+    expect(deliverReplies).toHaveBeenCalledTimes(1);
+    expect(deliverReplies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thread: { id: 280, scope: "forum" },
+        replies: [
+          expect.objectContaining({
+            text: "Renamed topic to: Better topic",
+            channelData: {
+              telegram: {
+                renameTopicTo: "Better topic",
+              },
+            },
+          }),
+        ],
+      }),
+    );
+  });
+
   it.each([
     { label: "default account config", telegramCfg: {} },
     { label: "account blockStreaming override", telegramCfg: { blockStreaming: true } },

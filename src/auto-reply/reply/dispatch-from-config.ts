@@ -364,8 +364,23 @@ export async function dispatchReplyFromConfig(params: {
     let accumulatedBlockText = "";
     let blockCount = 0;
 
+    const isInteractiveCodexToolPayload = (payload: ReplyPayload): boolean => {
+      const channelData =
+        payload.channelData != null && typeof payload.channelData === "object"
+          ? payload.channelData
+          : undefined;
+      const codexAppServer =
+        channelData?.codexAppServer != null && typeof channelData.codexAppServer === "object"
+          ? (channelData.codexAppServer as Record<string, unknown>)
+          : undefined;
+      return codexAppServer?.interactiveRequest === true;
+    };
+
     const resolveToolDeliveryPayload = (payload: ReplyPayload): ReplyPayload | null => {
       if (shouldSendToolSummaries) {
+        return payload;
+      }
+      if (isInteractiveCodexToolPayload(payload)) {
         return payload;
       }
       // Group/native flows intentionally suppress tool summary text, but media-only

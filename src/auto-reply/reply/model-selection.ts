@@ -26,6 +26,10 @@ export type ModelDirectiveSelection = {
 
 type ModelCatalog = Awaited<ReturnType<typeof loadModelCatalog>>;
 
+function isCodexAppServerProvider(provider: string | undefined): boolean {
+  return normalizeProviderId(provider ?? "") === "codex-app-server";
+}
+
 type ModelSelectionState = {
   provider: string;
   model: string;
@@ -325,7 +329,11 @@ export async function createModelSelectionState(params: {
     const overrideModel = sessionEntry.modelOverride?.trim();
     if (overrideModel) {
       const key = modelKey(overrideProvider, overrideModel);
-      if (allowedModelKeys.size > 0 && !allowedModelKeys.has(key)) {
+      if (
+        !isCodexAppServerProvider(overrideProvider) &&
+        allowedModelKeys.size > 0 &&
+        !allowedModelKeys.has(key)
+      ) {
         const { updated } = applyModelOverrideToSessionEntry({
           entry: sessionEntry,
           selection: { provider: defaultProvider, model: defaultModel, isDefault: true },
@@ -356,9 +364,22 @@ export async function createModelSelectionState(params: {
   if (storedOverride?.model && !skipStoredOverride) {
     const candidateProvider = storedOverride.provider || defaultProvider;
     const key = modelKey(candidateProvider, storedOverride.model);
-    if (allowedModelKeys.size === 0 || allowedModelKeys.has(key)) {
+    if (
+      isCodexAppServerProvider(candidateProvider) ||
+      allowedModelKeys.size === 0 ||
+      allowedModelKeys.has(key)
+    ) {
       provider = candidateProvider;
       model = storedOverride.model;
+    }
+  }
+
+  const providerOverride = sessionEntry?.providerOverride?.trim();
+  if (providerOverride && isCodexAppServerProvider(providerOverride)) {
+    provider = providerOverride;
+    const overrideModel = sessionEntry?.modelOverride?.trim();
+    if (overrideModel) {
+      model = overrideModel;
     }
   }
 

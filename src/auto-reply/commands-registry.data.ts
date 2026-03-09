@@ -1,3 +1,4 @@
+import { CODEX_BUILT_IN_MIRRORED_COMMANDS } from "../agents/codex-app-server-mirror-commands.js";
 import { listChannelDocks } from "../channels/dock.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { COMMAND_ARG_FORMATTERS } from "./commands-args.js";
@@ -351,6 +352,45 @@ function buildChatCommands(): ChatCommandDefinition[] {
       ],
       argsMenu: "auto",
     }),
+    defineChatCommand({
+      key: "codex",
+      nativeName: "codex",
+      description: "Manage Codex App Server threads and bindings.",
+      textAlias: "/codex",
+      category: "management",
+      args: [
+        {
+          name: "action",
+          description: "Action to run",
+          type: "string",
+          preferAutocomplete: true,
+          choices: ["new", "spawn", "join", "steer", "status", "detach", "list", "help"],
+        },
+        {
+          name: "target",
+          description: "Thread id or filter text",
+          type: "string",
+        },
+        {
+          name: "value",
+          description: "Additional input",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+      argsMenu: "auto",
+    }),
+    ...CODEX_BUILT_IN_MIRRORED_COMMANDS.map((command) =>
+      defineChatCommand({
+        key: `codex_${command.baseName}`,
+        nativeName: `codex_${command.baseName}`,
+        description: command.description,
+        textAlias: `/codex_${command.baseName}`,
+        acceptsArgs: true,
+        argsParsing: "none",
+        category: "management",
+      }),
+    ),
     defineChatCommand({
       key: "focus",
       nativeName: "focus",

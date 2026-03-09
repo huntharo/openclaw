@@ -7,6 +7,7 @@ export type EmbeddedPiAgentMeta = {
   model: string;
   compactionCount?: number;
   promptTokens?: number;
+  contextTokensUsed?: number;
   usage?: {
     input?: number;
     output?: number;
@@ -34,6 +35,14 @@ export type EmbeddedPiRunMeta = {
   durationMs: number;
   agentMeta?: EmbeddedPiAgentMeta;
   aborted?: boolean;
+  codexPlanArtifact?: {
+    explanation?: string;
+    steps?: Array<{
+      step: string;
+      status: "pending" | "inProgress" | "completed";
+    }>;
+    markdown: string;
+  };
   systemPromptReport?: SessionSystemPromptReport;
   error?: {
     kind:

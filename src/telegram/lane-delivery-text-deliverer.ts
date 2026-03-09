@@ -64,6 +64,7 @@ type DeliverLaneTextParams = {
   payload: ReplyPayload;
   infoKind: string;
   previewButtons?: TelegramInlineButtons;
+  forceStandardDelivery?: boolean;
   allowPreviewUpdateForNonFinal?: boolean;
 };
 
@@ -356,11 +357,16 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
     infoKind,
     previewButtons,
     allowPreviewUpdateForNonFinal = false,
+    forceStandardDelivery = false,
   }: DeliverLaneTextParams): Promise<LaneDeliveryResult> => {
     const lane = params.lanes[laneName];
     const hasMedia = Boolean(payload.mediaUrl) || (payload.mediaUrls?.length ?? 0) > 0;
     const canEditViaPreview =
-      !hasMedia && text.length > 0 && text.length <= params.draftMaxChars && !payload.isError;
+      !forceStandardDelivery &&
+      !hasMedia &&
+      text.length > 0 &&
+      text.length <= params.draftMaxChars &&
+      !payload.isError;
 
     if (infoKind === "final") {
       if (laneName === "answer") {
@@ -413,7 +419,12 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
           params.finalizedPreviewByLane[laneName] = true;
           return "preview-finalized";
         }
-      } else if (!hasMedia && !payload.isError && text.length > params.draftMaxChars) {
+      } else if (
+        !forceStandardDelivery &&
+        !hasMedia &&
+        !payload.isError &&
+        text.length > params.draftMaxChars
+      ) {
         params.log(
           `telegram: preview final too long for edit (${text.length} > ${params.draftMaxChars}); falling back to standard send`,
         );

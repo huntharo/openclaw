@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import type { Skill } from "@mariozechner/pi-coding-agent";
+import type { CodexPendingUserInputAction } from "../../agents/codex-app-server-pending-input.js";
+import type { CodexReviewAction } from "../../agents/codex-app-server-review-actions.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { ChannelId } from "../../channels/plugins/types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.js";
@@ -148,6 +150,40 @@ export type SessionEntry = {
   memoryFlushCompactionCount?: number;
   cliSessionIds?: Record<string, string>;
   claudeCliSessionId?: string;
+  /** Codex App Server thread binding for this session lane or project. */
+  codexThreadId?: string;
+  /** Last Codex App Server run id for this lane. */
+  codexRunId?: string;
+  /** Workspace identity for the current Codex thread binding. */
+  codexProjectKey?: string;
+  /** Effective Codex App Server service tier for the bound thread, when known. */
+  codexServiceTier?: string;
+  /** When true, non-command turns in this session route directly to Codex App Server. */
+  codexAutoRoute?: boolean;
+  /** Pending server-initiated user input request id, if any. */
+  pendingUserInputRequestId?: string;
+  /** Options shown for the pending user input request. */
+  pendingUserInputOptions?: string[];
+  /** Structured actions shown for the pending Codex request. */
+  pendingUserInputActions?: CodexPendingUserInputAction[];
+  /** Expiry timestamp for the pending user input request. */
+  pendingUserInputExpiresAt?: number;
+  /** Last rendered prompt text for a pending Codex server request. */
+  pendingUserInputPromptText?: string;
+  /** Server method name for the pending Codex request. */
+  pendingUserInputMethod?: string;
+  /** True after the operator chooses to steer Codex with a free-form reply. */
+  pendingUserInputAwaitingSteer?: boolean;
+  /** Last actionable Codex review result id exposed to channel buttons. */
+  codexReviewActionRequestId?: string;
+  /** Channel action prompts derived from the most recent Codex review. */
+  codexReviewActions?: CodexReviewAction[];
+  /** Last actionable Codex plan prompt id exposed to channel buttons. */
+  codexPlanPromptRequestId?: string;
+  /** Last actionable Codex topic-rename prompt id exposed to channel buttons. */
+  codexRenameTopicRequestId?: string;
+  /** Topic-name options offered by the last actionable Codex rename prompt. */
+  codexRenameTopicOptions?: string[];
   label?: string;
   displayName?: string;
   channel?: string;

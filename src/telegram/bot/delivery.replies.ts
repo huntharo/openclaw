@@ -29,6 +29,7 @@ import { resolveTelegramReplyId, type TelegramThreadSpec } from "./helpers.js";
 
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
 const CAPTION_TOO_LONG_RE = /caption is too long/i;
+const EDIT_TOPIC_RIGHTS_RE = /not enough rights to edit the topic/i;
 
 type DeliveryProgress = {
   hasReplied: boolean;
@@ -39,6 +40,7 @@ type DeliveryProgress = {
 type TelegramReplyChannelData = {
   buttons?: TelegramInlineButtons;
   pin?: boolean;
+  renameTopicTo?: string;
 };
 
 type ChunkTextFn = (markdown: string) => ReturnType<typeof markdownToTelegramChunks>;
@@ -92,6 +94,16 @@ function markReplyApplied(progress: DeliveryProgress, replyToId?: number): void 
 function markDelivered(progress: DeliveryProgress): void {
   progress.hasDelivered = true;
   progress.deliveredCount += 1;
+}
+
+function buildTelegramTopicRenameFailureNotice(errorText: string): string | undefined {
+  if (EDIT_TOPIC_RIGHTS_RE.test(errorText)) {
+    return [
+      "Topic rename sync failed.",
+      'This Telegram bot does not have the "Manage Topics" admin permission, so I could not rename the topic.',
+    ].join(" ");
+  }
+  return undefined;
 }
 
 async function deliverTextReply(params: {
@@ -577,7 +589,29 @@ export async function deliverReplies(params: {
         params.replyToMode === "off" ? undefined : resolveTelegramReplyId(reply.replyToId);
       const telegramData = reply.channelData?.telegram as TelegramReplyChannelData | undefined;
       const shouldPinFirstMessage = telegramData?.pin === true;
+      const renameTopicTo = telegramData?.renameTopicTo?.trim();
       const replyMarkup = buildInlineKeyboard(telegramData?.buttons);
+      if (
+        renameTopicTo &&
+        params.thread?.scope === "forum" &&
+        typeof params.thread.id === "number"
+      ) {
+        try {
+          await params.bot.api.editForumTopic(params.chatId, params.thread.id, {
+            name: renameTopicTo,
+          });
+        } catch (error) {
+          const errorText = formatErrorMessage(error);
+          params.runtime.log?.(danger(`[telegram] Topic rename sync failed: ${errorText}`));
+          const notice = buildTelegramTopicRenameFailureNotice(errorText);
+          if (notice) {
+            reply = {
+              ...reply,
+              text: reply.text ? `${reply.text}\n\n${notice}` : notice,
+            };
+          }
+        }
+      }
       let firstDeliveredMessageId: number | undefined;
       if (mediaList.length === 0) {
         firstDeliveredMessageId = await deliverTextReply({

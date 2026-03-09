@@ -140,6 +140,7 @@ const logHealth = log.child("health");
 const logCron = log.child("cron");
 const logReload = log.child("reload");
 const logHooks = log.child("hooks");
+const logAgents = log.child("agents");
 const logPlugins = log.child("plugins");
 const logWsControl = log.child("ws");
 const logSecrets = log.child("secrets");
@@ -921,6 +922,7 @@ export async function startGatewayServer(
       startChannels,
       log,
       logHooks,
+      logAgents,
       logChannels,
       logBrowser,
     }));

@@ -114,7 +114,26 @@ describe("createTelegramBot", () => {
     createTelegramBot({ token: "tok" });
     expect(sequentializeSpy).toHaveBeenCalledTimes(1);
     expect(middlewareUseSpy).toHaveBeenCalledWith(sequentializeSpy.mock.results[0]?.value);
-    expect(sequentializeKey).toBe(getTelegramSequentialKey);
+    expect(sequentializeKey).toBeTypeOf("function");
+    expect(
+      sequentializeKey?.({
+        message: {
+          chat: { id: 1234, type: "supergroup", is_forum: true, title: "Ops" },
+          message_id: 1,
+          date: 0,
+          message_thread_id: 99,
+        },
+      }),
+    ).toBe(
+      getTelegramSequentialKey({
+        message: {
+          chat: { id: 1234, type: "supergroup", is_forum: true, title: "Ops" },
+          message_id: 1,
+          date: 0,
+          message_thread_id: 99,
+        },
+      }),
+    );
   });
   it("routes callback_query payloads as messages and answers callbacks", async () => {
     createTelegramBot({ token: "tok" });

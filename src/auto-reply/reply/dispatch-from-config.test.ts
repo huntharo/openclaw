@@ -543,6 +543,52 @@ describe("dispatchReplyFromConfig", () => {
     expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
+  it("delivers interactive codex tool prompts in group sessions", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      ChatType: "group",
+    });
+
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions,
+      _cfg?: OpenClawConfig,
+    ) => {
+      expect(opts?.onToolResult).toBeDefined();
+      await opts?.onToolResult?.({
+        text: "🧭 Codex input requested (req-1)\nApprove npm view diver?",
+        channelData: {
+          codexAppServer: {
+            interactiveRequest: true,
+            method: "item/commandExecution/requestApproval",
+            requestId: "req-1",
+          },
+          telegram: {
+            buttons: [[{ text: "1. Approve", callback_data: "1" }]],
+          },
+        },
+      });
+      return { text: "hi" } satisfies ReplyPayload;
+    };
+
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(dispatcher.sendToolResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Codex input requested"),
+        channelData: expect.objectContaining({
+          codexAppServer: expect.objectContaining({
+            interactiveRequest: true,
+          }),
+        }),
+      }),
+    );
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+  });
+
   it("sends tool results via dispatcher in DM sessions", async () => {
     setNoAbort();
     const cfg = emptyConfig;

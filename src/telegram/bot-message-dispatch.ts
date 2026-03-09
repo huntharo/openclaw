@@ -50,6 +50,23 @@ const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 /** Minimum chars before sending first streaming message (improves push notification UX) */
 const DRAFT_MIN_INITIAL_CHARS = 30;
 
+function requiresTelegramStandardDelivery(payload: ReplyPayload): boolean {
+  const telegramChannelData =
+    payload.channelData?.telegram != null && typeof payload.channelData.telegram === "object"
+      ? (payload.channelData.telegram as Record<string, unknown>)
+      : undefined;
+  if (!telegramChannelData) {
+    return false;
+  }
+  // Some Telegram reply options perform delivery-time side effects and must not be
+  // short-circuited through preview-finalization edits.
+  return (
+    telegramChannelData.pin === true ||
+    (typeof telegramChannelData.renameTopicTo === "string" &&
+      telegramChannelData.renameTopicTo.trim().length > 0)
+  );
+}
+
 async function resolveStickerVisionSupport(cfg: OpenClawConfig, agentId: string) {
   try {
     const catalog = await loadModelCatalog({ config: cfg });
@@ -279,6 +296,38 @@ export const dispatchTelegramMessage = async ({
   const resetDraftLaneState = (lane: DraftLaneState) => {
     lane.lastPartialText = "";
     lane.hasStreamedMessage = false;
+  };
+  const isInteractiveCodexToolPayload = (payload: ReplyPayload): boolean => {
+    const telegramChannelData =
+      payload.channelData != null && typeof payload.channelData === "object"
+        ? payload.channelData
+        : undefined;
+    const codexAppServer =
+      telegramChannelData?.codexAppServer != null &&
+      typeof telegramChannelData.codexAppServer === "object"
+        ? (telegramChannelData.codexAppServer as Record<string, unknown>)
+        : undefined;
+    return codexAppServer?.interactiveRequest === true;
+  };
+  const sealAnswerLaneForInteractiveTool = async () => {
+    if (!answerLane.stream) {
+      return;
+    }
+    const hasExistingAnswerPreview =
+      answerLane.hasStreamedMessage ||
+      answerLane.lastPartialText.length > 0 ||
+      typeof answerLane.stream.messageId() === "number";
+    if (!hasExistingAnswerPreview) {
+      return;
+    }
+    await answerLane.stream.stop();
+    answerLane.stream.forceNewMessage();
+    resetDraftLaneState(answerLane);
+    // The next answer after an interactive tool prompt must not reuse the
+    // previous assistant message slot, even if the provider resumes without an
+    // explicit assistant-message boundary callback.
+    finalizedPreviewByLane.answer = true;
+    skipNextAnswerMessageStartRotation = false;
   };
   const rotateAnswerLaneForNewAssistantMessage = async () => {
     let didForceNewMessage = false;
@@ -523,12 +572,16 @@ export const dispatchTelegramMessage = async ({
             // rotations/partials are applied before final delivery mapping.
             await enqueueDraftLaneEvent(async () => {});
           }
+          if (isInteractiveCodexToolPayload(payload)) {
+            await sealAnswerLaneForInteractiveTool();
+          }
           const previewButtons = (
             payload.channelData?.telegram as { buttons?: TelegramInlineButtons } | undefined
           )?.buttons;
           const split = splitTextIntoLaneSegments(payload.text);
           const segments = split.segments;
           const hasMedia = Boolean(payload.mediaUrl) || (payload.mediaUrls?.length ?? 0) > 0;
+          const requiresStandardDelivery = requiresTelegramStandardDelivery(payload);
 
           const flushBufferedFinalAnswer = async () => {
             const buffered = reasoningStepState.takeBufferedFinalAnswer();
@@ -546,6 +599,7 @@ export const dispatchTelegramMessage = async ({
               payload: buffered.payload,
               infoKind: "final",
               previewButtons: bufferedButtons,
+              forceStandardDelivery: requiresTelegramStandardDelivery(buffered.payload),
             });
             reasoningStepState.resetForNextStep();
           };
@@ -568,6 +622,7 @@ export const dispatchTelegramMessage = async ({
               payload,
               infoKind: info.kind,
               previewButtons,
+              forceStandardDelivery: requiresStandardDelivery,
               allowPreviewUpdateForNonFinal: segment.lane === "reasoning",
             });
             if (segment.lane === "reasoning") {

@@ -3,7 +3,7 @@ import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
 import { isCliProvider } from "../../agents/model-selection.js";
-import { queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
+import { queueAgentRunMessage } from "../../agents/run-control.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import {
   resolveAgentIdFromSessionKey,
@@ -119,6 +119,10 @@ export async function runReplyAgent(params: {
   } = params;
 
   let activeSessionEntry = sessionEntry;
+  const hasPendingCodexInput =
+    activeSessionEntry?.providerOverride === "codex-app-server" &&
+    typeof activeSessionEntry.pendingUserInputRequestId === "string" &&
+    activeSessionEntry.pendingUserInputRequestId.trim().length > 0;
   const activeSessionStore = sessionStore;
   let activeIsNewSession = isNewSession;
 
@@ -194,8 +198,9 @@ export async function runReplyAgent(params: {
     }
   };
 
-  if (shouldSteer && isStreaming) {
-    const steered = queueEmbeddedPiMessage(followupRun.run.sessionId, followupRun.prompt);
+  if ((shouldSteer || hasPendingCodexInput) && isStreaming) {
+    const steerText = followupRun.summaryLine?.trim() || commandBody.trim() || followupRun.prompt;
+    const steered = queueAgentRunMessage(followupRun.run.sessionId, steerText);
     if (steered && !shouldFollowup) {
       await touchActiveSessionEntry();
       typing.cleanup();
@@ -456,6 +461,7 @@ export async function runReplyAgent(params: {
       ? runResult.meta?.agentMeta?.sessionId?.trim()
       : undefined;
     const contextTokensUsed =
+      runResult.meta?.agentMeta?.contextTokensUsed ??
       agentCfgContextTokens ??
       lookupContextTokens(modelUsed) ??
       activeSessionEntry?.contextTokens ??
@@ -473,6 +479,46 @@ export async function runReplyAgent(params: {
       systemPromptReport: runResult.meta?.systemPromptReport,
       cliSessionId,
     });
+
+    if (providerUsed === "codex-app-server") {
+      const codexThreadId = runResult.meta?.agentMeta?.sessionId?.trim() || undefined;
+      if (codexThreadId && activeSessionEntry) {
+        activeSessionEntry.providerOverride = "codex-app-server";
+        activeSessionEntry.codexThreadId = codexThreadId;
+        activeSessionEntry.codexProjectKey = followupRun.run.workspaceDir;
+        activeSessionEntry.codexAutoRoute = true;
+        activeSessionEntry.pendingUserInputRequestId = undefined;
+        activeSessionEntry.pendingUserInputOptions = undefined;
+        activeSessionEntry.pendingUserInputActions = undefined;
+        activeSessionEntry.pendingUserInputExpiresAt = undefined;
+        activeSessionEntry.pendingUserInputPromptText = undefined;
+        activeSessionEntry.pendingUserInputMethod = undefined;
+        activeSessionEntry.pendingUserInputAwaitingSteer = undefined;
+        activeSessionEntry.updatedAt = Date.now();
+      }
+      if (sessionKey && activeSessionEntry && activeSessionStore) {
+        activeSessionStore[sessionKey] = activeSessionEntry;
+      }
+      if (sessionKey && storePath) {
+        await updateSessionStoreEntry({
+          storePath,
+          sessionKey,
+          update: async () => ({
+            providerOverride: "codex-app-server",
+            codexThreadId,
+            codexProjectKey: followupRun.run.workspaceDir,
+            codexAutoRoute: true,
+            pendingUserInputRequestId: undefined,
+            pendingUserInputOptions: undefined,
+            pendingUserInputActions: undefined,
+            pendingUserInputExpiresAt: undefined,
+            pendingUserInputPromptText: undefined,
+            pendingUserInputMethod: undefined,
+            pendingUserInputAwaitingSteer: undefined,
+          }),
+        });
+      }
+    }
 
     // Drain any late tool/block deliveries before deciding there's "nothing to send".
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
