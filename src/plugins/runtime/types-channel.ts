@@ -2,6 +2,8 @@ type ReadChannelAllowFromStore =
   typeof import("../../pairing/pairing-store.js").readChannelAllowFromStore;
 type UpsertChannelPairingRequest =
   typeof import("../../pairing/pairing-store.js").upsertChannelPairingRequest;
+type SessionBindingService =
+  typeof import("../../infra/outbound/session-binding-service.js").getSessionBindingService;
 
 type ReadChannelAllowFromStoreForAccount = (params: {
   channel: Parameters<ReadChannelAllowFromStore>[0];
@@ -14,6 +16,7 @@ type UpsertChannelPairingRequestForAccount = (
 ) => ReturnType<UpsertChannelPairingRequest>;
 
 export type PluginRuntimeChannel = {
+  bindings: ReturnType<SessionBindingService>;
   text: {
     chunkByNewline: typeof import("../../auto-reply/chunk.js").chunkByNewline;
     chunkMarkdownText: typeof import("../../auto-reply/chunk.js").chunkMarkdownText;
@@ -117,6 +120,39 @@ export type PluginRuntimeChannel = {
     sendPollTelegram: typeof import("../../../extensions/telegram/src/send.js").sendPollTelegram;
     monitorTelegramProvider: typeof import("../../../extensions/telegram/src/monitor.js").monitorTelegramProvider;
     messageActions: typeof import("../../channels/plugins/actions/telegram.js").telegramMessageActions;
+    typing: {
+      pulse: typeof import("../../telegram/send.js").sendTypingTelegram;
+      start: (params: {
+        to: string;
+        accountId?: string;
+        cfg?: ReturnType<typeof import("../../config/config.js").loadConfig>;
+        intervalMs?: number;
+        messageThreadId?: number;
+      }) => Promise<{
+        refresh: () => Promise<void>;
+        stop: () => void;
+      }>;
+    };
+    conversationActions: {
+      editMessage: typeof import("../../telegram/send.js").editMessageTelegram;
+      editReplyMarkup: typeof import("../../telegram/send.js").editMessageReplyMarkupTelegram;
+      clearReplyMarkup: (
+        chatIdInput: string | number,
+        messageIdInput: string | number,
+        opts?: {
+          token?: string;
+          accountId?: string;
+          verbose?: boolean;
+          api?: Partial<import("grammy").Bot["api"]>;
+          retry?: import("../../infra/retry.js").RetryConfig;
+          cfg?: ReturnType<typeof import("../../config/config.js").loadConfig>;
+        },
+      ) => Promise<{ ok: true; messageId: string; chatId: string }>;
+      deleteMessage: typeof import("../../telegram/send.js").deleteMessageTelegram;
+      renameTopic: typeof import("../../telegram/send.js").renameForumTopicTelegram;
+      pinMessage: typeof import("../../telegram/send.js").pinMessageTelegram;
+      unpinMessage: typeof import("../../telegram/send.js").unpinMessageTelegram;
+    };
   };
   signal: {
     probeSignal: typeof import("../../../extensions/signal/src/probe.js").probeSignal;

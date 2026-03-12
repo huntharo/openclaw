@@ -85,6 +85,7 @@ import {
   updateLastRoute,
 } from "../../config/sessions.js";
 import { getChannelActivity, recordChannelActivity } from "../../infra/channel-activity.js";
+import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import {
   listLineAccountIds,
   normalizeAccountId as normalizeLineAccountId,
@@ -118,6 +119,7 @@ import type { PluginRuntime } from "./types.js";
 
 export function createRuntimeChannel(): PluginRuntime["channel"] {
   return {
+    bindings: getSessionBindingService(),
     text: {
       chunkByNewline,
       chunkMarkdownText,
@@ -230,6 +232,33 @@ export function createRuntimeChannel(): PluginRuntime["channel"] {
       sendPollTelegram,
       monitorTelegramProvider,
       messageActions: telegramMessageActions,
+      typing: {
+        pulse: sendTypingTelegram,
+        start: async ({ to, accountId, cfg, intervalMs, messageThreadId }) =>
+          await createTelegramTypingLease({
+            to,
+            accountId,
+            cfg,
+            intervalMs,
+            messageThreadId,
+            pulse: async ({ to, accountId, cfg, messageThreadId }) =>
+              await sendTypingTelegram(to, {
+                accountId,
+                cfg,
+                messageThreadId,
+              }),
+          }),
+      },
+      conversationActions: {
+        editMessage: editMessageTelegram,
+        editReplyMarkup: editMessageReplyMarkupTelegram,
+        clearReplyMarkup: async (chatIdInput, messageIdInput, opts = {}) =>
+          await editMessageReplyMarkupTelegram(chatIdInput, messageIdInput, [], opts),
+        deleteMessage: deleteMessageTelegram,
+        renameTopic: renameForumTopicTelegram,
+        pinMessage: pinMessageTelegram,
+        unpinMessage: unpinMessageTelegram,
+      },
     },
     signal: {
       probeSignal,
