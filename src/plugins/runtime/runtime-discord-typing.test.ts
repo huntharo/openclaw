@@ -35,4 +35,23 @@ describe("createDiscordTypingLease", () => {
 
     leaseB.stop();
   });
+
+  it("swallows background pulse failures", async () => {
+    vi.useFakeTimers();
+    const pulse = vi
+      .fn<(params: { channelId: string; accountId?: string; cfg?: unknown }) => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("boom"));
+
+    const lease = await createDiscordTypingLease({
+      channelId: "123",
+      intervalMs: 2_000,
+      pulse,
+    });
+
+    await expect(vi.advanceTimersByTimeAsync(2_000)).resolves.toBe(vi);
+    expect(pulse).toHaveBeenCalledTimes(2);
+
+    lease.stop();
+  });
 });

@@ -1,3 +1,5 @@
+import { logWarn } from "../../logger.js";
+
 export type CreateDiscordTypingLeaseParams = {
   channelId: string;
   accountId?: string;
@@ -38,7 +40,10 @@ export async function createDiscordTypingLease(params: CreateDiscordTypingLeaseP
   await pulse();
 
   timer = setInterval(() => {
-    void pulse();
+    // Background lease refreshes must never escape as unhandled rejections.
+    void pulse().catch((err) => {
+      logWarn(`plugins: discord typing pulse failed: ${String(err)}`);
+    });
   }, intervalMs);
   timer.unref?.();
 
