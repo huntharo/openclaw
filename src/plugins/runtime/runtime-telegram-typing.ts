@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../../config/config.js";
+import { logWarn } from "../../logger.js";
 
 export type CreateTelegramTypingLeaseParams = {
   to: string;
@@ -36,8 +37,12 @@ export async function createTelegramTypingLease(params: CreateTelegramTypingLeas
   await refresh();
 
   const timer = setInterval(() => {
-    void refresh();
+    // Background lease refreshes must never escape as unhandled rejections.
+    void refresh().catch((err) => {
+      logWarn(`plugins: telegram typing pulse failed: ${String(err)}`);
+    });
   }, intervalMs);
+  timer.unref?.();
 
   return {
     refresh,
