@@ -52,6 +52,7 @@ const deliverDiscordReplyMock = vi.hoisted(() => vi.fn());
 const recordInboundSessionMock = vi.hoisted(() => vi.fn());
 const readSessionUpdatedAtMock = vi.hoisted(() => vi.fn());
 const resolveStorePathMock = vi.hoisted(() => vi.fn());
+const dispatchPluginInteractiveHandlerMock = vi.hoisted(() => vi.fn());
 let lastDispatchCtx: Record<string, unknown> | undefined;
 
 vi.mock("../../../../src/pairing/pairing-store.js", () => ({
@@ -85,6 +86,15 @@ vi.mock("../../../../src/config/sessions.js", async (importOriginal) => {
     ...actual,
     readSessionUpdatedAt: (...args: unknown[]) => readSessionUpdatedAtMock(...args),
     resolveStorePath: (...args: unknown[]) => resolveStorePathMock(...args),
+  };
+});
+
+vi.mock("../../plugins/interactive.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../plugins/interactive.js")>();
+  return {
+    ...actual,
+    dispatchPluginInteractiveHandler: (...args: unknown[]) =>
+      dispatchPluginInteractiveHandlerMock(...args),
   };
 });
 
@@ -341,6 +351,11 @@ describe("discord component interactions", () => {
     recordInboundSessionMock.mockClear().mockResolvedValue(undefined);
     readSessionUpdatedAtMock.mockClear().mockReturnValue(undefined);
     resolveStorePathMock.mockClear().mockReturnValue("/tmp/openclaw-sessions-test.json");
+    dispatchPluginInteractiveHandlerMock.mockReset().mockResolvedValue({
+      matched: false,
+      handled: false,
+      duplicate: false,
+    });
   });
 
   it("routes button clicks with reply references", async () => {
@@ -498,6 +513,90 @@ describe("discord component interactions", () => {
 
     expect(acknowledge).toHaveBeenCalledTimes(1);
     expect(resolveDiscordModalEntry({ id: "mdl_1", consume: false })).not.toBeNull();
+  });
+
+  it("passes false auth to plugin Discord interactions for non-allowlisted guild users", async () => {
+    registerDiscordComponentEntries({
+      entries: [createButtonEntry({ callbackData: "codex:approve" })],
+      modals: [],
+    });
+    dispatchPluginInteractiveHandlerMock.mockResolvedValue({
+      matched: true,
+      handled: true,
+      duplicate: false,
+    });
+
+    const button = createDiscordComponentButton(
+      createComponentContext({
+        cfg: {
+          commands: { useAccessGroups: true },
+          channels: { discord: { replyToMode: "first" } },
+        } as OpenClawConfig,
+        allowFrom: ["owner-1"],
+      }),
+    );
+    const { interaction } = createComponentButtonInteraction({
+      rawData: {
+        channel_id: "guild-channel",
+        guild_id: "guild-1",
+        id: "interaction-guild-plugin-1",
+        member: { roles: [] },
+      } as unknown as ButtonInteraction["rawData"],
+      guild: { id: "guild-1", name: "Test Guild" } as unknown as ButtonInteraction["guild"],
+    });
+
+    await button.run(interaction, { cid: "btn_1" } as ComponentData);
+
+    expect(dispatchPluginInteractiveHandlerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          auth: { isAuthorizedSender: false },
+        }),
+      }),
+    );
+    expect(dispatchReplyMock).not.toHaveBeenCalled();
+  });
+
+  it("passes true auth to plugin Discord interactions for allowlisted guild users", async () => {
+    registerDiscordComponentEntries({
+      entries: [createButtonEntry({ callbackData: "codex:approve" })],
+      modals: [],
+    });
+    dispatchPluginInteractiveHandlerMock.mockResolvedValue({
+      matched: true,
+      handled: true,
+      duplicate: false,
+    });
+
+    const button = createDiscordComponentButton(
+      createComponentContext({
+        cfg: {
+          commands: { useAccessGroups: true },
+          channels: { discord: { replyToMode: "first" } },
+        } as OpenClawConfig,
+        allowFrom: ["123456789"],
+      }),
+    );
+    const { interaction } = createComponentButtonInteraction({
+      rawData: {
+        channel_id: "guild-channel",
+        guild_id: "guild-1",
+        id: "interaction-guild-plugin-2",
+        member: { roles: [] },
+      } as unknown as ButtonInteraction["rawData"],
+      guild: { id: "guild-1", name: "Test Guild" } as unknown as ButtonInteraction["guild"],
+    });
+
+    await button.run(interaction, { cid: "btn_1" } as ComponentData);
+
+    expect(dispatchPluginInteractiveHandlerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          auth: { isAuthorizedSender: true },
+        }),
+      }),
+    );
+    expect(dispatchReplyMock).not.toHaveBeenCalled();
   });
 });
 
