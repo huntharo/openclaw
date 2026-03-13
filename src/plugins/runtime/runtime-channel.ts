@@ -76,7 +76,6 @@ import { monitorIMessageProvider } from "../../imessage/monitor.js";
 import { probeIMessage } from "../../imessage/probe.js";
 import { sendMessageIMessage } from "../../imessage/send.js";
 import { getChannelActivity, recordChannelActivity } from "../../infra/channel-activity.js";
-import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import {
   listLineAccountIds,
   normalizeAccountId as normalizeLineAccountId,
@@ -142,7 +141,6 @@ import type { PluginRuntime } from "./types.js";
 
 export function createRuntimeChannel(): PluginRuntime["channel"] {
   return {
-    bindings: getSessionBindingService(),
     text: {
       chunkByNewline,
       chunkMarkdownText,
