@@ -788,6 +788,7 @@ async function dispatchPluginDiscordInteractiveEvent(params: {
   interaction: AgentComponentInteraction;
   interactionCtx: ComponentInteractionContext;
   channelCtx: DiscordChannelContext;
+  isAuthorizedSender: boolean;
   data: string;
   kind: "button" | "select" | "modal";
   values?: string[];
@@ -853,7 +854,7 @@ async function dispatchPluginDiscordInteractiveEvent(params: {
       guildId: params.interactionCtx.rawGuildId,
       senderId: params.interactionCtx.userId,
       senderUsername: params.interactionCtx.username,
-      auth: { isAuthorizedSender: true },
+      auth: { isAuthorizedSender: params.isAuthorizedSender },
       interaction: {
         kind: params.kind,
         messageId: params.messageId,
@@ -1206,6 +1207,17 @@ async function handleDiscordComponentEvent(params: {
     guildEntries: params.ctx.guildEntries,
   });
   const channelCtx = resolveDiscordChannelContext(params.interaction);
+  const allowNameMatching = isDangerousNameMatchingEnabled(params.ctx.discordConfig);
+  const channelConfig = resolveDiscordChannelConfigWithFallback({
+    guildInfo,
+    channelId,
+    channelName: channelCtx.channelName,
+    channelSlug: channelCtx.channelSlug,
+    parentId: channelCtx.parentId,
+    parentName: channelCtx.parentName,
+    parentSlug: channelCtx.parentSlug,
+    scope: channelCtx.isThread ? "thread" : "channel",
+  });
   const unauthorizedReply = `You are not authorized to use this ${params.componentLabel}.`;
   const memberAllowed = await ensureGuildComponentMemberAllowed({
     interaction: params.interaction,
@@ -1218,7 +1230,7 @@ async function handleDiscordComponentEvent(params: {
     replyOpts,
     componentLabel: params.componentLabel,
     unauthorizedReply,
-    allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
+    allowNameMatching,
   });
   if (!memberAllowed) {
     return;
@@ -1231,11 +1243,18 @@ async function handleDiscordComponentEvent(params: {
     replyOpts,
     componentLabel: params.componentLabel,
     unauthorizedReply,
-    allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
+    allowNameMatching,
   });
   if (!componentAllowed) {
     return;
   }
+  const commandAuthorized = resolveComponentCommandAuthorized({
+    ctx: params.ctx,
+    interactionCtx,
+    channelConfig,
+    guildInfo,
+    allowNameMatching,
+  });
 
   const consumed = resolveDiscordComponentEntry({
     id: parsed.componentId,
@@ -1272,6 +1291,7 @@ async function handleDiscordComponentEvent(params: {
       interaction: params.interaction,
       interactionCtx,
       channelCtx,
+      isAuthorizedSender: commandAuthorized,
       data: consumed.callbackData,
       kind: consumed.kind === "select" ? "select" : "button",
       values,
@@ -1823,6 +1843,17 @@ class DiscordComponentModal extends Modal {
       guildEntries: this.ctx.guildEntries,
     });
     const channelCtx = resolveDiscordChannelContext(interaction);
+    const allowNameMatching = isDangerousNameMatchingEnabled(this.ctx.discordConfig);
+    const channelConfig = resolveDiscordChannelConfigWithFallback({
+      guildInfo,
+      channelId,
+      channelName: channelCtx.channelName,
+      channelSlug: channelCtx.channelSlug,
+      parentId: channelCtx.parentId,
+      parentName: channelCtx.parentName,
+      parentSlug: channelCtx.parentSlug,
+      scope: channelCtx.isThread ? "thread" : "channel",
+    });
     const memberAllowed = await ensureGuildComponentMemberAllowed({
       interaction,
       guildInfo,
@@ -1834,7 +1865,7 @@ class DiscordComponentModal extends Modal {
       replyOpts,
       componentLabel: "form",
       unauthorizedReply: "You are not authorized to use this form.",
-      allowNameMatching: isDangerousNameMatchingEnabled(this.ctx.discordConfig),
+      allowNameMatching,
     });
     if (!memberAllowed) {
       return;
@@ -1852,11 +1883,18 @@ class DiscordComponentModal extends Modal {
       replyOpts,
       componentLabel: "form",
       unauthorizedReply: "You are not authorized to use this form.",
-      allowNameMatching: isDangerousNameMatchingEnabled(this.ctx.discordConfig),
+      allowNameMatching,
     });
     if (!modalAllowed) {
       return;
     }
+    const commandAuthorized = resolveComponentCommandAuthorized({
+      ctx: this.ctx,
+      interactionCtx,
+      channelConfig,
+      guildInfo,
+      allowNameMatching,
+    });
 
     const consumed = resolveDiscordModalEntry({
       id: modalId,
@@ -1885,6 +1923,7 @@ class DiscordComponentModal extends Modal {
         interaction,
         interactionCtx,
         channelCtx,
+        isAuthorizedSender: commandAuthorized,
         data: consumed.callbackData,
         kind: "modal",
         fields,
