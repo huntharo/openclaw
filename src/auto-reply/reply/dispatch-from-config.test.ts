@@ -1867,7 +1867,8 @@ describe("dispatchReplyFromConfig", () => {
   it("lets a plugin claim inbound traffic before core commands and agent dispatch", async () => {
     setNoAbort();
     hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) => hookName === "inbound_claim") as () => boolean,
+      ((hookName?: string) =>
+        hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
     );
     hookMocks.runner.runInboundClaim.mockResolvedValue({ handled: true } as never);
     const cfg = emptyConfig;
@@ -1888,6 +1889,7 @@ describe("dispatchReplyFromConfig", () => {
       RawBody: "who are you",
       Body: "who are you",
       MessageSid: "msg-claim-1",
+      SessionKey: "agent:main:telegram:group:-10099:77",
     });
     const replyResolver = vi.fn(async () => ({ text: "should not run" }) satisfies ReplyPayload);
 
@@ -1912,6 +1914,32 @@ describe("dispatchReplyFromConfig", () => {
         parentConversationId: "-10099",
         senderId: "user-9",
         messageId: "msg-claim-1",
+      }),
+    );
+    expect(hookMocks.runner.runMessageReceived).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: ctx.From,
+        content: "who are you",
+        metadata: expect.objectContaining({
+          messageId: "msg-claim-1",
+          originatingChannel: "telegram",
+          originatingTo: "telegram:-10099",
+          senderId: "user-9",
+          senderUsername: "ada",
+          threadId: 77,
+        }),
+      }),
+      expect.objectContaining({
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:-10099",
+      }),
+    );
+    expect(internalHookMocks.triggerInternalHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "message",
+        action: "received",
+        sessionKey: "agent:main:telegram:group:-10099:77",
       }),
     );
     expect(replyResolver).not.toHaveBeenCalled();
