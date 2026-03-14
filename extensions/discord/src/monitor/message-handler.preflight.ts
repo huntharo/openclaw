@@ -30,6 +30,7 @@ import { logDebug } from "../../../../src/logger.js";
 import { getChildLogger } from "../../../../src/logging.js";
 import { buildPairingReply } from "../../../../src/pairing/pairing-messages.js";
 import { DEFAULT_ACCOUNT_ID } from "../../../../src/routing/session-key.js";
+import { isPluginOwnedSessionBindingRecord } from "../../../../src/plugins/conversation-binding.js";
 import { fetchPluralKitMessageInfo } from "../pluralkit.js";
 import { sendMessageDiscord } from "../send.js";
 import {
@@ -384,7 +385,9 @@ export async function preflightDiscordMessage(
     logVerbose(`discord: drop bound-thread webhook echo message ${message.id}`);
     return null;
   }
-  const boundSessionKey = threadBinding?.targetSessionKey?.trim();
+  const boundSessionKey = isPluginOwnedSessionBindingRecord(threadBinding)
+    ? ""
+    : threadBinding?.targetSessionKey?.trim();
   const effectiveRoute = resolveDiscordEffectiveRoute({
     route,
     boundSessionKey,
@@ -392,7 +395,7 @@ export async function preflightDiscordMessage(
     matchedBy: "binding.channel",
   });
   const boundAgentId = boundSessionKey ? effectiveRoute.agentId : undefined;
-  const isBoundThreadSession = Boolean(boundSessionKey && earlyThreadChannel);
+  const isBoundThreadSession = Boolean(threadBinding && earlyThreadChannel);
   if (
     isBoundThreadBotSystemMessage({
       isBoundThreadSession,

@@ -41,6 +41,11 @@ import { logDebug, logError } from "../../../../src/logger.js";
 import { getAgentScopedMediaLocalRoots } from "../../../../src/media/local-roots.js";
 import { issuePairingChallenge } from "../../../../src/pairing/pairing-challenge.js";
 import { upsertChannelPairingRequest } from "../../../../src/pairing/pairing-store.js";
+import {
+  buildPluginBindingResolvedText,
+  parsePluginBindingApprovalCustomId,
+  resolvePluginConversationBindingApproval,
+} from "../../../../src/plugins/conversation-binding.js";
 import { dispatchPluginInteractiveHandler } from "../../../../src/plugins/interactive.js";
 import { resolveAgentRoute } from "../../../../src/routing/resolve-route.js";
 import { createNonExitingRuntime, type RuntimeEnv } from "../../../../src/runtime.js";
@@ -846,6 +851,24 @@ async function dispatchPluginDiscordInteractiveEvent(params: {
       });
     },
   };
+  const pluginBindingApproval = parsePluginBindingApprovalCustomId(params.data);
+  if (pluginBindingApproval) {
+    const resolved = await resolvePluginConversationBindingApproval({
+      approvalId: pluginBindingApproval.approvalId,
+      decision: pluginBindingApproval.decision,
+      senderId: params.interactionCtx.userId,
+    });
+    try {
+      await respond.clearComponents();
+    } catch {
+      await respond.acknowledge();
+    }
+    await respond.followUp({
+      text: buildPluginBindingResolvedText(resolved),
+      ephemeral: true,
+    });
+    return "handled";
+  }
   const dispatched = await dispatchPluginInteractiveHandler({
     channel: "discord",
     data: params.data,

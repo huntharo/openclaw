@@ -318,6 +318,7 @@ function createPluginRecord(params: {
   description?: string;
   version?: string;
   source: string;
+  rootDir?: string;
   origin: PluginRecord["origin"];
   workspaceDir?: string;
   enabled: boolean;
@@ -329,6 +330,7 @@ function createPluginRecord(params: {
     description: params.description,
     version: params.version,
     source: params.source,
+    rootDir: params.rootDir,
     origin: params.origin,
     workspaceDir: params.workspaceDir,
     enabled: params.enabled,
@@ -784,6 +786,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
         description: manifestRecord.description,
         version: manifestRecord.version,
         source: candidate.source,
+        rootDir: candidate.rootDir,
         origin: candidate.origin,
         workspaceDir: candidate.workspaceDir,
         enabled: false,
@@ -808,6 +811,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       description: manifestRecord.description,
       version: manifestRecord.version,
       source: candidate.source,
+      rootDir: candidate.rootDir,
       origin: candidate.origin,
       workspaceDir: candidate.workspaceDir,
       enabled: enableState.enabled,

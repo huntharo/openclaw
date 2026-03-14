@@ -33,6 +33,11 @@ import { danger, logVerbose, warn } from "../../../src/globals.js";
 import { enqueueSystemEvent } from "../../../src/infra/system-events.js";
 import { MediaFetchError } from "../../../src/media/fetch.js";
 import { readChannelAllowFromStore } from "../../../src/pairing/pairing-store.js";
+import {
+  buildPluginBindingResolvedText,
+  parsePluginBindingApprovalCustomId,
+  resolvePluginConversationBindingApproval,
+} from "../../../src/plugins/conversation-binding.js";
 import { resolveAgentRoute } from "../../../src/routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../../src/routing/session-key.js";
 import { applyModelOverrideToSessionEntry } from "../../../src/sessions/model-overrides.js";
@@ -1222,6 +1227,17 @@ export const registerTelegramHandlers = ({
 
       const callbackConversationId =
         messageThreadId != null ? `${chatId}:topic:${messageThreadId}` : String(chatId);
+      const pluginBindingApproval = parsePluginBindingApprovalCustomId(data);
+      if (pluginBindingApproval) {
+        const resolved = await resolvePluginConversationBindingApproval({
+          approvalId: pluginBindingApproval.approvalId,
+          decision: pluginBindingApproval.decision,
+          senderId: senderId || undefined,
+        });
+        await clearCallbackButtons();
+        await replyToCallbackChat(buildPluginBindingResolvedText(resolved));
+        return;
+      }
       const pluginCallback = await dispatchPluginInteractiveHandler({
         channel: "telegram",
         data,
