@@ -6,6 +6,10 @@ import { formatUncaughtError } from "../infra/errors.js";
 import { isMainModule } from "../infra/is-main.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { assertSupportedRuntime } from "../infra/runtime-guard.js";
+import {
+  finishStartupDiagnostics,
+  installStartupDiagnostics,
+} from "../infra/startup-diagnostics.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { enableConsoleCapture } from "../logging.js";
 import { getCommandPathWithRootOptions, getPrimaryCommand, hasHelpOrVersion } from "./argv.js";
@@ -73,8 +77,12 @@ export function shouldEnsureCliPath(argv: string[]): boolean {
 
 export async function runCli(argv: string[] = process.argv) {
   let normalizedArgv = normalizeWindowsArgv(argv);
+  await installStartupDiagnostics({
+    label: getPrimaryCommand(normalizedArgv) ?? "root",
+  });
   const parsedProfile = parseCliProfileArgs(normalizedArgv);
   if (!parsedProfile.ok) {
+    finishStartupDiagnostics("error", { error: parsedProfile.error });
     throw new Error(parsedProfile.error);
   }
   if (parsedProfile.profile) {
@@ -93,6 +101,7 @@ export async function runCli(argv: string[] = process.argv) {
 
   try {
     if (await tryRouteCli(normalizedArgv)) {
+      finishStartupDiagnostics("ready", { route: true });
       return;
     }
 
@@ -145,6 +154,12 @@ export async function runCli(argv: string[] = process.argv) {
     }
 
     await program.parseAsync(parseArgv);
+    finishStartupDiagnostics("ready", { primary: primary ?? "root" });
+  } catch (err) {
+    finishStartupDiagnostics("error", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   } finally {
     await closeCliMemoryManagers();
   }

@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { setVerbose } from "../../globals.js";
 import { isTruthyEnvValue } from "../../infra/env.js";
+import { markStartupPhase, withStartupDiagnosticsPhase } from "../../infra/startup-diagnostics.js";
 import type { LogLevel } from "../../logging/levels.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
@@ -135,8 +136,16 @@ export function registerPreActionHooks(program: Command, programVersion: string)
     });
     // Load plugins for commands that need channel access
     if (PLUGIN_REQUIRED_COMMANDS.has(commandPath[0])) {
-      const { ensurePluginRegistryLoaded } = await loadPluginRegistryModule();
-      ensurePluginRegistryLoaded();
+      markStartupPhase("cli.preaction.plugin-registry-needed", {
+        command: commandPath[0],
+      });
+      const { ensurePluginRegistryLoaded } = await withStartupDiagnosticsPhase(
+        "cli.preaction.plugin-registry.import",
+        async () => await loadPluginRegistryModule(),
+      );
+      await withStartupDiagnosticsPhase("cli.preaction.ensure-plugin-registry", async () => {
+        ensurePluginRegistryLoaded();
+      });
     }
   });
 }

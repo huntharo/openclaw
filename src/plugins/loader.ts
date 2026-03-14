@@ -7,6 +7,7 @@ import type { PluginInstallRecord } from "../config/types.plugins.js";
 import type { GatewayRequestHandler } from "../gateway/server-methods/types.js";
 import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
 import { resolveOpenClawPackageRootSync } from "../infra/openclaw-root.js";
+import { markStartupPhase } from "../infra/startup-diagnostics.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveUserPath } from "../utils.js";
 import { clearPluginCommands } from "./commands.js";
@@ -539,6 +540,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   if (cacheEnabled) {
     const cached = getCachedPluginRegistry(cacheKey);
     if (cached) {
+      markStartupPhase("plugins.loader.cache-hit", { cacheKey });
       activatePluginRegistry(cached, cacheKey);
       return cached;
     }
@@ -586,12 +588,20 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     coreGatewayHandlers: options.coreGatewayHandlers as Record<string, GatewayRequestHandler>,
   });
 
+  markStartupPhase("plugins.discovery.begin", {
+    workspaceDir: options.workspaceDir,
+    extraLoadPathCount: normalized.loadPaths.length,
+  });
   const discovery = discoverOpenClawPlugins({
     workspaceDir: options.workspaceDir,
     extraPaths: normalized.loadPaths,
     cache: options.cache,
     env,
   });
+  markStartupPhase("plugins.discovery.end", {
+    candidateCount: discovery.candidates.length,
+  });
+  markStartupPhase("plugins.manifests.begin");
   const manifestRegistry = loadPluginManifestRegistry({
     config: cfg,
     workspaceDir: options.workspaceDir,
@@ -599,6 +609,9 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     env,
     candidates: discovery.candidates,
     diagnostics: discovery.diagnostics,
+  });
+  markStartupPhase("plugins.manifests.end", {
+    pluginCount: manifestRegistry.plugins.length,
   });
   pushDiagnostics(registry.diagnostics, manifestRegistry.diagnostics);
   warnWhenAllowlistIsOpen({
@@ -624,6 +637,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     if (jitiLoader) {
       return jitiLoader;
     }
+    markStartupPhase("plugins.loader.create-jiti.begin");
     const pluginSdkAlias = resolvePluginSdkAlias();
     const aliasMap = {
       ...(pluginSdkAlias ? { "openclaw/plugin-sdk": pluginSdkAlias } : {}),
@@ -637,6 +651,9 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
             alias: aliasMap,
           }
         : {}),
+    });
+    markStartupPhase("plugins.loader.create-jiti.end", {
+      aliasCount: Object.keys(aliasMap).length,
     });
     return jitiLoader;
   };
@@ -758,7 +775,14 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
 
     let mod: OpenClawPluginModule | null = null;
     try {
+      markStartupPhase("plugins.load.begin", {
+        pluginId: record.id,
+        source: safeSource,
+      });
       mod = getJiti()(safeSource) as OpenClawPluginModule;
+      markStartupPhase("plugins.load.end", {
+        pluginId: record.id,
+      });
     } catch (err) {
       recordPluginError({
         logger,
@@ -855,6 +879,9 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     });
 
     try {
+      markStartupPhase("plugins.register.begin", {
+        pluginId: record.id,
+      });
       const result = register(api);
       if (result && typeof result.then === "function") {
         registry.diagnostics.push({
@@ -864,6 +891,9 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           message: "plugin register returned a promise; async registration is ignored",
         });
       }
+      markStartupPhase("plugins.register.end", {
+        pluginId: record.id,
+      });
       registry.plugins.push(record);
       seenIds.set(pluginId, candidate.origin);
     } catch (err) {
