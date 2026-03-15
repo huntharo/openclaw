@@ -5,6 +5,7 @@ import type {
   StringSelectMenuInteraction,
 } from "@buape/carbon";
 import type { Client } from "@buape/carbon";
+import { ChannelType } from "discord-api-types/v10";
 import type { GatewayPresenceUpdate } from "discord-api-types/v10";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../../../src/config/config.js";
@@ -635,6 +636,42 @@ describe("discord component interactions", () => {
       expect.objectContaining({
         ctx: expect.objectContaining({
           auth: { isAuthorizedSender: true },
+        }),
+      }),
+    );
+    expect(dispatchReplyMock).not.toHaveBeenCalled();
+  });
+
+  it("routes plugin Discord interactions in group DMs by channel id instead of sender id", async () => {
+    registerDiscordComponentEntries({
+      entries: [createButtonEntry({ callbackData: "codex:approve" })],
+      modals: [],
+    });
+    dispatchPluginInteractiveHandlerMock.mockResolvedValue({
+      matched: true,
+      handled: true,
+      duplicate: false,
+    });
+
+    const button = createDiscordComponentButton(createComponentContext());
+    const { interaction } = createComponentButtonInteraction({
+      rawData: {
+        channel_id: "group-dm-1",
+        id: "interaction-group-dm-1",
+      } as unknown as ButtonInteraction["rawData"],
+      channel: {
+        id: "group-dm-1",
+        type: ChannelType.GroupDM,
+      } as unknown as ButtonInteraction["channel"],
+    });
+
+    await button.run(interaction, { cid: "btn_1" } as ComponentData);
+
+    expect(dispatchPluginInteractiveHandlerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          conversationId: "channel:group-dm-1",
+          senderId: "123456789",
         }),
       }),
     );

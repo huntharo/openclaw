@@ -804,9 +804,10 @@ async function dispatchPluginDiscordInteractiveEvent(params: {
   fields?: Array<{ id: string; name: string; values: string[] }>;
   messageId?: string;
 }): Promise<"handled" | "unmatched"> {
-  const normalizedConversationId = params.interactionCtx.rawGuildId
-    ? `channel:${params.interactionCtx.channelId}`
-    : `user:${params.interactionCtx.userId}`;
+  const normalizedConversationId =
+    params.interactionCtx.rawGuildId || params.channelCtx.channelType === ChannelType.GroupDM
+      ? `channel:${params.interactionCtx.channelId}`
+      : `user:${params.interactionCtx.userId}`;
   let responded = false;
   const respond = {
     acknowledge: async () => {
