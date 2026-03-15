@@ -120,11 +120,6 @@ runs:
         pnpm -v
         if command -v bun &>/dev/null; then bun -v; fi
 
-    - name: Capture node path
-      if: inputs.install-deps == 'true' && steps.workspace-deps-cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: echo "NODE_BIN=$(dirname "$(node -p "process.execPath")")" >> "$GITHUB_ENV"
-
     - name: Install dependencies
       if: inputs.install-deps == 'true' && steps.workspace-deps-cache.outputs.cache-hit != 'true'
       shell: bash
@@ -135,7 +130,6 @@ runs:
         SIDE_EFFECTS_CACHE: ${{ inputs.side-effects-cache }}
       run: |
         set -euo pipefail
-        export PATH="$NODE_BIN:$PATH"
         which node
         node -v
         pnpm -v
