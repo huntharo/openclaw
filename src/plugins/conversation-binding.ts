@@ -531,7 +531,7 @@ function decodeCustomIdValue(value: string): string {
 
 export function buildPluginBindingApprovalCustomId(
   approvalId: string,
-  decision: PluginBindingApprovalDecisionWithDeny,
+  decision: PluginBindingApprovalDecision,
 ): string {
   const decisionCode = decision === "allow-once" ? "o" : decision === "allow-always" ? "a" : "d";
   return `${PLUGIN_BINDING_CUSTOM_ID_PREFIX}:${encodeCustomIdValue(approvalId)}:${decisionCode}`;

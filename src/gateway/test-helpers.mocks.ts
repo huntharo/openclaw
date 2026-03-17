@@ -157,7 +157,6 @@ const createStubPluginRegistry = (): PluginRegistry => ({
   commands: [],
   conversationBindingResolvedHandlers: [],
   diagnostics: [],
-  conversationBindingResolvedHandlers: [],
 });
 
 const hoisted = vi.hoisted(() => ({
