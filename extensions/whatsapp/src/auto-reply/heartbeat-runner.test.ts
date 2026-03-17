@@ -1,78 +1,93 @@
+import type { getReplyFromConfig } from "openclaw/plugin-sdk/reply-runtime";
+import { HEARTBEAT_TOKEN } from "openclaw/plugin-sdk/reply-runtime";
+import { redactIdentifier } from "openclaw/plugin-sdk/text-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { getReplyFromConfig } from "../../../../src/auto-reply/reply.js";
-import { HEARTBEAT_TOKEN } from "../../../../src/auto-reply/tokens.js";
-import { redactIdentifier } from "../../../../src/logging/redact-identifier.js";
 import type { sendMessageWhatsApp } from "../send.js";
 
-const state = vi.hoisted(() => ({
-  visibility: { showAlerts: true, showOk: true, useIndicator: false },
-  store: {} as Record<string, { updatedAt?: number; sessionId?: string }>,
-  snapshot: {
-    key: "k",
-    entry: { sessionId: "s1", updatedAt: 123 },
-    fresh: false,
-    resetPolicy: { mode: "none", atHour: null, idleMinutes: null },
-    dailyResetAt: null as number | null,
-    idleExpiresAt: null as number | null,
-  },
-  events: [] as unknown[],
-  loggerInfoCalls: [] as unknown[][],
-  loggerWarnCalls: [] as unknown[][],
-  heartbeatInfoLogs: [] as string[],
-  heartbeatWarnLogs: [] as string[],
-}));
+const state = vi.hoisted(() => {
+  return {
+    visibility: { showAlerts: true, showOk: true, useIndicator: false },
+    store: {} as Record<string, { updatedAt?: number; sessionId?: string }>,
+    snapshot: {
+      key: "k",
+      entry: { sessionId: "s1", updatedAt: 123 },
+      fresh: false,
+      resetPolicy: { mode: "none", atHour: null, idleMinutes: null },
+      dailyResetAt: null as number | null,
+      idleExpiresAt: null as number | null,
+    },
+    events: [] as unknown[],
+    loggerInfoCalls: [] as unknown[][],
+    loggerWarnCalls: [] as unknown[][],
+    heartbeatInfoLogs: [] as string[],
+    heartbeatWarnLogs: [] as string[],
+  };
+});
 
-vi.mock("../../../../src/agents/current-time.js", () => ({
-  appendCronStyleCurrentTimeLine: (body: string) =>
-    `${body}\nCurrent time: 2026-02-15T00:00:00Z (mock)`,
-}));
+vi.mock("openclaw/plugin-sdk/agent-runtime", async () => {
+  const { optionalStringEnum } = await import("../../../../src/agents/schema/typebox.js");
+  const { jsonResult, readNumberParam, readStringParam } =
+    await import("../../../../src/agents/tools/common.js");
+  return {
+    appendCronStyleCurrentTimeLine: (body: string) =>
+      `${body}\nCurrent time: 2026-02-15T00:00:00Z (mock)`,
+    optionalStringEnum,
+    jsonResult,
+    readNumberParam,
+    readStringParam,
+  };
+});
 
-// Perf: this module otherwise pulls a large dependency graph that we don't need
-// for these unit tests.
-vi.mock("../../../../src/auto-reply/reply.js", () => ({
-  getReplyFromConfig: vi.fn(async () => undefined),
-}));
-
-vi.mock("../../../../src/channels/plugins/whatsapp-heartbeat.js", () => ({
+vi.mock("openclaw/plugin-sdk/channel-runtime", () => ({
   resolveWhatsAppHeartbeatRecipients: () => [],
 }));
 
-vi.mock("../../../../src/config/config.js", () => ({
-  loadConfig: () => ({ agents: { defaults: {} }, session: {} }),
-}));
-
-vi.mock("../../../../src/routing/session-key.js", () => ({
-  normalizeMainKey: () => null,
-}));
-
-vi.mock("../../../../src/infra/heartbeat-visibility.js", () => ({
-  resolveHeartbeatVisibility: () => state.visibility,
-}));
-
-vi.mock("../../../../src/config/sessions.js", () => ({
-  loadSessionStore: () => state.store,
-  resolveSessionKey: () => "k",
-  resolveStorePath: () => "/tmp/store.json",
-  updateSessionStore: async (_path: string, updater: (store: typeof state.store) => void) => {
-    updater(state.store);
-  },
-}));
+vi.mock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/config-runtime")>();
+  return {
+    ...actual,
+    loadConfig: () => ({ agents: { defaults: {} }, session: {} }),
+    loadSessionStore: () => state.store,
+    resolveSessionKey: () => "k",
+    resolveStorePath: () => "/tmp/store.json",
+    updateSessionStore: async (_path: string, updater: (store: typeof state.store) => void) => {
+      updater(state.store);
+    },
+  };
+});
 
 vi.mock("./session-snapshot.js", () => ({
   getSessionSnapshot: () => state.snapshot,
 }));
 
-vi.mock("../../../../src/infra/heartbeat-events.js", () => ({
-  emitHeartbeatEvent: (event: unknown) => state.events.push(event),
-  resolveIndicatorType: (status: string) => `indicator:${status}`,
-}));
+vi.mock("openclaw/plugin-sdk/infra-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/infra-runtime")>();
+  return {
+    ...actual,
+    emitHeartbeatEvent: (event: unknown) => state.events.push(event),
+    resolveHeartbeatVisibility: () => state.visibility,
+    resolveIndicatorType: (status: string) => `indicator:${status}`,
+  };
+});
 
-vi.mock("../../../../src/logging.js", () => ({
-  getChildLogger: () => ({
-    info: (...args: unknown[]) => state.loggerInfoCalls.push(args),
-    warn: (...args: unknown[]) => state.loggerWarnCalls.push(args),
-  }),
-}));
+vi.mock("openclaw/plugin-sdk/routing", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/routing")>();
+  return {
+    ...actual,
+    normalizeMainKey: () => null,
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/runtime-env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/runtime-env")>();
+  return {
+    ...actual,
+    getChildLogger: () => ({
+      info: (...args: unknown[]) => state.loggerInfoCalls.push(args),
+      warn: (...args: unknown[]) => state.loggerWarnCalls.push(args),
+    }),
+  };
+});
 
 vi.mock("./loggers.js", () => ({
   whatsappHeartbeatLog: {
@@ -109,6 +124,7 @@ describe("runWebHeartbeatOnce", () => {
   });
 
   beforeEach(() => {
+    vi.resetModules();
     state.visibility = { showAlerts: true, showOk: true, useIndicator: false };
     state.store = { k: { updatedAt: 999, sessionId: "s1" } };
     state.snapshot = {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   readAllowFromStoreMock,
   sendMessageMock,
@@ -9,7 +9,7 @@ import {
 
 setupAccessControlTestHarness();
 
-const { checkInboundAccessControl } = await import("./access-control.js");
+let checkInboundAccessControl: typeof import("./access-control.js").checkInboundAccessControl;
 
 async function checkUnauthorizedWorkDmSender() {
   return checkInboundAccessControl({
@@ -32,6 +32,11 @@ function expectSilentlyBlocked(result: { allowed: boolean }) {
 }
 
 describe("checkInboundAccessControl pairing grace", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ checkInboundAccessControl } = await import("./access-control.js"));
+  });
+
   async function runPairingGraceCase(messageTimestampMs: number) {
     const connectedAtMs = 1_000_000;
     return await checkInboundAccessControl({
