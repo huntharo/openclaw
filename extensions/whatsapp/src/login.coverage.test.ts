@@ -3,13 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { DisconnectReason } from "@whiskeysockets/baileys";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loginWeb } from "./login.js";
-import {
-  createWaSocket,
-  formatError,
-  waitForCredsSaveQueueWithTimeout,
-  waitForWaConnection,
-} from "./session.js";
 
 const rmMock = vi.spyOn(fs, "rm");
 
@@ -19,18 +12,22 @@ function resolveTestAuthDir() {
 
 const authDir = resolveTestAuthDir();
 
-vi.mock("../../../src/config/config.js", () => ({
-  loadConfig: () =>
-    ({
-      channels: {
-        whatsapp: {
-          accounts: {
-            default: { enabled: true, authDir: resolveTestAuthDir() },
+vi.mock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/config-runtime")>();
+  return {
+    ...actual,
+    loadConfig: () =>
+      ({
+        channels: {
+          whatsapp: {
+            accounts: {
+              default: { enabled: true, authDir: resolveTestAuthDir() },
+            },
           },
         },
-      },
-    }) as never,
-}));
+      }) as never,
+  };
+});
 
 vi.mock("./session.js", () => {
   const authDir = resolveTestAuthDir();
@@ -64,10 +61,15 @@ vi.mock("./session.js", () => {
   };
 });
 
-const createWaSocketMock = vi.mocked(createWaSocket);
-const waitForWaConnectionMock = vi.mocked(waitForWaConnection);
-const waitForCredsSaveQueueWithTimeoutMock = vi.mocked(waitForCredsSaveQueueWithTimeout);
-const formatErrorMock = vi.mocked(formatError);
+let loginWeb: typeof import("./login.js").loginWeb;
+let createWaSocketMock: ReturnType<typeof vi.mocked<typeof import("./session.js").createWaSocket>>;
+let waitForWaConnectionMock: ReturnType<
+  typeof vi.mocked<typeof import("./session.js").waitForWaConnection>
+>;
+let waitForCredsSaveQueueWithTimeoutMock: ReturnType<
+  typeof vi.mocked<typeof import("./session.js").waitForCredsSaveQueueWithTimeout>
+>;
+let formatErrorMock: ReturnType<typeof vi.mocked<typeof import("./session.js").formatError>>;
 
 async function flushTasks() {
   await Promise.resolve();
@@ -75,10 +77,19 @@ async function flushTasks() {
 }
 
 describe("loginWeb coverage", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
+    vi.resetModules();
     vi.clearAllMocks();
     rmMock.mockClear();
+    ({ loginWeb } = await import("./login.js"));
+    const sessionModule = await import("./session.js");
+    createWaSocketMock = vi.mocked(sessionModule.createWaSocket);
+    waitForWaConnectionMock = vi.mocked(sessionModule.waitForWaConnection);
+    waitForCredsSaveQueueWithTimeoutMock = vi.mocked(
+      sessionModule.waitForCredsSaveQueueWithTimeout,
+    );
+    formatErrorMock = vi.mocked(sessionModule.formatError);
   });
   afterEach(() => {
     vi.useRealTimers();

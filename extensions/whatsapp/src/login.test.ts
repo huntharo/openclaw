@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetLogger, setLoggerOverride } from "../../../src/logging.js";
 import { renderQrPngBase64 } from "./qr-image.js";
 
 vi.mock("./session.js", () => {
@@ -19,15 +18,20 @@ vi.mock("./session.js", () => {
   };
 });
 
-import { loginWeb } from "./login.js";
-import type { waitForWaConnection } from "./session.js";
-
-const { createWaSocket } = await import("./session.js");
+let loginWeb: typeof import("./login.js").loginWeb;
+let createWaSocket: typeof import("./session.js").createWaSocket;
+let resetLogger: typeof import("../../../src/logging.js").resetLogger;
+let setLoggerOverride: typeof import("../../../src/logging.js").setLoggerOverride;
+type WaitForWaConnection = typeof import("./session.js").waitForWaConnection;
 
 describe("web login", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
+    vi.resetModules();
     vi.clearAllMocks();
+    ({ loginWeb } = await import("./login.js"));
+    ({ createWaSocket } = await import("./session.js"));
+    ({ resetLogger, setLoggerOverride } = await import("../../../src/logging.js"));
   });
 
   afterEach(() => {
@@ -41,7 +45,7 @@ describe("web login", () => {
       createWaSocket as unknown as () => Promise<{ ws: { close: () => void } }>
     )();
     const close = vi.spyOn(sock.ws, "close");
-    const waiter: typeof waitForWaConnection = vi.fn().mockResolvedValue(undefined);
+    const waiter: WaitForWaConnection = vi.fn().mockResolvedValue(undefined);
     await loginWeb(false, waiter);
     expect(close).not.toHaveBeenCalled();
 

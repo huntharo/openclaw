@@ -2,18 +2,24 @@ import { EventEmitter } from "node:events";
 import fsSync from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetLogger, setLoggerOverride } from "../../../src/logging.js";
-import { baileys, getLastSocket, resetBaileysMocks, resetLoadConfigMock } from "./test-helpers.js";
 
-const { createWaSocket, formatError, logWebSelfId, waitForWaConnection } =
-  await import("./session.js");
-const useMultiFileAuthStateMock = vi.mocked(baileys.useMultiFileAuthState);
+let resetLogger: typeof import("../../../src/logging.js").resetLogger;
+let setLoggerOverride: typeof import("../../../src/logging.js").setLoggerOverride;
+let baileys: typeof import("./test-helpers.js").baileys;
+let getLastSocket: typeof import("./test-helpers.js").getLastSocket;
+let resetBaileysMocks: typeof import("./test-helpers.js").resetBaileysMocks;
+let resetLoadConfigMock: typeof import("./test-helpers.js").resetLoadConfigMock;
+let createWaSocket: typeof import("./session.js").createWaSocket;
+let formatError: typeof import("./session.js").formatError;
+let logWebSelfId: typeof import("./session.js").logWebSelfId;
+let waitForWaConnection: typeof import("./session.js").waitForWaConnection;
 
 async function flushCredsUpdate() {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 async function emitCredsUpdateAndReadSaveCreds() {
+  const useMultiFileAuthStateMock = vi.mocked(baileys.useMultiFileAuthState);
   const sock = getLastSocket();
   const saveCreds = (await useMultiFileAuthStateMock.mock.results[0]?.value)?.saveCreds;
   sock.ev.emit("creds.update", {});
@@ -55,10 +61,16 @@ function mockCredsJsonSpies(readContents: string) {
 }
 
 describe("web session", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
     vi.clearAllMocks();
+    ({ resetLogger, setLoggerOverride } = await import("../../../src/logging.js"));
+    ({ baileys, getLastSocket, resetBaileysMocks, resetLoadConfigMock } =
+      await import("./test-helpers.js"));
     resetBaileysMocks();
     resetLoadConfigMock();
+    ({ createWaSocket, formatError, logWebSelfId, waitForWaConnection } =
+      await import("./session.js"));
   });
 
   afterEach(() => {
@@ -78,6 +90,7 @@ describe("web session", () => {
     expect(passedLogger?.level).toBe("silent");
     expect(typeof passedLogger?.trace).toBe("function");
     const sock = getLastSocket();
+    const useMultiFileAuthStateMock = vi.mocked(baileys.useMultiFileAuthState);
     const saveCreds = (await useMultiFileAuthStateMock.mock.results[0]?.value)?.saveCreds;
     // trigger creds.update listener
     sock.ev.emit("creds.update", {});
@@ -179,6 +192,7 @@ describe("web session", () => {
       await gate;
       inFlight -= 1;
     });
+    const useMultiFileAuthStateMock = vi.mocked(baileys.useMultiFileAuthState);
     useMultiFileAuthStateMock.mockResolvedValueOnce({
       state: { creds: {} as never, keys: {} as never },
       saveCreds,
@@ -226,6 +240,7 @@ describe("web session", () => {
       await gateB;
       inFlightB -= 1;
     });
+    const useMultiFileAuthStateMock = vi.mocked(baileys.useMultiFileAuthState);
     useMultiFileAuthStateMock
       .mockResolvedValueOnce({
         state: { creds: {} as never, keys: {} as never },
