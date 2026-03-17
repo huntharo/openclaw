@@ -892,13 +892,25 @@ const { enqueueSystemEventSpy, resolveAgentRouteMock } = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock("../../../src/infra/system-events.js", () => ({
-  enqueueSystemEvent: enqueueSystemEventSpy,
-}));
+vi.mock("openclaw/plugin-sdk/infra-runtime", async () => {
+  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/infra-runtime")>(
+    "openclaw/plugin-sdk/infra-runtime",
+  );
+  return {
+    ...actual,
+    enqueueSystemEvent: enqueueSystemEventSpy,
+  };
+});
 
-vi.mock("../../../src/routing/resolve-route.js", () => ({
-  resolveAgentRoute: resolveAgentRouteMock,
-}));
+vi.mock("openclaw/plugin-sdk/routing", async () => {
+  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/routing")>(
+    "openclaw/plugin-sdk/routing",
+  );
+  return {
+    ...actual,
+    resolveAgentRoute: resolveAgentRouteMock,
+  };
+});
 
 function makeReactionEvent(overrides?: {
   guildId?: string;
