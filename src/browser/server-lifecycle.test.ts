@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.resetModules();
+
 const { stopOpenClawChromeMock } = vi.hoisted(() => ({
   stopOpenClawChromeMock: vi.fn(async () => {}),
 }));
@@ -18,7 +20,8 @@ vi.mock("./server-context.js", () => ({
   listKnownProfileNames: listKnownProfileNamesMock,
 }));
 
-import { ensureExtensionRelayForProfiles, stopKnownBrowserProfiles } from "./server-lifecycle.js";
+const { ensureExtensionRelayForProfiles, stopKnownBrowserProfiles } =
+  await import("./server-lifecycle.js");
 
 describe("ensureExtensionRelayForProfiles", () => {
   it("is a no-op after removing the Chrome extension relay path", async () => {

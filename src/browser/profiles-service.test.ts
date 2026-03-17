@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveBrowserConfig } from "./config.js";
-import { createBrowserProfilesService } from "./profiles-service.js";
 import type { BrowserRouteContext, BrowserServerState } from "./server-context.js";
+
+vi.resetModules();
 
 vi.mock("../config/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config/config.js")>();
@@ -25,6 +25,8 @@ vi.mock("./chrome.js", () => ({
 import { loadConfig, writeConfigFile } from "../config/config.js";
 import { resolveOpenClawUserDataDir } from "./chrome.js";
 import { movePathToTrash } from "./trash.js";
+const { resolveBrowserConfig } = await import("./config.js");
+const { createBrowserProfilesService } = await import("./profiles-service.js");
 
 function createCtx(resolved: BrowserServerState["resolved"]) {
   const state: BrowserServerState = {
