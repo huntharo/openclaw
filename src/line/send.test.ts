@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   pushMessageMock,
@@ -43,37 +43,35 @@ const {
   };
 });
 
-vi.mock("@line/bot-sdk", () => ({
+vi.resetModules();
+
+vi.doMock("@line/bot-sdk", () => ({
   messagingApi: { MessagingApiClient: MessagingApiClientMock },
 }));
 
-vi.mock("../config/config.js", () => ({
+vi.doMock("../config/config.js", () => ({
   loadConfig: loadConfigMock,
 }));
 
-vi.mock("./accounts.js", () => ({
+vi.doMock("./accounts.js", () => ({
   resolveLineAccount: resolveLineAccountMock,
 }));
 
-vi.mock("./channel-access-token.js", () => ({
+vi.doMock("./channel-access-token.js", () => ({
   resolveLineChannelAccessToken: resolveLineChannelAccessTokenMock,
 }));
 
-vi.mock("../infra/channel-activity.js", () => ({
+vi.doMock("../infra/channel-activity.js", () => ({
   recordChannelActivity: recordChannelActivityMock,
 }));
 
-vi.mock("../globals.js", () => ({
+vi.doMock("../globals.js", () => ({
   logVerbose: logVerboseMock,
 }));
 
-let sendModule: typeof import("./send.js");
+const sendModule = await import("./send.js");
 
 describe("LINE send helpers", () => {
-  beforeAll(async () => {
-    sendModule = await import("./send.js");
-  });
-
   beforeEach(() => {
     pushMessageMock.mockReset();
     replyMessageMock.mockReset();

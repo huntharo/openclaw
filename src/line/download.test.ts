@@ -5,7 +5,9 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 
 const getMessageContentMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@line/bot-sdk", () => ({
+vi.resetModules();
+
+vi.doMock("@line/bot-sdk", () => ({
   messagingApi: {
     MessagingApiBlobClient: class {
       getMessageContent(messageId: string) {
@@ -15,11 +17,11 @@ vi.mock("@line/bot-sdk", () => ({
   },
 }));
 
-vi.mock("../globals.js", () => ({
+vi.doMock("../globals.js", () => ({
   logVerbose: () => {},
 }));
 
-import { downloadLineMedia } from "./download.js";
+const { downloadLineMedia } = await import("./download.js");
 
 async function* chunks(parts: Buffer[]): AsyncGenerator<Buffer> {
   for (const part of parts) {
