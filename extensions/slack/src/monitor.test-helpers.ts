@@ -187,17 +187,65 @@ export function resetSlackTestState(config: Record<string, unknown> = defaultSla
   getSlackHandlers()?.clear();
 }
 
+async function dispatchSlackReplyMock(params: {
+  ctx: unknown;
+  cfg: unknown;
+  dispatcher: {
+    sendFinalReply: (payload: unknown) => boolean;
+    markComplete: () => void;
+    waitForIdle: () => Promise<void>;
+    getQueuedCounts: () => Record<string, number>;
+  };
+  replyOptions?: unknown;
+}) {
+  const response = await slackTestState.replyMock(params.ctx, params.replyOptions, params.cfg);
+  const payloads = response == null ? [] : Array.isArray(response) ? response : [response];
+  let queuedFinal = false;
+
+  for (const payload of payloads) {
+    queuedFinal = params.dispatcher.sendFinalReply(payload) || queuedFinal;
+  }
+
+  params.dispatcher.markComplete();
+  await params.dispatcher.waitForIdle();
+
+  return {
+    queuedFinal,
+    counts: params.dispatcher.getQueuedCounts(),
+  };
+}
+
 vi.mock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/config-runtime")>();
   return {
     ...actual,
     loadConfig: () => slackTestState.config,
+    resolveStorePath: vi.fn(() => "/tmp/openclaw-sessions.json"),
+    updateLastRoute: (...args: unknown[]) => slackTestState.updateLastRouteMock(...args),
+    resolveSessionKey: vi.fn(),
+    readSessionUpdatedAt: vi.fn(() => undefined),
+    recordSessionMetaFromInbound: vi.fn().mockResolvedValue(undefined),
   };
 });
 
-vi.mock("openclaw/plugin-sdk/reply-runtime", () => ({
-  getReplyFromConfig: (...args: unknown[]) => slackTestState.replyMock(...args),
-}));
+vi.mock("openclaw/plugin-sdk/reply-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/reply-runtime")>();
+  return {
+    ...actual,
+    dispatchInboundMessage: (params: {
+      ctx: unknown;
+      cfg: unknown;
+      dispatcher: {
+        sendFinalReply: (payload: unknown) => boolean;
+        markComplete: () => void;
+        waitForIdle: () => Promise<void>;
+        getQueuedCounts: () => Record<string, number>;
+      };
+      replyOptions?: unknown;
+    }) => dispatchSlackReplyMock(params),
+    getReplyFromConfig: (...args: unknown[]) => slackTestState.replyMock(...args),
+  };
+});
 
 vi.mock("./resolve-channels.js", () => ({
   resolveSlackChannelAllowlist: async ({ entries }: { entries: string[] }) =>
@@ -213,21 +261,14 @@ vi.mock("./send.js", () => ({
   sendMessageSlack: (...args: unknown[]) => slackTestState.sendMock(...args),
 }));
 
-vi.mock("openclaw/plugin-sdk/conversation-runtime", () => ({
-  readChannelAllowFromStore: (...args: unknown[]) => slackTestState.readAllowFromStoreMock(...args),
-  upsertChannelPairingRequest: (...args: unknown[]) =>
-    slackTestState.upsertPairingRequestMock(...args),
-}));
-
-vi.mock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/config-runtime")>();
+vi.mock("openclaw/plugin-sdk/conversation-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/conversation-runtime")>();
   return {
     ...actual,
-    resolveStorePath: vi.fn(() => "/tmp/openclaw-sessions.json"),
-    updateLastRoute: (...args: unknown[]) => slackTestState.updateLastRouteMock(...args),
-    resolveSessionKey: vi.fn(),
-    readSessionUpdatedAt: vi.fn(() => undefined),
-    recordSessionMetaFromInbound: vi.fn().mockResolvedValue(undefined),
+    readChannelAllowFromStore: (...args: unknown[]) =>
+      slackTestState.readAllowFromStoreMock(...args),
+    upsertChannelPairingRequest: (...args: unknown[]) =>
+      slackTestState.upsertPairingRequestMock(...args),
   };
 });
 
