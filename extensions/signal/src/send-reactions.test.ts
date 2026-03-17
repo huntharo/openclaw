@@ -1,11 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { removeReactionSignal, sendReactionSignal } from "./send-reactions.js";
 
 const rpcMock = vi.fn();
 
-vi.mock("openclaw/plugin-sdk/config-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/config-runtime")>(
-    "openclaw/plugin-sdk/config-runtime",
-  );
+vi.mock("../../../src/config/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/config/config.js")>();
   return {
     ...actual,
     loadConfig: () => ({}),
@@ -26,15 +25,7 @@ vi.mock("./client.js", () => ({
   signalRpcRequest: (...args: unknown[]) => rpcMock(...args),
 }));
 
-let sendReactionSignal: typeof import("./send-reactions.js").sendReactionSignal;
-let removeReactionSignal: typeof import("./send-reactions.js").removeReactionSignal;
-
 describe("sendReactionSignal", () => {
-  beforeAll(async () => {
-    vi.resetModules();
-    ({ sendReactionSignal, removeReactionSignal } = await import("./send-reactions.js"));
-  });
-
   beforeEach(() => {
     rpcMock.mockClear().mockResolvedValue({ timestamp: 123 });
   });

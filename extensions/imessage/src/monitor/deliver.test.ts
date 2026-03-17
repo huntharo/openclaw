@@ -1,5 +1,5 @@
-import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeEnv } from "../../../../src/runtime.js";
 
 const sendMessageIMessageMock = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ messageId: "imsg-1" }),
@@ -14,36 +14,28 @@ vi.mock("../send.js", () => ({
     sendMessageIMessageMock(to, message, opts),
 }));
 
-vi.mock("openclaw/plugin-sdk/reply-runtime", () => ({
+vi.mock("../../../../src/auto-reply/chunk.js", () => ({
   chunkTextWithMode: (text: string) => chunkTextWithModeMock(text),
   resolveChunkMode: () => resolveChunkModeMock(),
 }));
 
-vi.mock("openclaw/plugin-sdk/config-runtime", () => ({
+vi.mock("../../../../src/config/config.js", () => ({
   loadConfig: () => ({}),
+}));
+
+vi.mock("../../../../src/config/markdown-tables.js", () => ({
   resolveMarkdownTableMode: () => resolveMarkdownTableModeMock(),
 }));
 
-vi.mock("openclaw/plugin-sdk/text-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/text-runtime")>(
-    "openclaw/plugin-sdk/text-runtime",
-  );
-  return {
-    ...actual,
-    convertMarkdownTables: (text: string) => convertMarkdownTablesMock(text),
-  };
-});
+vi.mock("../../../../src/markdown/tables.js", () => ({
+  convertMarkdownTables: (text: string) => convertMarkdownTablesMock(text),
+}));
 
-let deliverReplies: typeof import("./deliver.js").deliverReplies;
+import { deliverReplies } from "./deliver.js";
 
 describe("deliverReplies", () => {
   const runtime = { log: vi.fn(), error: vi.fn() } as unknown as RuntimeEnv;
   const client = {} as Awaited<ReturnType<typeof import("../client.js").createIMessageRpcClient>>;
-
-  beforeAll(async () => {
-    vi.resetModules();
-    ({ deliverReplies } = await import("./deliver.js"));
-  });
 
   beforeEach(() => {
     vi.clearAllMocks();
