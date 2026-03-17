@@ -76,7 +76,7 @@ vi.mock("../send.shared.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../../../src/gateway/client.js", () => ({
+vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
   GatewayClient: class {
     private params: Record<string, unknown>;
     constructor(params: Record<string, unknown>) {
@@ -94,10 +94,63 @@ vi.mock("../../../../src/gateway/client.js", () => ({
       return gatewayClientRequests();
     }
   },
-}));
-
-vi.mock("../../../../src/gateway/connection-auth.js", () => ({
-  resolveGatewayConnectionAuth: mockResolveGatewayConnectionAuth,
+  createOperatorApprovalsGatewayClient: async (params: {
+    config?: {
+      gateway?: {
+        mode?: string;
+        bind?: string;
+      };
+    };
+    gatewayUrl?: string;
+    clientDisplayName: string;
+    onEvent: (evt: unknown) => void;
+    onHelloOk?: () => void;
+    onConnectError?: (err: Error) => void;
+    onClose?: (code: number, reason: string) => void;
+  }) => {
+    const url =
+      params.gatewayUrl ??
+      process.env.OPENCLAW_GATEWAY_URL ??
+      (params.config?.gateway?.mode === "local" && params.config?.gateway?.bind === "loopback"
+        ? "ws://127.0.0.1:18789"
+        : "ws://localhost:18789");
+    const urlOverrideSource = params.gatewayUrl
+      ? "cli"
+      : process.env.OPENCLAW_GATEWAY_URL
+        ? "env"
+        : undefined;
+    const auth = await mockResolveGatewayConnectionAuth({
+      config: params.config,
+      env: process.env,
+      urlOverride: urlOverrideSource ? url : undefined,
+      urlOverrideSource,
+    });
+    return new (class {
+      start() {
+        gatewayClientParams.push({
+          url,
+          token: auth.token,
+          password: auth.password,
+          clientDisplayName: params.clientDisplayName,
+          scopes: ["operator.approvals"],
+        });
+        mockGatewayClientCtor({
+          url,
+          token: auth.token,
+          password: auth.password,
+          clientDisplayName: params.clientDisplayName,
+          scopes: ["operator.approvals"],
+        });
+        gatewayClientStarts();
+      }
+      stop() {
+        gatewayClientStops();
+      }
+      async request() {
+        return gatewayClientRequests();
+      }
+    })();
+  },
 }));
 
 vi.mock("../../../../src/logger.js", () => ({
