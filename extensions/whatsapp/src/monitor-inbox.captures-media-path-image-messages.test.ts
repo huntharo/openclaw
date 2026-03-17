@@ -3,9 +3,7 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import "./monitor-inbox.test-harness.js";
-import { describe, expect, it, vi } from "vitest";
-import { setLoggerOverride } from "../../../src/logging.js";
-import { monitorWebInbox } from "./inbound.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_ACCOUNT_ID,
   getAuthDir,
@@ -14,8 +12,16 @@ import {
   mockLoadConfig,
 } from "./monitor-inbox.test-harness.js";
 
+let setLoggerOverride: typeof import("../../../src/logging.js").setLoggerOverride;
+let monitorWebInbox: typeof import("./inbound.js").monitorWebInbox;
+
 describe("web monitor inbox", () => {
   installWebMonitorInboxUnitTestHooks();
+
+  beforeEach(async () => {
+    ({ setLoggerOverride } = await import("../../../src/logging.js"));
+    ({ monitorWebInbox } = await import("./inbound.js"));
+  });
 
   async function openMonitor(onMessage = vi.fn()) {
     return await monitorWebInbox({

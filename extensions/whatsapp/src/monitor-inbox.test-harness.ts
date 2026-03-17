@@ -70,15 +70,6 @@ function createMockSock(): MockSock {
   };
 }
 
-function getPairingStoreMocks() {
-  const readChannelAllowFromStore = (...args: unknown[]) => readAllowFromStoreMock(...args);
-  const upsertChannelPairingRequest = (...args: unknown[]) => upsertPairingRequestMock(...args);
-  return {
-    readChannelAllowFromStore,
-    upsertChannelPairingRequest,
-  };
-}
-
 const sock: MockSock = createMockSock();
 
 vi.mock("openclaw/plugin-sdk/media-runtime", async (importOriginal) => {
@@ -102,7 +93,31 @@ vi.mock("openclaw/plugin-sdk/config-runtime", async (importOriginal) => {
   };
 });
 
-vi.mock("openclaw/plugin-sdk/conversation-runtime", () => getPairingStoreMocks());
+vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>();
+  return {
+    ...actual,
+    readStoreAllowFromForDmPolicy: (params: {
+      provider: "whatsapp";
+      accountId: string;
+      dmPolicy?: string | null;
+    }) =>
+      actual.readStoreAllowFromForDmPolicy({
+        ...params,
+        readStore: async (provider, accountId): Promise<string[]> =>
+          (await readAllowFromStoreMock(provider, accountId)) as string[],
+      }),
+  };
+});
+
+vi.mock("openclaw/plugin-sdk/conversation-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/conversation-runtime")>();
+  return {
+    ...actual,
+    readChannelAllowFromStore: (...args: unknown[]) => readAllowFromStoreMock(...args),
+    upsertChannelPairingRequest: (...args: unknown[]) => upsertPairingRequestMock(...args),
+  };
+});
 
 vi.mock("./session.js", () => ({
   createWaSocket: vi.fn().mockResolvedValue(sock),
@@ -137,14 +152,17 @@ export function installWebMonitorInboxUnitTestHooks(opts?: { authDir?: boolean }
   const createAuthDir = opts?.authDir ?? true;
 
   beforeEach(async () => {
+    vi.resetModules();
     vi.clearAllMocks();
+    sock.ev.removeAllListeners();
+    sock.signalRepository.lidMapping.getPNForLID.mockResolvedValue(null);
     mockLoadConfig.mockReturnValue(DEFAULT_WEB_INBOX_CONFIG);
     readAllowFromStoreMock.mockResolvedValue([]);
     upsertPairingRequestMock.mockResolvedValue({
       code: "PAIRCODE",
       created: true,
     });
-    const { resetWebInboundDedupe } = await import("./inbound.js");
+    const { resetWebInboundDedupe } = await import("./inbound/dedupe.js");
     resetWebInboundDedupe();
     if (createAuthDir) {
       authDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "openclaw-auth-"));

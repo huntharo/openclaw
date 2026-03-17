@@ -1,6 +1,5 @@
 import "./monitor-inbox.test-harness.js";
-import { describe, expect, it, vi } from "vitest";
-import { monitorWebInbox } from "./inbound.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_ACCOUNT_ID,
   getAuthDir,
@@ -8,9 +7,17 @@ import {
   installWebMonitorInboxUnitTestHooks,
 } from "./monitor-inbox.test-harness.js";
 
+let monitorWebInbox: typeof import("./inbound.js").monitorWebInbox;
+
 describe("append upsert handling (#20952)", () => {
   installWebMonitorInboxUnitTestHooks();
-  type InboxOnMessage = NonNullable<Parameters<typeof monitorWebInbox>[0]["onMessage"]>;
+  type InboxOnMessage = NonNullable<
+    Parameters<typeof import("./inbound.js").monitorWebInbox>[0]["onMessage"]
+  >;
+
+  beforeEach(async () => {
+    ({ monitorWebInbox } = await import("./inbound.js"));
+  });
 
   async function tick() {
     await new Promise((resolve) => setImmediate(resolve));

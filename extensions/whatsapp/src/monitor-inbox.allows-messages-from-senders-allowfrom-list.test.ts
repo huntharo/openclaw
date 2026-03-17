@@ -1,6 +1,5 @@
 import "./monitor-inbox.test-harness.js";
-import { describe, expect, it, vi } from "vitest";
-import { monitorWebInbox } from "./inbound.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_ACCOUNT_ID,
   expectPairingPromptSent,
@@ -10,6 +9,8 @@ import {
   mockLoadConfig,
   upsertPairingRequestMock,
 } from "./monitor-inbox.test-harness.js";
+
+let monitorWebInbox: typeof import("./inbound.js").monitorWebInbox;
 
 const nowSeconds = (offsetMs = 0) => Math.floor((Date.now() + offsetMs) / 1000);
 const DEFAULT_MESSAGES_CFG = {
@@ -93,6 +94,10 @@ async function expectOutboundDmSkipsPairing(params: {
 
 describe("web monitor inbox", () => {
   installWebMonitorInboxUnitTestHooks();
+
+  beforeEach(async () => {
+    ({ monitorWebInbox } = await import("./inbound.js"));
+  });
 
   it("allows messages from senders in allowFrom list", async () => {
     mockLoadConfig.mockReturnValue(createAllowListConfig(["+111", "+999"]));
