@@ -25,7 +25,7 @@ function loadRootAliasWithStubs(options?: {
 }) {
   let createJitiCalls = 0;
   let jitiLoadCalls = 0;
-  const createJitiOptions: Record<string, unknown>[] = [];
+  let lastJitiOptions: Record<string, unknown> | undefined;
   const loadedSpecifiers: string[] = [];
   const monolithicExports = options?.monolithicExports ?? {
     slowHelper: () => "loaded",
@@ -42,30 +42,40 @@ function loadRootAliasWithStubs(options?: {
     __dirname: string,
   ) => void;
   const module = { exports: {} as Record<string, unknown> };
-  const localRequire = ((id: string) => {
-    if (id === "node:path") {
-      return path;
-    }
-    if (id === "node:fs") {
-      return {
-        existsSync: () => options?.distExists ?? false,
-      };
-    }
-    if (id === "jiti") {
-      return {
-        createJiti(_filename: string, jitiOptions?: Record<string, unknown>) {
-          createJitiCalls += 1;
-          createJitiOptions.push(jitiOptions ?? {});
-          return (specifier: string) => {
-            jitiLoadCalls += 1;
-            loadedSpecifiers.push(specifier);
-            return monolithicExports;
-          };
-        },
-      };
-    }
-    throw new Error(`unexpected require: ${id}`);
-  }) as NodeJS.Require;
+  const localRequire = Object.assign(
+    ((id: string) => {
+      if (id === "node:path") {
+        return path;
+      }
+      if (id === "node:fs") {
+        return {
+          existsSync: () => options?.distExists ?? false,
+        };
+      }
+      if (id === "jiti") {
+        return {
+          createJiti(_filename: string, jitiOptions?: Record<string, unknown>) {
+            createJitiCalls += 1;
+            lastJitiOptions = jitiOptions;
+            return (specifier: string) => {
+              jitiLoadCalls += 1;
+              loadedSpecifiers.push(specifier);
+              return monolithicExports;
+            };
+          },
+        };
+      }
+      throw new Error(`unexpected require: ${id}`);
+    }) as NodeJS.Require,
+    {
+      resolve(id: string) {
+        if (id === "jiti/package.json") {
+          return require.resolve(id);
+        }
+        throw new Error(`unexpected require.resolve: ${id}`);
+      },
+    },
+  );
   wrapper(module.exports, localRequire, module, rootAliasPath, path.dirname(rootAliasPath));
   return {
     moduleExports: module.exports,
@@ -75,8 +85,8 @@ function loadRootAliasWithStubs(options?: {
     get jitiLoadCalls() {
       return jitiLoadCalls;
     },
-    get createJitiOptions() {
-      return createJitiOptions;
+    get lastJitiOptions() {
+      return lastJitiOptions;
     },
     loadedSpecifiers,
   };
@@ -121,22 +131,11 @@ describe("plugin-sdk root alias", () => {
     expect("slowHelper" in lazyRootSdk).toBe(true);
     expect(lazyModule.createJitiCalls).toBe(1);
     expect(lazyModule.jitiLoadCalls).toBe(1);
-    expect(lazyModule.createJitiOptions.at(-1)?.tryNative).toBe(false);
+    expect(lazyModule.lastJitiOptions?.tryNative).toBe(true);
+    expect(typeof lazyModule.lastJitiOptions?.transform).toBe("function");
     expect((lazyRootSdk.slowHelper as () => string)()).toBe("loaded");
     expect(Object.keys(lazyRootSdk)).toContain("slowHelper");
     expect(Object.getOwnPropertyDescriptor(lazyRootSdk, "slowHelper")).toBeDefined();
-  });
-
-  it("prefers native loading when compat resolves to dist", () => {
-    const lazyModule = loadRootAliasWithStubs({
-      distExists: true,
-      monolithicExports: {
-        slowHelper: () => "loaded",
-      },
-    });
-
-    expect((lazyModule.moduleExports.slowHelper as () => string)()).toBe("loaded");
-    expect(lazyModule.createJitiOptions.at(-1)?.tryNative).toBe(true);
   });
 
   it("forwards delegateCompactionToRuntime through the compat-backed root alias", () => {

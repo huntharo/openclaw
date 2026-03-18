@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createJiti } from "jiti";
+import { createJiti, type TransformOptions, type TransformResult } from "jiti";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { isChannelConfigured } from "../config/plugin-auto-enable.js";
@@ -66,6 +67,7 @@ export type PluginLoadOptions = {
 const MAX_PLUGIN_REGISTRY_CACHE_ENTRIES = 128;
 const registryCache = new Map<string, PluginRegistry>();
 const openAllowlistWarningCache = new Set<string>();
+const require = createRequire(import.meta.url);
 const LAZY_RUNTIME_REFLECTION_KEYS = [
   "version",
   "config",
@@ -98,6 +100,76 @@ type LoaderModuleResolveParams = {
   cwd?: string;
   moduleUrl?: string;
 };
+
+const SOURCE_MODULE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mtsx", ".ctsx"] as const;
+
+const SOURCE_IMPORT_PATTERNS = [
+  /(from\s+["'])(\.[^"'()]+)\.js(["'])/g,
+  /(import\s+["'])(\.[^"'()]+)\.js(["'])/g,
+  /(import\s*\(\s*["'])(\.[^"'()]+)\.js(["'])/g,
+] as const;
+
+let defaultJitiTransform: ((opts: TransformOptions) => TransformResult) | null = null;
+
+function getDefaultJitiTransform(): (opts: TransformOptions) => TransformResult {
+  if (defaultJitiTransform) {
+    return defaultJitiTransform;
+  }
+  const jitiPackageRoot = path.dirname(require.resolve("jiti/package.json"));
+  defaultJitiTransform = require(path.join(jitiPackageRoot, "dist", "babel.cjs")) as (
+    opts: TransformOptions,
+  ) => TransformResult;
+  return defaultJitiTransform;
+}
+
+function resolveLocalSourceShimSpecifier(
+  filename: string | undefined,
+  specifier: string,
+): string | null {
+  if (!filename || path.extname(filename) === ".js" || !specifier.startsWith(".")) {
+    return null;
+  }
+  const jsPath = path.resolve(path.dirname(filename), `${specifier}.js`);
+  if (fs.existsSync(jsPath)) {
+    return null;
+  }
+  for (const extension of SOURCE_MODULE_EXTENSIONS) {
+    const candidate = path.resolve(path.dirname(filename), `${specifier}${extension}`);
+    if (fs.existsSync(candidate)) {
+      return `${specifier}${extension}`;
+    }
+  }
+  return null;
+}
+
+function rewriteLocalSourceJsSpecifiers(source: string, filename?: string): string {
+  if (
+    !filename ||
+    !SOURCE_MODULE_EXTENSIONS.includes(
+      path.extname(filename) as (typeof SOURCE_MODULE_EXTENSIONS)[number],
+    )
+  ) {
+    return source;
+  }
+  let rewritten = source;
+  for (const pattern of SOURCE_IMPORT_PATTERNS) {
+    rewritten = rewritten.replace(
+      pattern,
+      (match, prefix: string, specifier: string, suffix: string) => {
+        const replacement = resolveLocalSourceShimSpecifier(filename, specifier);
+        return replacement ? `${prefix}${replacement}${suffix}` : match;
+      },
+    );
+  }
+  return rewritten;
+}
+
+function transformPluginLoaderSource(opts: TransformOptions): TransformResult {
+  return getDefaultJitiTransform()({
+    ...opts,
+    source: rewriteLocalSourceJsSpecifiers(opts.source, opts.filename),
+  });
+}
 
 function resolveLoaderModulePath(params: LoaderModuleResolveParams = {}): string {
   return params.modulePath ?? fileURLToPath(params.moduleUrl ?? import.meta.url);
@@ -206,6 +278,7 @@ function buildPluginLoaderJitiOptions(aliasMap: Record<string, string>) {
     // bundled plugins and plugin-sdk subpaths stay on the canonical module graph.
     tryNative: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".mtsx", ".ctsx", ".js", ".mjs", ".cjs", ".json"],
+    transform: transformPluginLoaderSource,
     ...(Object.keys(aliasMap).length > 0
       ? {
           alias: aliasMap,
@@ -288,26 +361,14 @@ const resolvePluginSdkScopedAliasMap = (): Record<string, string> => {
   return aliasMap;
 };
 
-function shouldPreferNativeJiti(modulePath: string): boolean {
-  switch (path.extname(modulePath).toLowerCase()) {
-    case ".js":
-    case ".mjs":
-    case ".cjs":
-    case ".json":
-      return true;
-    default:
-      return false;
-  }
-}
-
 export const __testing = {
   buildPluginLoaderJitiOptions,
   listPluginSdkAliasCandidates,
   listPluginSdkExportedSubpaths,
+  rewriteLocalSourceJsSpecifiers,
   resolvePluginSdkAliasCandidateOrder,
   resolvePluginSdkAliasFile,
   resolvePluginRuntimeModulePath,
-  shouldPreferNativeJiti,
   maxPluginRegistryCacheEntries: MAX_PLUGIN_REGISTRY_CACHE_ENTRIES,
 };
 
@@ -867,28 +928,18 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   }
 
   // Lazy: avoid creating the Jiti loader when all plugins are disabled (common in unit tests).
-  const jitiLoaders = new Map<boolean, ReturnType<typeof createJiti>>();
-  const getJiti = (modulePath: string) => {
-    const tryNative = shouldPreferNativeJiti(modulePath);
-    const cached = jitiLoaders.get(tryNative);
-    if (cached) {
-      return cached;
+  let jitiLoader: ReturnType<typeof createJiti> | null = null;
+  const getJiti = () => {
+    if (jitiLoader) {
+      return jitiLoader;
     }
     const pluginSdkAlias = resolvePluginSdkAlias();
     const aliasMap = {
       ...(pluginSdkAlias ? { "openclaw/plugin-sdk": pluginSdkAlias } : {}),
       ...resolvePluginSdkScopedAliasMap(),
     };
-    const loader = createJiti(import.meta.url, {
-      ...buildPluginLoaderJitiOptions(aliasMap),
-      // Source .ts runtime shims import sibling ".js" specifiers that only exist
-      // after build. Disable native loading for source entries so Jiti rewrites
-      // those imports against the source graph, while keeping native dist/*.js
-      // loading for the canonical built module graph.
-      tryNative,
-    });
-    jitiLoaders.set(tryNative, loader);
-    return loader;
+    jitiLoader = createJiti(import.meta.url, buildPluginLoaderJitiOptions(aliasMap));
+    return jitiLoader;
   };
 
   let createPluginRuntimeFactory: ((options?: CreatePluginRuntimeOptions) => PluginRuntime) | null =
@@ -903,7 +954,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     if (!runtimeModulePath) {
       throw new Error("Unable to resolve plugin runtime module");
     }
-    const runtimeModule = getJiti(runtimeModulePath)(runtimeModulePath) as {
+    const runtimeModule = getJiti()(runtimeModulePath) as {
       createPluginRuntime?: (options?: CreatePluginRuntimeOptions) => PluginRuntime;
     };
     if (typeof runtimeModule.createPluginRuntime !== "function") {
@@ -1236,7 +1287,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
 
     let mod: OpenClawPluginModule | null = null;
     try {
-      mod = getJiti(safeSource)(safeSource) as OpenClawPluginModule;
+      mod = getJiti()(safeSource) as OpenClawPluginModule;
     } catch (err) {
       recordPluginError({
         logger,

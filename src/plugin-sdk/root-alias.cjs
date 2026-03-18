@@ -4,7 +4,66 @@ const path = require("node:path");
 const fs = require("node:fs");
 
 let monolithicSdk = null;
-const jitiLoaders = new Map();
+let jitiLoader = null;
+let defaultJitiTransform = null;
+
+const SOURCE_MODULE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mtsx", ".ctsx"];
+const SOURCE_IMPORT_PATTERNS = [
+  /(from\s+["'])(\.[^"'()]+)\.js(["'])/g,
+  /(import\s+["'])(\.[^"'()]+)\.js(["'])/g,
+  /(import\s*\(\s*["'])(\.[^"'()]+)\.js(["'])/g,
+];
+
+function getDefaultJitiTransform() {
+  if (defaultJitiTransform) {
+    return defaultJitiTransform;
+  }
+  const jitiPackageRoot = path.dirname(require.resolve("jiti/package.json"));
+  defaultJitiTransform = require(path.join(jitiPackageRoot, "dist", "babel.cjs"));
+  return defaultJitiTransform;
+}
+
+function resolveLocalSourceShimSpecifier(filename, specifier) {
+  if (
+    !filename ||
+    !SOURCE_MODULE_EXTENSIONS.includes(path.extname(filename)) ||
+    !specifier.startsWith(".")
+  ) {
+    return null;
+  }
+  const jsPath = path.resolve(path.dirname(filename), `${specifier}.js`);
+  if (fs.existsSync(jsPath)) {
+    return null;
+  }
+  for (const extension of SOURCE_MODULE_EXTENSIONS) {
+    const candidate = path.resolve(path.dirname(filename), `${specifier}${extension}`);
+    if (fs.existsSync(candidate)) {
+      return `${specifier}${extension}`;
+    }
+  }
+  return null;
+}
+
+function rewriteLocalSourceJsSpecifiers(source, filename) {
+  if (!filename || !SOURCE_MODULE_EXTENSIONS.includes(path.extname(filename))) {
+    return source;
+  }
+  let rewritten = source;
+  for (const pattern of SOURCE_IMPORT_PATTERNS) {
+    rewritten = rewritten.replace(pattern, (match, prefix, specifier, suffix) => {
+      const replacement = resolveLocalSourceShimSpecifier(filename, specifier);
+      return replacement ? `${prefix}${replacement}${suffix}` : match;
+    });
+  }
+  return rewritten;
+}
+
+function transformJitiSource(opts) {
+  return getDefaultJitiTransform()({
+    ...opts,
+    source: rewriteLocalSourceJsSpecifiers(opts.source, opts.filename),
+  });
+}
 
 function emptyPluginConfigSchema() {
   function error(message) {
@@ -61,20 +120,20 @@ function resolveControlCommandGate(params) {
   return { commandAuthorized, shouldBlock };
 }
 
-function getJiti(tryNative) {
-  if (jitiLoaders.has(tryNative)) {
-    return jitiLoaders.get(tryNative);
+function getJiti() {
+  if (jitiLoader) {
+    return jitiLoader;
   }
 
   const { createJiti } = require("jiti");
-  const jitiLoader = createJiti(__filename, {
+  jitiLoader = createJiti(__filename, {
     interopDefault: true,
     // Prefer Node's native sync ESM loader for built dist/plugin-sdk/*.js files
     // so local plugins do not create a second transpiled OpenClaw core graph.
-    tryNative,
+    tryNative: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".mtsx", ".ctsx", ".js", ".mjs", ".cjs", ".json"],
+    transform: transformJitiSource,
   });
-  jitiLoaders.set(tryNative, jitiLoader);
   return jitiLoader;
 }
 
@@ -83,17 +142,19 @@ function loadMonolithicSdk() {
     return monolithicSdk;
   }
 
+  const jiti = getJiti();
+
   const distCandidate = path.resolve(__dirname, "..", "..", "dist", "plugin-sdk", "compat.js");
   if (fs.existsSync(distCandidate)) {
     try {
-      monolithicSdk = getJiti(true)(distCandidate);
+      monolithicSdk = jiti(distCandidate);
       return monolithicSdk;
     } catch {
       // Fall through to source alias if dist is unavailable or stale.
     }
   }
 
-  monolithicSdk = getJiti(false)(path.join(__dirname, "compat.ts"));
+  monolithicSdk = jiti(path.join(__dirname, "compat.ts"));
   return monolithicSdk;
 }
 

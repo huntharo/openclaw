@@ -3,7 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createJiti } from "jiti";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { withEnv } from "../test-utils/env.js";
 async function importFreshPluginTestModules() {
@@ -3339,47 +3338,33 @@ module.exports = {
     expect(options.interopDefault).toBe(true);
     expect(options.extensions).toContain(".js");
     expect(options.extensions).toContain(".ts");
+    expect(typeof options.transform).toBe("function");
     expect("alias" in options).toBe(false);
   });
 
-  it("uses transpiled Jiti loads for source TypeScript plugin entries", () => {
-    expect(__testing.shouldPreferNativeJiti("/repo/dist/plugins/runtime/index.js")).toBe(true);
-    expect(
-      __testing.shouldPreferNativeJiti("/repo/extensions/discord/src/channel.runtime.ts"),
-    ).toBe(false);
-  });
+  it("rewrites missing local .js source shim imports without touching real .js files", () => {
+    const dir = makeTempDir();
+    const shimFile = path.join(dir, "runtime-shim.ts");
+    fs.writeFileSync(path.join(dir, "helper.ts"), 'export const helperValue = "ok";\n', "utf-8");
+    fs.writeFileSync(path.join(dir, "present.js"), 'export const presentValue = "js";\n', "utf-8");
 
-  it("loads source runtime shims through the non-native Jiti boundary", async () => {
-    const jiti = createJiti(import.meta.url, {
-      ...__testing.buildPluginLoaderJitiOptions({}),
-      tryNative: false,
-    });
-    const discordChannelRuntime = path.join(
-      process.cwd(),
-      "extensions",
-      "discord",
-      "src",
-      "channel.runtime.ts",
-    );
-    const discordVoiceRuntime = path.join(
-      process.cwd(),
-      "extensions",
-      "discord",
-      "src",
-      "voice",
-      "manager.runtime.ts",
+    const rewritten = __testing.rewriteLocalSourceJsSpecifiers(
+      [
+        'import { helperValue } from "./helper.js";',
+        'import "./present.js";',
+        'import { getPluginCommandSpecs } from "../../src/plugins/commands.js";',
+        "",
+      ].join("\n"),
+      shimFile,
     );
 
-    await expect(jiti.import(discordChannelRuntime)).resolves.toMatchObject({
-      discordSetupWizard: expect.any(Object),
-    });
-    await expect(jiti.import(discordVoiceRuntime)).resolves.toMatchObject({
-      DiscordVoiceManager: expect.any(Function),
-      DiscordVoiceReadyListener: expect.any(Function),
-    });
+    expect(rewritten).toContain('from "./helper.ts"');
+    expect(rewritten).toContain('import "./present.js"');
+    expect(rewritten).toContain('from "../../src/plugins/commands.js"');
   });
 
-  it("loads source TypeScript plugins that route through local runtime shims", () => {
+  it("keeps source runtime shim plugin commands on the canonical registry", async () => {
+    useNoBundledPlugins();
     const plugin = writePlugin({
       id: "source-runtime-shim",
       filename: "source-runtime-shim.ts",
@@ -3387,7 +3372,14 @@ module.exports = {
 
 export default {
   id: "source-runtime-shim",
-  register() {},
+  register(api) {
+    api.registerCommand({
+      name: "voice",
+      description: "Voice call",
+      nativeNames: { telegram: "voice", discord: "voice" },
+      handler: async () => ({ text: "ok" }),
+    });
+  },
 };`,
     });
     fs.writeFileSync(
@@ -3399,11 +3391,14 @@ export const runtimeValue = helperValue;`,
     );
     fs.writeFileSync(
       path.join(plugin.dir, "helper.ts"),
-      `export const helperValue = "ok";`,
+      'export const helperValue = "ok";\n',
       "utf-8",
     );
+    const { clearPluginCommands, getPluginCommandSpecs } = await import("./commands.js");
 
-    const registry = loadOpenClawPlugins({
+    clearPluginCommands();
+
+    const active = loadOpenClawPlugins({
       cache: false,
       workspaceDir: plugin.dir,
       config: {
@@ -3412,10 +3407,21 @@ export const runtimeValue = helperValue;`,
           allow: ["source-runtime-shim"],
         },
       },
+      onlyPluginIds: ["source-runtime-shim"],
     });
 
-    const record = registry.plugins.find((entry) => entry.id === "source-runtime-shim");
-    expect(record?.status).toBe("loaded");
+    expect(active.plugins.find((entry) => entry.id === "source-runtime-shim")?.status).toBe(
+      "loaded",
+    );
+    expect(getPluginCommandSpecs("telegram")).toEqual([
+      {
+        name: "voice",
+        description: "Voice call",
+        acceptsArgs: false,
+      },
+    ]);
+
+    clearPluginCommands();
   });
 
   it.each([
