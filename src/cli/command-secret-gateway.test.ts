@@ -7,6 +7,33 @@ vi.mock("../gateway/call.js", () => ({
   callGateway,
 }));
 
+vi.mock("../gateway/protocol/index.js", () => ({
+  validateSecretsResolveResult: (payload: unknown) => {
+    if (typeof payload !== "object" || payload === null) {
+      return false;
+    }
+    const candidate = payload as {
+      assignments?: unknown;
+      diagnostics?: unknown;
+      inactiveRefPaths?: unknown;
+    };
+    return (
+      Array.isArray(candidate.assignments) &&
+      Array.isArray(candidate.diagnostics) &&
+      (candidate.inactiveRefPaths === undefined || Array.isArray(candidate.inactiveRefPaths))
+    );
+  },
+}));
+
+vi.mock("../secrets/runtime-web-tools.js", () => ({
+  resolveRuntimeWebTools: vi.fn(async () => ({})),
+}));
+
+vi.mock("../utils/message-channel.js", () => ({
+  GATEWAY_CLIENT_MODES: { CLI: "cli" },
+  GATEWAY_CLIENT_NAMES: { CLI: "cli" },
+}));
+
 let resolveCommandSecretRefsViaGateway: typeof import("./command-secret-gateway.js").resolveCommandSecretRefsViaGateway;
 
 beforeAll(async () => {
