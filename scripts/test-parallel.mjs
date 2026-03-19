@@ -733,6 +733,10 @@ const heapSnapshotIntervalMs = Math.max(
   0,
   parseEnvNumber("OPENCLAW_TEST_HEAPSNAPSHOT_INTERVAL_MS", 0),
 );
+const heapSnapshotMinIntervalMs = 5000;
+const heapSnapshotEnabled =
+  process.platform !== "win32" &&
+  heapSnapshotIntervalMs >= heapSnapshotMinIntervalMs;
 const heapSnapshotEnabled = process.platform !== "win32" && heapSnapshotIntervalMs > 0;
 const heapSnapshotSignal = process.env.OPENCLAW_TEST_HEAPSNAPSHOT_SIGNAL?.trim() || "SIGUSR2";
 const heapSnapshotBaseDir = heapSnapshotEnabled
