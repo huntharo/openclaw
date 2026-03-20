@@ -214,21 +214,29 @@ describe("session binding service", () => {
     });
   });
 
-  it("promotes the remaining adapter when duplicate registrations unregister", async () => {
-    const firstBind = vi.fn(async (input: SessionBindingBindInput) => createRecord(input));
-    const secondBind = vi.fn(async (input: SessionBindingBindInput) => createRecord(input));
-
+  it("keeps the first live adapter authoritative until it unregisters", () => {
+    const firstBinding = {
+      bindingId: "first-binding",
+      targetSessionKey: "agent:main",
+      targetKind: "session" as const,
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "thread-1",
+      },
+      status: "active" as const,
+      boundAt: 1,
+    };
     const firstAdapter: SessionBindingAdapter = {
       channel: "discord",
       accountId: "default",
-      bind: firstBind,
-      listBySession: () => [],
+      listBySession: (targetSessionKey) =>
+        targetSessionKey === "agent:main" ? [firstBinding] : [],
       resolveByConversation: () => null,
     };
     const secondAdapter: SessionBindingAdapter = {
       channel: "Discord",
       accountId: "DEFAULT",
-      bind: secondBind,
       listBySession: () => [],
       resolveByConversation: () => null,
     };
@@ -236,51 +244,7 @@ describe("session binding service", () => {
     registerSessionBindingAdapter(firstAdapter);
     registerSessionBindingAdapter(secondAdapter);
 
-    await expect(
-      getSessionBindingService().bind({
-        targetSessionKey: "agent:main:subagent:child-1",
-        targetKind: "subagent",
-        conversation: {
-          channel: "discord",
-          accountId: "default",
-          conversationId: "thread-1",
-        },
-      }),
-    ).resolves.toMatchObject({
-      conversation: expect.objectContaining({
-        channel: "discord",
-        accountId: "default",
-        conversationId: "thread-1",
-      }),
-    });
-    expect(firstBind).not.toHaveBeenCalled();
-    expect(secondBind).toHaveBeenCalledTimes(1);
-
-    unregisterSessionBindingAdapter({
-      channel: "discord",
-      accountId: "default",
-      adapter: firstAdapter,
-    });
-
-    await expect(
-      getSessionBindingService().bind({
-        targetSessionKey: "agent:main:subagent:child-2",
-        targetKind: "subagent",
-        conversation: {
-          channel: "discord",
-          accountId: "default",
-          conversationId: "thread-2",
-        },
-      }),
-    ).resolves.toMatchObject({
-      conversation: expect.objectContaining({
-        channel: "discord",
-        accountId: "default",
-        conversationId: "thread-2",
-      }),
-    });
-    expect(firstBind).not.toHaveBeenCalled();
-    expect(secondBind).toHaveBeenCalledTimes(2);
+    expect(getSessionBindingService().listBySession("agent:main")).toEqual([firstBinding]);
 
     unregisterSessionBindingAdapter({
       channel: "discord",
@@ -288,19 +252,15 @@ describe("session binding service", () => {
       adapter: secondAdapter,
     });
 
-    await expect(
-      getSessionBindingService().bind({
-        targetSessionKey: "agent:main:subagent:child-3",
-        targetKind: "subagent",
-        conversation: {
-          channel: "discord",
-          accountId: "default",
-          conversationId: "thread-3",
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: "BINDING_ADAPTER_UNAVAILABLE",
+    expect(getSessionBindingService().listBySession("agent:main")).toEqual([firstBinding]);
+
+    unregisterSessionBindingAdapter({
+      channel: "discord",
+      accountId: "default",
+      adapter: firstAdapter,
     });
+
+    expect(getSessionBindingService().listBySession("agent:main")).toEqual([]);
   });
 
   it("shares registered adapters across duplicate module instances", async () => {
@@ -346,17 +306,17 @@ describe("session binding service", () => {
         conversationId: "thread-1",
       }),
     });
-    expect(firstBind).not.toHaveBeenCalled();
-    expect(secondBind).toHaveBeenCalledTimes(1);
+    expect(firstBind).toHaveBeenCalledTimes(1);
+    expect(secondBind).not.toHaveBeenCalled();
 
-    second.unregisterSessionBindingAdapter({
+    first.unregisterSessionBindingAdapter({
       channel: "discord",
       accountId: "default",
-      adapter: secondAdapter,
+      adapter: firstAdapter,
     });
 
     await expect(
-      first.getSessionBindingService().bind({
+      second.getSessionBindingService().bind({
         targetSessionKey: "agent:main:subagent:child-2",
         targetKind: "subagent",
         conversation: {
@@ -375,10 +335,10 @@ describe("session binding service", () => {
     expect(firstBind).toHaveBeenCalledTimes(1);
     expect(secondBind).toHaveBeenCalledTimes(1);
 
-    first.unregisterSessionBindingAdapter({
+    second.unregisterSessionBindingAdapter({
       channel: "discord",
       accountId: "default",
-      adapter: firstAdapter,
+      adapter: secondAdapter,
     });
 
     await expect(
