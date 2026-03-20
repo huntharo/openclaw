@@ -168,6 +168,10 @@
         "reason": "ACP translator stop-reason coverage retained a top shared unit-fast heap spike in the March 20, 2026 Linux Node 24 shard 2 OOM lane."
       },
       {
+        "file": "src/channels/channels-misc.test.ts",
+        "reason": "Channel misc coverage retained a top shared unit-fast heap spike in the March 19, 2026 Linux Node 24 OOM lane."
+      },
+      {
         "file": "src/infra/exec-approval-forwarder.test.ts",
         "reason": "Exec approval forwarder coverage retained a top shared unit-fast heap spike in the March 19, 2026 Linux Node 22 OOM lane."
       },
@@ -226,6 +230,10 @@
       {
         "file": "src/secrets/apply.test.ts",
         "reason": "Secrets apply coverage retained a large shared unit-fast heap spike on Linux Node 22 CI."
+      },
+      {
+        "file": "src/channels/plugins/outbound/slack.sendpayload.test.ts",
+        "reason": "Slack outbound payload coverage retained a top shared unit-fast heap spike in the March 19, 2026 Linux Node 24 OOM lane."
       },
       {
         "file": "src/tui/tui-command-handlers.test.ts",
