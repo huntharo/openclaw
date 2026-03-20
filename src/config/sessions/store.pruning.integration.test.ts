@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { SessionEntry } from "./types.js";
 
 // Keep integration tests deterministic: never read a real openclaw.json.
-vi.mock("../config.js", () => ({
+vi.mock("../io.js", () => ({
   loadConfig: vi.fn().mockReturnValue({}),
 }));
 
@@ -84,7 +84,7 @@ describe("Integration: saveSessionStore with pruning", () => {
     vi.resetModules();
     ({ clearSessionStoreCacheForTest, loadSessionStore, saveSessionStore } =
       await import("./store.js"));
-    const { loadConfig } = await import("../config.js");
+    const { loadConfig } = await import("../io.js");
     mockLoadConfig = vi.mocked(loadConfig) as ReturnType<typeof vi.fn>;
     testDir = await createCaseDir("pruning-integ");
     storePath = path.join(testDir, "sessions.json");

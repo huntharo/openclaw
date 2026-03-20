@@ -5,15 +5,8 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertAcpSessionMeta } from "../../acp/runtime/session-meta.js";
 import * as jsonFiles from "../../infra/json-files.js";
-import type { OpenClawConfig } from "../config.js";
-import {
-  clearSessionStoreCacheForTest,
-  loadSessionStore,
-  mergeSessionEntry,
-  resolveAndPersistSessionFile,
-  updateSessionStore,
-} from "../sessions.js";
 import type { SessionConfig } from "../types.base.js";
+import type { OpenClawConfig } from "../types.js";
 import {
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
@@ -21,7 +14,10 @@ import {
   validateSessionId,
 } from "./paths.js";
 import { evaluateSessionFreshness, resolveSessionResetPolicy } from "./reset.js";
+import { resolveAndPersistSessionFile } from "./session-file.js";
+import { loadSessionStore, updateSessionStore, clearSessionStoreCacheForTest } from "./store.js";
 import { appendAssistantMessageToSessionTranscript } from "./transcript.js";
+import { mergeSessionEntry } from "./types.js";
 import type { SessionEntry } from "./types.js";
 
 function useTempSessionsFixture(prefix: string) {
