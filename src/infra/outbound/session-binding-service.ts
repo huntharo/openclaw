@@ -147,16 +147,20 @@ function resolveAdapterCapabilities(
 }
 
 const SESSION_BINDING_ADAPTERS_KEY = Symbol.for("openclaw.sessionBinding.adapters");
-const SESSION_BINDING_ADAPTER_REF_COUNTS_KEY = Symbol.for(
-  "openclaw.sessionBinding.adapterRefCounts",
-);
 
-const ADAPTERS_BY_CHANNEL_ACCOUNT = resolveGlobalMap<string, SessionBindingAdapter>(
+type SessionBindingAdapterRegistration = {
+  adapter: SessionBindingAdapter;
+  normalizedAdapter: SessionBindingAdapter;
+};
+
+const ADAPTERS_BY_CHANNEL_ACCOUNT = resolveGlobalMap<string, SessionBindingAdapterRegistration[]>(
   SESSION_BINDING_ADAPTERS_KEY,
 );
-const ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT = resolveGlobalMap<string, number>(
-  SESSION_BINDING_ADAPTER_REF_COUNTS_KEY,
-);
+
+function getActiveAdapterForKey(key: string): SessionBindingAdapter | null {
+  const registrations = ADAPTERS_BY_CHANNEL_ACCOUNT.get(key);
+  return registrations?.at(-1)?.normalizedAdapter ?? null;
+}
 
 export function registerSessionBindingAdapter(adapter: SessionBindingAdapter): void {
   const normalizedAdapter = {
@@ -169,33 +173,42 @@ export function registerSessionBindingAdapter(adapter: SessionBindingAdapter): v
     accountId: normalizedAdapter.accountId,
   });
   const existing = ADAPTERS_BY_CHANNEL_ACCOUNT.get(key);
-  if (existing) {
-    // Duplicate module graphs can legitimately hit registration multiple times
-    // for the same logical adapter key in one process. Keep the first adapter
-    // stable and track registrations so later duplicate imports can unregister
-    // independently without deleting the live shared adapter too early.
-    ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT.set(
-      key,
-      Math.max(1, ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT.get(key) ?? 1) + 1,
-    );
-    return;
-  }
-  ADAPTERS_BY_CHANNEL_ACCOUNT.set(key, normalizedAdapter);
-  ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT.set(key, 1);
+  const registrations = existing ? [...existing] : [];
+  registrations.push({
+    adapter,
+    normalizedAdapter,
+  });
+  ADAPTERS_BY_CHANNEL_ACCOUNT.set(key, registrations);
 }
 
 export function unregisterSessionBindingAdapter(params: {
   channel: string;
   accountId: string;
+  adapter?: SessionBindingAdapter;
 }): void {
   const key = toAdapterKey(params);
-  const currentRefCount = ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT.get(key) ?? 0;
-  if (currentRefCount > 1) {
-    ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT.set(key, currentRefCount - 1);
+  const registrations = ADAPTERS_BY_CHANNEL_ACCOUNT.get(key);
+  if (!registrations || registrations.length === 0) {
     return;
   }
-  ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT.delete(key);
-  ADAPTERS_BY_CHANNEL_ACCOUNT.delete(key);
+  const nextRegistrations = [...registrations];
+  if (params.adapter) {
+    // Remove the matching owner so a surviving duplicate graph can stay active.
+    const registrationIndex = nextRegistrations.findLastIndex(
+      (registration) => registration.adapter === params.adapter,
+    );
+    if (registrationIndex < 0) {
+      return;
+    }
+    nextRegistrations.splice(registrationIndex, 1);
+  } else {
+    nextRegistrations.pop();
+  }
+  if (nextRegistrations.length === 0) {
+    ADAPTERS_BY_CHANNEL_ACCOUNT.delete(key);
+    return;
+  }
+  ADAPTERS_BY_CHANNEL_ACCOUNT.set(key, nextRegistrations);
 }
 
 function resolveAdapterForConversation(ref: ConversationRef): SessionBindingAdapter | null {
@@ -213,7 +226,13 @@ function resolveAdapterForChannelAccount(params: {
     channel: params.channel,
     accountId: params.accountId,
   });
-  return ADAPTERS_BY_CHANNEL_ACCOUNT.get(key) ?? null;
+  return getActiveAdapterForKey(key);
+}
+
+function getActiveRegisteredAdapters(): SessionBindingAdapter[] {
+  return [...ADAPTERS_BY_CHANNEL_ACCOUNT.values()]
+    .map((registrations) => registrations.at(-1)?.normalizedAdapter ?? null)
+    .filter((adapter): adapter is SessionBindingAdapter => Boolean(adapter));
 }
 
 function dedupeBindings(records: SessionBindingRecord[]): SessionBindingRecord[] {
@@ -297,7 +316,7 @@ function createDefaultSessionBindingService(): SessionBindingService {
         return [];
       }
       const results: SessionBindingRecord[] = [];
-      for (const adapter of ADAPTERS_BY_CHANNEL_ACCOUNT.values()) {
+      for (const adapter of getActiveRegisteredAdapters()) {
         const entries = adapter.listBySession(key);
         if (entries.length > 0) {
           results.push(...entries);
@@ -321,13 +340,13 @@ function createDefaultSessionBindingService(): SessionBindingService {
       if (!normalizedBindingId) {
         return;
       }
-      for (const adapter of ADAPTERS_BY_CHANNEL_ACCOUNT.values()) {
+      for (const adapter of getActiveRegisteredAdapters()) {
         adapter.touch?.(normalizedBindingId, at);
       }
     },
     unbind: async (input) => {
       const removed: SessionBindingRecord[] = [];
-      for (const adapter of ADAPTERS_BY_CHANNEL_ACCOUNT.values()) {
+      for (const adapter of getActiveRegisteredAdapters()) {
         if (!adapter.unbind) {
           continue;
         }
@@ -350,7 +369,6 @@ export function getSessionBindingService(): SessionBindingService {
 export const __testing = {
   resetSessionBindingAdaptersForTests() {
     ADAPTERS_BY_CHANNEL_ACCOUNT.clear();
-    ADAPTER_REF_COUNTS_BY_CHANNEL_ACCOUNT.clear();
   },
   getRegisteredAdapterKeys() {
     return [...ADAPTERS_BY_CHANNEL_ACCOUNT.keys()];
