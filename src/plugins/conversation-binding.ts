@@ -11,6 +11,7 @@ import { expandHomePrefix } from "../infra/home-dir.js";
 import { writeJsonAtomic } from "../infra/json-files.js";
 import { type ConversationRef } from "../infra/outbound/session-binding-service.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveGlobalMap } from "../shared/global-singleton.js";
 import { getActivePluginRegistry } from "./runtime.js";
 import type {
   PluginConversationBinding,
@@ -104,7 +105,11 @@ type PluginBindingResolveResult =
       status: "expired";
     };
 
-const pendingRequests = new Map<string, PendingPluginBindingRequest>();
+const PLUGIN_BINDING_PENDING_REQUESTS_KEY = Symbol.for("openclaw.pluginBindingPendingRequests");
+
+const pendingRequests = resolveGlobalMap<string, PendingPluginBindingRequest>(
+  PLUGIN_BINDING_PENDING_REQUESTS_KEY,
+);
 
 type PluginBindingGlobalState = {
   fallbackNoticeBindingIds: Set<string>;
