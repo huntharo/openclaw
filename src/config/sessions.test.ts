@@ -3,19 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withEnv } from "../test-utils/env.js";
+import { buildGroupDisplayName } from "./sessions/group.js";
 import {
-  buildGroupDisplayName,
-  deriveSessionKey,
-  loadSessionStore,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
-  resolveSessionKey,
   resolveSessionTranscriptPath,
   resolveSessionTranscriptsDir,
+} from "./sessions/paths.js";
+import { deriveSessionKey, resolveSessionKey } from "./sessions/session-key.js";
+import {
+  loadSessionStore,
   updateLastRoute,
   updateSessionStore,
   updateSessionStoreEntry,
-} from "./sessions.js";
+} from "./sessions/store.js";
 
 describe("sessions", () => {
   let fixtureRoot = "";

@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { render } from "lit";
+import { html, render } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n/index.ts";
 import { getSafeLocalStorage } from "../../local-storage.ts";
@@ -11,6 +11,120 @@ import type { SessionsListResult } from "../types.ts";
 import { renderChatSessionSelect } from "./chat-session-select.ts";
 import { renderChat, type ChatProps } from "./chat.ts";
 import { renderOverview, type OverviewProps } from "./overview.ts";
+
+vi.mock("../chat/export.ts", () => ({
+  exportChatMarkdown: vi.fn(() => ""),
+}));
+
+vi.mock("../chat/speech.ts", () => ({
+  isSttSupported: vi.fn(() => false),
+  startStt: vi.fn(),
+  stopStt: vi.fn(),
+}));
+
+vi.mock("../chat/grouped-render.ts", () => {
+  const resolveFallbackAvatar = (basePath?: string) => {
+    if (!basePath || basePath === "/") {
+      return "favicon.svg";
+    }
+    return `${basePath.replace(/\/+$/, "")}/favicon.svg`;
+  };
+
+  const resolveAssistantAvatar = (
+    assistantAvatar: string | null | undefined,
+    basePath?: string,
+  ): string => {
+    if (typeof assistantAvatar === "string" && /^(?:https?:\/\/|\/)/.test(assistantAvatar)) {
+      return assistantAvatar;
+    }
+    return resolveFallbackAvatar(basePath);
+  };
+
+  const shouldSkipDeleteConfirm = () => {
+    try {
+      return getSafeLocalStorage()?.getItem("openclaw:skipDeleteConfirm") === "1";
+    } catch {
+      return false;
+    }
+  };
+
+  return {
+    renderReadingIndicatorGroup: vi.fn(
+      () =>
+        html`
+          <div class="chat-group assistant"></div>
+        `,
+    ),
+    renderStreamingGroup: vi.fn(
+      () =>
+        html`
+          <div class="chat-group assistant"></div>
+        `,
+    ),
+    renderMessageGroup: vi.fn(
+      (
+        group: { role?: string; senderLabel?: string },
+        opts?: {
+          assistantAvatar?: string | null;
+          assistantName?: string;
+          basePath?: string;
+          onDelete?: () => void;
+        },
+      ) => {
+        const roleClass = group.role === "assistant" ? "assistant" : "user";
+        const senderName =
+          roleClass === "assistant"
+            ? (opts?.assistantName ?? "Assistant")
+            : group.senderLabel?.trim() || "You";
+        const avatar =
+          roleClass === "assistant"
+            ? resolveAssistantAvatar(opts?.assistantAvatar, opts?.basePath)
+            : "favicon.svg";
+        const deleteSide = roleClass === "assistant" ? "right" : "left";
+        return html`
+          <div class="chat-group ${roleClass}">
+            <img class="chat-avatar--logo" src=${avatar} />
+            <div class="chat-group-messages"></div>
+            <div class="chat-group-footer">
+              <span class="chat-sender-name">${senderName}</span>
+              ${
+                opts?.onDelete
+                  ? html`
+                      <span class="chat-delete-wrap">
+                        <button
+                          class="chat-group-delete"
+                          @click=${(event: Event) => {
+                            if (shouldSkipDeleteConfirm()) {
+                              opts.onDelete?.();
+                              return;
+                            }
+                            const wrap = (event.currentTarget as HTMLElement).closest(
+                              ".chat-delete-wrap",
+                            );
+                            if (!wrap) {
+                              return;
+                            }
+                            const existing = wrap.querySelector(".chat-delete-confirm");
+                            if (existing) {
+                              existing.remove();
+                              return;
+                            }
+                            const popover = document.createElement("div");
+                            popover.className = `chat-delete-confirm chat-delete-confirm--${deleteSide}`;
+                            wrap.appendChild(popover);
+                          }}
+                        ></button>
+                      </span>
+                    `
+                  : html``
+              }
+            </div>
+          </div>
+        `;
+      },
+    ),
+  };
+});
 
 function createSessions(): SessionsListResult {
   return {
