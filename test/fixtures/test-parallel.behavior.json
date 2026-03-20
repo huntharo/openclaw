@@ -394,6 +394,54 @@
       {
         "file": "src/media-understanding/providers/moonshot/video.test.ts",
         "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 2 OOM lane."
+      },
+      {
+        "file": "src/infra/provider-usage.auth.normalizes-keys.test.ts",
+        "reason": "Retained the largest shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 1 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/plugins/interactive.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 1 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/plugins/web-search-providers.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 1 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/image-generation/providers/fal.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 1 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/tui/tui-session-actions.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 1 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/plugins/contracts/wizard.contract.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 1 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/infra/outbound/targets.test.ts",
+        "reason": "Retained the largest shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 2 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/plugins/conversation-binding.test.ts",
+        "reason": "Still retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 2 OOM lane after narrowing the registry helper import."
+      },
+      {
+        "file": "src/cron/isolated-agent/run.fast-mode.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 2 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/plugins/contracts/auth-choice.contract.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 2 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/acp/runtime/session-meta.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 2 OOM lane after the latest isolation wave."
+      },
+      {
+        "file": "src/media/fetch.telegram-network.test.ts",
+        "reason": "Retained a top shared unit-fast heap spike in the March 20, 2026 PR #50819 Linux shard 2 OOM lane after the latest isolation wave."
       }
     ],
     "threadSingleton": [
