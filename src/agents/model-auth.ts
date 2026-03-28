@@ -232,7 +232,8 @@ function resolveProviderSyntheticRuntimeAuth(params: {
   }
 
   const runtimeAuth = resolveFromConfig(runtimeConfig);
-  if (!runtimeAuth || isNonSecretApiKeyMarker(runtimeAuth.apiKey)) {
+  const runtimeApiKey = runtimeAuth?.apiKey;
+  if (!runtimeAuth || !runtimeApiKey || isNonSecretApiKeyMarker(runtimeApiKey)) {
     return { blockedOnManagedSecretRef: true };
   }
   return {
