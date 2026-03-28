@@ -233,6 +233,8 @@ export function buildAgentSystemPrompt(params: {
     ls: "List directory contents",
     exec: "Run shell commands (pty available for TTY-required CLIs)",
     process: "Manage background exec sessions",
+    code_execution:
+      "Run sandboxed remote Python analysis with xAI (no local shell or filesystem access)",
     web_search: "Search the web",
     x_search: "Search X (formerly Twitter) posts with xAI",
     web_fetch: "Fetch and extract readable content from a URL",
@@ -269,6 +271,7 @@ export function buildAgentSystemPrompt(params: {
     "ls",
     "exec",
     "process",
+    "code_execution",
     "web_search",
     "web_fetch",
     "browser",
