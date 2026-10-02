@@ -116,6 +116,34 @@ signal with `awaitGateBeforeSettlement(gate, operation, message)` or
 through the owner's injected clock seam. After removing sites, run
 `pnpm check:test-timeout-race-ratchet --prune` to shrink the baseline.
 
+## SQLite write budgets
+
+Use `test/helpers/sqlite-write-budget.ts` for bounded storage workloads, with
+`src/boards/sqlite-board-store.write-budget.test.ts` as an owner-boundary example.
+Attach the observer before seeding or caching statements, then measure only the
+feature operations. Use an isolated file-backed WAL database, disable automatic
+checkpoints in that fixture, and truncate the WAL after setup. The observer
+rejects checkpoint/reuse instead of mistaking preallocated file size for new work.
+Execute measured data SQL through prepared statements; `exec` is reserved for
+transaction control during measurement.
+
+For every new case, pin an unchanged main SHA and run the identical seeded
+workload against that production source before applying the fix. Record the SHA,
+fixture size, operation count, commits, executed write statements, SQLite
+`total_changes` delta, WAL frames, and WAL bytes. Then run the fixed owner with
+the same workload and retain both results in the PR. Checked-in assertions protect
+the optimized logical cost; replacing those constants does not establish a
+baseline comparison. WAL frames and bytes are observational SQLite output,
+not OS disk bytes or fsync counts. `total_changes` includes trigger writes and
+rolled-back changes; commit markers count only committed WAL transactions.
+
+`expectSqliteQueryScans` checks the executed statements' `EXPLAIN QUERY PLAN`
+results, including indexed, virtual-table, and subquery scans. Each allowed scan
+needs the exact SQL, plan detail, and a reason tied to the workload; scan-free hot
+paths use an empty allowance. Repeated details are deduplicated per statement,
+and comparison ignores statement order. This is broader than the benchmark
+collector's `fullTableScans`, which excludes indexed and non-table scans.
+
 ## Raw SQLite state access
 
 `closeOpenClawStateDatabaseForTest()` closes native handles synchronously, but
