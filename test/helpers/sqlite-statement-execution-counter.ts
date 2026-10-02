@@ -42,6 +42,11 @@ export function trackSqliteStatementExecutions<Key extends string>(
   db: DatabaseSync,
   keys: readonly Key[],
   classify: (sql: string) => Key | null,
+  onExecute?: (
+    sql: string,
+    bindings: readonly unknown[],
+    statement: StatementSync,
+  ) => void | (() => void),
 ): {
   counts: Record<Key, number>;
   rowCounts: Record<Key, number>;
@@ -73,13 +78,18 @@ export function trackSqliteStatementExecutions<Key extends string>(
       statement.run = new Proxy(statement.run.bind(statement), {
         apply(run, receiver, args) {
           counts[key] += 1;
-          return Reflect.apply(run, receiver, args);
+          const afterExecute = onExecute?.(sqlText, args, statement);
+          const result = Reflect.apply(run, receiver, args);
+          afterExecute?.();
+          return result;
         },
       });
       statement.get = new Proxy(statement.get.bind(statement), {
         apply(get, _receiver, args) {
           counts[key] += 1;
+          const afterExecute = onExecute?.(sqlText, args, statement);
           const row = get(...args);
+          afterExecute?.();
           if (row) {
             observeRow(key, row);
           }
@@ -89,7 +99,9 @@ export function trackSqliteStatementExecutions<Key extends string>(
       statement.all = new Proxy(statement.all.bind(statement), {
         apply(all, _receiver, args) {
           counts[key] += 1;
+          const afterExecute = onExecute?.(sqlText, args, statement);
           const rows = all(...args);
+          afterExecute?.();
           for (const row of rows) {
             observeRow(key, row);
           }
@@ -101,12 +113,28 @@ export function trackSqliteStatementExecutions<Key extends string>(
       ) => ReturnType<StatementSync["iterate"]>;
       // iterate is overloaded, so the wrapper forwards untyped and casts back.
       statement.iterate = ((...args: unknown[]) => {
-        counts[key] += 1;
         const rows = originalIterate(...args);
         return (function* () {
+          // Native iterators step lazily; creating one does not execute its SQL.
+          let afterExecute: void | (() => void);
+          try {
+            afterExecute = onExecute?.(sqlText, args, statement);
+          } catch (error) {
+            rows.return?.();
+            throw error;
+          }
+          counts[key] += 1;
+          let observed = false;
           for (const row of rows) {
+            if (!observed) {
+              afterExecute?.();
+              observed = true;
+            }
             observeRow(key, row);
             yield row;
+          }
+          if (!observed) {
+            afterExecute?.();
           }
         })();
       }) as StatementSync["iterate"];

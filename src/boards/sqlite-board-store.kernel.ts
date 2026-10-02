@@ -179,11 +179,12 @@ function upsertTabs(
 
 function updateWidgetLayouts(
   database: BoardDatabaseHandle,
-  snapshot: BoardSnapshot,
+  sessionKey: string,
+  widgets: BoardSnapshot["widgets"],
   updatedAt: number,
 ): void {
   const db = getNodeSqliteKysely<BoardDatabase>(database.db);
-  for (const widget of snapshot.widgets) {
+  for (const widget of widgets) {
     executeSqliteQuerySync(
       database.db,
       db
@@ -196,7 +197,7 @@ function updateWidgetLayouts(
           position: widget.position,
           updated_at: updatedAt,
         })
-        .where("session_key", "=", snapshot.sessionKey)
+        .where("session_key", "=", sessionKey)
         .where("name", "=", widget.name),
     );
   }
@@ -364,7 +365,7 @@ export function applyBoardOpsToDatabase(
   const now = Date.now();
   upsertTabs(database, previous, next);
   deleteRemovedWidgets(database, previous, next);
-  updateWidgetLayouts(database, next, now);
+  updateWidgetLayouts(database, next.sessionKey, next.widgets, now);
   updateWidgetHeightModes(database, previous, ops);
   deleteRemovedTabs(database, previous, next);
   return cloneBoardSnapshot(next);
@@ -444,7 +445,24 @@ export function putBoardWidgetInDatabase(
         }),
       ),
   );
-  updateWidgetLayouts(database, next, now);
+  // The upsert already wrote the target's final layout. Only displaced siblings
+  // need another write; an unrelated content put must not touch their timestamps.
+  const previousWidgets = new Map(previous.widgetRows.map((row) => [row.name, row]));
+  const changedSiblings = next.widgets.filter((candidate) => {
+    if (candidate.name === canonicalParams.name) {
+      return false;
+    }
+    const row = previousWidgets.get(candidate.name);
+    return (
+      !row ||
+      row.tab_id !== candidate.tabId ||
+      row.title !== (candidate.title ?? null) ||
+      row.size_w !== candidate.sizeW ||
+      row.size_h !== candidate.sizeH ||
+      row.position !== candidate.position
+    );
+  });
+  updateWidgetLayouts(database, next.sessionKey, changedSiblings, now);
   return createBoardWidgetPutResult(next, canonicalParams.name);
 }
 
