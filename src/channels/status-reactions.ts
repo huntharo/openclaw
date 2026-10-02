@@ -179,6 +179,8 @@ export function createStatusReactionController(params: {
 
   let currentEmoji = "";
   let pendingEmoji = "";
+  let pendingGeneration = 0;
+  let inFlightEmoji = "";
   let debounceTimer: NodeJS.Timeout | null = null;
   let stallSoftTimer: NodeJS.Timeout | null = null;
   let stallHardTimer: NodeJS.Timeout | null = null;
@@ -230,6 +232,8 @@ export function createStatusReactionController(params: {
   }
 
   function clearDebounceTimer(): void {
+    // Retire unsent writes even after their debounce has joined the adapter queue.
+    pendingGeneration += 1;
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
@@ -302,7 +306,11 @@ export function createStatusReactionController(params: {
     const emoji = showActivity ? requestedEmoji : initialEmoji;
 
     // Skip duplicate sends while still refreshing stall timers for active phases.
-    if (emoji === currentEmoji || emoji === pendingEmoji) {
+    if (emoji === pendingEmoji || (emoji === currentEmoji && !inFlightEmoji)) {
+      if (emoji !== pendingEmoji) {
+        clearDebounceTimer();
+        pendingEmoji = "";
+      }
       if (!options.skipStallReset) {
         resetStallTimers();
       }
@@ -311,9 +319,20 @@ export function createStatusReactionController(params: {
 
     pendingEmoji = emoji;
     clearDebounceTimer();
+    const generation = pendingGeneration;
     const applyPendingEmoji = async () => {
-      await applyEmoji(emoji);
-      pendingEmoji = "";
+      if (generation !== pendingGeneration || finished) {
+        return;
+      }
+      inFlightEmoji = emoji;
+      try {
+        await applyEmoji(emoji);
+      } finally {
+        inFlightEmoji = "";
+        if (generation === pendingGeneration) {
+          pendingEmoji = "";
+        }
+      }
     };
 
     if (options.immediate) {
@@ -387,13 +406,15 @@ export function createStatusReactionController(params: {
     if (
       !finished &&
       alreadyInitial &&
+      !inFlightEmoji &&
       (!pendingBeforeClear || hadDebouncedPending) &&
       !hasExtraActiveEmoji
     ) {
       pendingEmoji = "";
       return;
     }
-    if (!finished && pendingBeforeClear === initialEmoji && !hadDebouncedPending) {
+    if (!finished && inFlightEmoji === initialEmoji && !hasExtraActiveEmoji) {
+      pendingEmoji = "";
       await chainPromise;
       return;
     }

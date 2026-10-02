@@ -271,6 +271,40 @@ describe("Multi-reaction status lifecycle", () => {
     expect(active.has(DEFAULT_EMOJIS.thinking)).toBe(false);
   });
 
+  it("restoreInitial cleans earlier activity after an in-flight initial write", async () => {
+    let releaseInitial!: () => void;
+    const initialWrite = new Promise<void>((resolve) => {
+      releaseInitial = resolve;
+    });
+    const { adapter, active } = createSlackMockAdapter();
+    const setReaction = adapter.setReaction;
+    adapter.setReaction = async (emoji) => {
+      if (emoji === "eyes") {
+        await initialWrite;
+      }
+      await setReaction(emoji);
+    };
+    const ctrl = createStatusReactionController({
+      enabled: true,
+      adapter,
+      initialEmoji: "eyes",
+    });
+
+    void ctrl.setThinking();
+    await vi.advanceTimersByTimeAsync(DEFAULT_TIMING.debounceMs);
+    void ctrl.setQueued();
+    await vi.advanceTimersByTimeAsync(0);
+    void ctrl.setCompacting();
+    await vi.advanceTimersByTimeAsync(DEFAULT_TIMING.debounceMs);
+    const restored = ctrl.restoreInitial();
+    releaseInitial();
+    await restored;
+
+    expect([...active]).toEqual(["eyes"]);
+    await ctrl.clear();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does nothing when disabled", async () => {
     const { adapter, active } = createSlackMockAdapter();
     const ctrl = createStatusReactionController({

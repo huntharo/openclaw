@@ -321,6 +321,74 @@ describe("createStatusReactionController", () => {
     expect(setEmojis).toEqual([DEFAULT_EMOJIS.thinking]);
   });
 
+  it.each(["replace", "cancel", "done", "error", "clear", "restore"] as const)(
+    "retires unsent activity after %s while a reaction write is in flight",
+    async (transition) => {
+      let releaseQueued!: () => void;
+      const queuedWrite = new Promise<void>((resolve) => {
+        releaseQueued = resolve;
+      });
+      const { adapter, calls } = createMockAdapter();
+      const setReaction = adapter.setReaction;
+      adapter.setReaction = async (emoji) => {
+        await setReaction(emoji);
+        if (emoji === "👀") {
+          await queuedWrite;
+        }
+      };
+      const controller = createStatusReactionController({
+        enabled: true,
+        adapter,
+        initialEmoji: "👀",
+        timing: { doneHoldMs: 0, errorHoldMs: 0 },
+      });
+
+      void controller.setQueued();
+      await vi.advanceTimersByTimeAsync(0);
+      void controller.setCompacting();
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMING.debounceMs);
+
+      let terminal: Promise<void> | undefined;
+      if (transition === "done") {
+        terminal = controller.setDone();
+      } else if (transition === "error") {
+        terminal = controller.setError();
+      } else if (transition === "clear") {
+        terminal = controller.clear();
+      } else if (transition === "restore") {
+        terminal = controller.restoreInitial();
+      } else {
+        if (transition === "cancel") {
+          controller.cancelPending();
+        }
+        void controller.setThinking();
+        await vi.advanceTimersByTimeAsync(DEFAULT_TIMING.debounceMs);
+      }
+      expect(calls).toEqual([{ method: "set", emoji: "👀" }]);
+
+      releaseQueued();
+      await vi.advanceTimersByTimeAsync(0);
+      await terminal;
+
+      const expected = [{ method: "set", emoji: "👀" }];
+      if (transition !== "restore" && transition !== "clear") {
+        const emoji =
+          transition === "done"
+            ? DEFAULT_EMOJIS.done
+            : transition === "error"
+              ? DEFAULT_EMOJIS.error
+              : DEFAULT_EMOJIS.thinking;
+        expected.push({ method: "set", emoji });
+      }
+      if (transition === "done" || transition === "error" || transition === "clear") {
+        expected.push({ method: "remove", emoji: "👀" });
+      }
+      expect(calls).toEqual(expected);
+      await controller.clear();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it("should defer removing previous emojis until clear", async () => {
     const { calls, controller } = createEnabledController();
 
