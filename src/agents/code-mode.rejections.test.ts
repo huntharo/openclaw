@@ -5,7 +5,6 @@ import {
   runCodeModeScriptHeadless,
 } from "./code-mode.js";
 import {
-  expectOriginalCodeModeMarker,
   createCodeModeHarness,
   createHeadlessCodeModeHarness,
   pluginToolWithExecute,
@@ -256,7 +255,11 @@ it.each(["return", "throw"])(
       output: [],
     });
     if (action === "return") {
-      expectOriginalCodeModeMarker(final.value, "x".repeat(10000));
+      expect(final.value).toMatchObject({
+        truncated: true,
+        reference: { id: expect.any(String), bytes: 10002, count: 1, shape: "string" },
+        guidance: expect.stringContaining("results.load"),
+      });
     }
   },
 );

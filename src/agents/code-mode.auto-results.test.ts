@@ -95,7 +95,72 @@ it.each([{ modelContextWindowTokens: 4096, maxOutputBytes: 1024, network: true }
   },
 );
 
-it("keeps success and old references when automatic retention is full", async () => {
+it.each([
+  {
+    name: "Unicode log text",
+    value: '🦞 漢字 é "quoted" \\path\n'.repeat(2_000) + "exact final line\ud800",
+    maxOutputBytes: 1_024,
+  },
+  {
+    name: "serialized JSON constrained by model context",
+    value: JSON.stringify(Array.from({ length: 1_000 }, (_, id) => ({ id, text: "🦞 漢字" }))),
+    maxOutputBytes: 65_536,
+  },
+])(
+  "retrieves exact $name after automatic retention through exec/wait",
+  async ({ value, maxOutputBytes }) => {
+    const h = createResultsHarness({ codeMode: { maxOutputBytes } });
+    const ctx = { ...h.ctx, modelContextWindowTokens: 4_096 };
+    const tools = createCodeModeTools(ctx);
+    const read = pluginToolWithExecute("read_text", "Read text", async () => jsonResult(value));
+    read.resultContentSource = "network";
+    applyCodeModeCatalog({ ...ctx, tools: [...tools, read] });
+    const first = resultDetails(
+      await tools[0]!.execute("read", {
+        code: "const value = await read_text({}); await yield_control(); return value;",
+      }),
+    );
+    expect(first.status).toBe("waiting");
+    const response = await tools[1]!.execute("finish", { runId: first.runId });
+    const saved = resultDetails(response);
+    const display = response.content
+      .filter((item) => item.type === "text")
+      .map((item) => item.text)
+      .join("\n");
+    expectCodeModeSharedBudget(saved, maxOutputBytes);
+    expect(toolResultFitsBudget(display, resolveToolResultBudget(4_096))).toBe(true);
+    expect(saved).toMatchObject({
+      status: "completed",
+      value: {
+        truncated: true,
+        reference: {
+          id: expect.any(String),
+          bytes: Buffer.byteLength(JSON.stringify(value)),
+          count: 1,
+          shape: "string",
+        },
+        guidance: expect.stringContaining("results.load"),
+      },
+    });
+    const id = (saved.value as { reference: { id: string } }).reference.id;
+    const loaded = await tools[0]!.execute("retrieve", {
+      code: `const value = await results.load(${JSON.stringify(id)}); return [value === ${JSON.stringify(value)}, JSON.stringify(value) === ${JSON.stringify(JSON.stringify(value))}, value.slice(-16)];`,
+    });
+    expect(resultDetails(loaded)).toMatchObject({
+      status: "completed",
+      value: [true, true, value.slice(-16)],
+    });
+    expect(loaded.content[0]).toMatchObject({
+      text: expect.stringContaining("EXTERNAL_UNTRUSTED_CONTENT"),
+    });
+    expect(read.execute).toHaveBeenCalledOnce();
+  },
+);
+
+it.each([
+  'return Array.from({length:180},(_,id) => ({id, description:"data".repeat(10)}));',
+  'return "log 🦞\\n".repeat(1000);',
+])("keeps success and old references when automatic retention is full (%s)", async (code) => {
   const { ctx, tools } = createResultsHarness({ codeMode: { maxOutputBytes: 1024 } });
   applyCodeModeCatalog({ ...ctx, tools });
   const first = resultDetails(
@@ -106,7 +171,7 @@ it("keeps success and old references when automatic retention is full", async ()
   expect(first.status).toBe("completed");
   const full = resultDetails(
     await tools[0]!.execute("oversized", {
-      code: 'return Array.from({length:180},(_,id) => ({id, description:"data".repeat(10)}));',
+      code,
     }),
   );
   expect(full).toMatchObject({
@@ -152,9 +217,34 @@ it.each([
     restartSafe: true,
     guidance: "restart-safe",
   },
+  {
+    name: "string retention byte allowance",
+    maxOutputBytes: 1024,
+    modelContextWindowTokens: undefined,
+    maxSnapshotBytes: 1024,
+    restartSafe: false,
+    guidance: "data allowance",
+    code: 'return "log 🦞\\n".repeat(1000);',
+  },
+  {
+    name: "restart-safe string execution",
+    maxOutputBytes: 1024,
+    modelContextWindowTokens: undefined,
+    maxSnapshotBytes: 10485760,
+    restartSafe: true,
+    guidance: "restart-safe",
+    code: 'return "log 🦞\\n".repeat(1000);',
+  },
 ])(
   "returns an ordinary successful truncation for $name",
-  async ({ maxOutputBytes, modelContextWindowTokens, maxSnapshotBytes, restartSafe, guidance }) => {
+  async ({
+    maxOutputBytes,
+    modelContextWindowTokens,
+    maxSnapshotBytes,
+    restartSafe,
+    guidance,
+    code,
+  }) => {
     const h = createResultsHarness({ codeMode: { maxOutputBytes, maxSnapshotBytes } });
     const ctx = { ...h.ctx, modelContextWindowTokens };
     const tools = createCodeModeTools(ctx);
@@ -162,7 +252,9 @@ it.each([
     const output = resultDetails(
       await tools[0]!.execute("large", {
         restartSafe,
-        code: 'return {rows:Array.from({length:180}, (_,id) => ({id,payload:"🦞".repeat(10)}))};',
+        code:
+          code ??
+          'return {rows:Array.from({length:180}, (_,id) => ({id,payload:"🦞".repeat(10)}))};',
       }),
     );
     expect(output).toMatchObject({

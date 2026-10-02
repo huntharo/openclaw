@@ -376,7 +376,7 @@ projection without refetching. See
 [Reuse data across cells](/tools/code-mode/quickstart#reuse-data-across-cells)
 for limits and the agent-run lifetime.
 
-Interactive `exec`/`wait` also preserve an oversized final object or array
+Interactive `exec`/`wait` also preserve an oversized final object, array, or string
 automatically when their final display projection would truncate it. A saved
 result uses `value: { truncated: true, reference, guidance }`, with the same
 descriptor returned by `results.save`. Its identity remains complete when
@@ -384,7 +384,9 @@ emitted output competes for space; preview text and sampled shapes may shrink.
 If even the identity cannot fit, the new save is released and the completed
 result explains that retention was unavailable. Capacity or data-allowance
 failures likewise preserve the original successful truncation semantics,
-without evicting earlier references. Small values, plain strings, emitted
+without evicting earlier references. Return log text or serialized JSON as a final
+string to keep its exact normalized value available for later selection with
+`results.load(id)`. Small values, emitted
 output, failures, headless execution, and restart-safe cells retain their
 ordinary output behavior.
 

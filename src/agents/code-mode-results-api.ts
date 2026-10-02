@@ -16,7 +16,7 @@ const content = `type CodeModeResultReference = {
  * on agent-run end/abort, catalog replacement, permission changes, or restart.
  * Saved data is a snapshot, not current external state. Result operations are
  * unavailable in restartSafe cells because references are transient.
- * Oversized final objects/arrays are saved automatically in interactive exec/wait
+ * Oversized final objects/arrays/strings are saved automatically in interactive exec/wait
  * when possible: value is {truncated:true, reference:CodeModeResultReference, guidance:string}.
  * Failed retention stays completed with a truncation marker explaining why it was not retained.
  * No automatic references in headless or restartSafe execution.

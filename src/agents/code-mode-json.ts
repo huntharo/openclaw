@@ -68,12 +68,12 @@ function retainSource(json: string, originalBytes: number, maxBytes: number): Co
 export function captureCodeModeValue(
   value: unknown,
   maxBytes: number,
-  structuredMaxBytes = maxBytes,
+  retainedMaxBytes = maxBytes,
 ): CodeModeJsonSource {
   const json = stringifyCodeModeJsonSafe(value);
   const allowance =
-    json.startsWith("{") || json.startsWith("[")
-      ? Math.max(maxBytes, structuredMaxBytes)
+    json.startsWith("{") || json.startsWith("[") || json.startsWith('"')
+      ? Math.max(maxBytes, retainedMaxBytes)
       : maxBytes;
   return retainSource(json, Buffer.byteLength(json, "utf8"), allowance);
 }
@@ -248,7 +248,9 @@ export class CodeModeOutputState {
       retainValue &&
       params.value &&
       projection.valueTruncated &&
-      (params.value.json.startsWith("{") || params.value.json.startsWith("["))
+      (params.value.json.startsWith("{") ||
+        params.value.json.startsWith("[") ||
+        params.value.json.startsWith('"'))
     ) {
       const saved = retainValue(params.value);
       if ("reference" in saved) {
