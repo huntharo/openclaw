@@ -86,6 +86,18 @@ export function createControlUiDefaultResponses(scenario: {
     current: { id: "claw", mode: "system", scope: "gateway", overrides: {} },
   };
   return {
+    "question.list": { questions: [] },
+    "cron.list": {
+      jobs: [],
+      snapshotRevision: "e2e-empty-cron-inventory",
+      total: 0,
+      offset: 0,
+      limit: 1,
+      hasMore: false,
+      nextOffset: null,
+    },
+    "cron.status": { enabled: true, jobs: 0, nextWakeAtMs: null },
+    "cron.runs": { entries: [], total: 0, offset: 0, limit: 1, hasMore: false, nextOffset: null },
     "users.self": profile
       ? { profile }
       : {

@@ -50,6 +50,7 @@ import { createControlUiMockPresence } from "./control-ui-mock-presence.ts";
 import { createControlUiMockReactions } from "./control-ui-mock-reactions.ts";
 import { createControlUiMockResponses } from "./control-ui-mock-responses.ts";
 import { createControlUiMockSessionSubscriptions } from "./control-ui-mock-session-subscriptions.ts";
+import { createControlUiMockWire } from "./control-ui-mock-wire.ts";
 import type { NativeControlUiPluginFixture } from "./control-ui-plugin-fixture.ts";
 import {
   createControlUiSessionFixtures,
@@ -388,6 +389,8 @@ const json5BrowserSource = readFileSync(require.resolve("json5/dist/index.min.js
 export { defaultControlUiFeatureMethods } from "./control-ui-e2e-defaults.ts";
 
 export type ControlUiMockGatewayScenario = {
+  /** Capture exact mock socket strings for Node-side traffic assertions. */
+  captureWire?: boolean;
   /** Auto-wait for sidebar rosters unless startup is held or connect fails; true overrides those skips, false disables the wait. */
   awaitInitialRoster?: boolean;
   nativePlugins?: readonly NativeControlUiPluginFixture[];
@@ -932,6 +935,7 @@ function normalizeScenario(
       ? basePathWithSlash.slice(0, -1)
       : basePathWithSlash;
   return {
+    captureWire: scenario.captureWire ?? false,
     pluginAssetsRequireAuth: scenario.pluginAssetsRequireAuth ?? true,
     attachmentMaxBytes: scenario.attachmentMaxBytes ?? DEFAULT_MOCK_ATTACHMENT_MAX_BYTES,
     automaticallyFetchFavicons: scenario.automaticallyFetchFavicons ?? false,
@@ -1060,7 +1064,7 @@ export function createControlUiMockGatewayInitScript(
     protocolVersion: PROTOCOL_VERSION,
     scenario: normalizeScenario(scenario),
   };
-  return `${json5BrowserSource}\n;(() => { const __name = (target) => target; (${installControlUiMockGateway.toString()})(${JSON.stringify(input)}, globalThis.JSON5.parse, ${createControlUiSessionFixtures.toString()}, ${createControlUiAttachmentFacts.toString()}, ${createControlUiMockResponses.toString()}, ${createControlUiMockSessionSubscriptions.toString()}, ${createControlUiMockPresence.toString()}, ${createControlUiMockReactions.toString()}); })();`;
+  return `${json5BrowserSource}\n;(() => { const __name = (target) => target; (${installControlUiMockGateway.toString()})(${JSON.stringify(input)}, globalThis.JSON5.parse, ${createControlUiSessionFixtures.toString()}, ${createControlUiAttachmentFacts.toString()}, ${createControlUiMockResponses.toString()}, ${createControlUiMockSessionSubscriptions.toString()}, ${createControlUiMockPresence.toString()}, ${createControlUiMockReactions.toString()}, ${createControlUiMockWire.toString()}); })();`;
 }
 
 function installControlUiMockGateway(
@@ -1075,14 +1079,9 @@ function installControlUiMockGateway(
   createSubscriptions: typeof createControlUiMockSessionSubscriptions,
   createPresence: typeof createControlUiMockPresence,
   createReactions: typeof createControlUiMockReactions,
+  createWire: typeof createControlUiMockWire,
 ) {
   const NativeWebSocket = window.WebSocket;
-  type BrowserFrame = {
-    id?: unknown;
-    method?: unknown;
-    params?: unknown;
-    type?: unknown;
-  };
   type DeferredResponse = {
     id: string;
     method: string;
@@ -1147,6 +1146,7 @@ function installControlUiMockGateway(
   const heldMethods = new Set(scenario.heldMethods);
   const deferredResponses: DeferredResponse[] = [];
   const requests: MockGatewayRequest[] = [];
+  const wire = createWire(scenario.captureWire);
   const requestHandlers = new Map<string, ControlUiMockRequestHandler>();
   const pendingApprovals = new Map<string, Map<string, Record<string, unknown>>>();
   let canonicalSessionRows = scenario.sessions;
@@ -1181,6 +1181,7 @@ function installControlUiMockGateway(
   const sockets: Array<{
     readonly readyState: number;
     readonly url: string;
+    readonly socketId: number;
     close: (code?: number, reason?: string) => void;
     openConnection: () => void;
   }> = [];
@@ -2462,18 +2463,6 @@ function installControlUiMockGateway(
     return responses;
   }
 
-  function parseFrame(raw: string | ArrayBufferLike | Blob | ArrayBufferView): BrowserFrame | null {
-    if (typeof raw !== "string") {
-      return null;
-    }
-    try {
-      const parsed = JSON.parse(raw) as BrowserFrame;
-      return parsed && typeof parsed === "object" ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-
   class MockWebSocket extends EventTarget {
     static readonly CLOSED = 3;
     static readonly CLOSING = 2;
@@ -2491,6 +2480,7 @@ function installControlUiMockGateway(
     readonly protocol = "";
     readyState = MockWebSocket.CONNECTING;
     readonly url: string;
+    readonly socketId: number;
     private tickTimer: number | null = null;
     readonly sessionMessageSubscriptions = subscriptionRouting.createClient();
 
@@ -2499,6 +2489,7 @@ function installControlUiMockGateway(
       this.url = String(url);
       MockWebSocket.latest = this;
       sockets.push(this);
+      this.socketId = sockets.length;
       window.setTimeout(() => {
         this.openConnection();
       }, 0);
@@ -2550,7 +2541,10 @@ function installControlUiMockGateway(
     }
 
     send(raw: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-      const frame = parseFrame(raw);
+      if (typeof raw === "string") {
+        wire.record(this.socketId, "sent", raw);
+      }
+      const frame = wire.parse(raw);
       if (!frame || frame.type !== "req") {
         return;
       }
@@ -2645,11 +2639,17 @@ function installControlUiMockGateway(
           exposed.initialRosterDelivered = true;
         }
       }
-      this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
+      const data = JSON.stringify(frame);
+      wire.record(this.socketId, "received", data);
+      this.dispatchEvent(new MessageEvent("message", { data }));
     }
   }
 
   const exposed: ControlUiMockGateway = {
+    wireFrames: wire.frames,
+    get wireFramesDropped() {
+      return wire.dropped;
+    },
     get online() {
       return online;
     },
