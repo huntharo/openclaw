@@ -29,3 +29,10 @@ export function respondPlainText(res: ServerResponse, statusCode: number, body: 
 export function respondNotFound(res: ServerResponse): void {
   respondPlainText(res, 404, "Not Found");
 }
+
+export function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.end(JSON.stringify(body));
+}

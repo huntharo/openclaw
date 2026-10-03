@@ -4,12 +4,7 @@ import { property, query, queryAll, state } from "lit/decorators.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
 import { icons } from "./icons.ts";
-import {
-  lightboxLabels,
-  renderLightboxAction,
-  renderSvgAction,
-  renderSvgFrame,
-} from "./image-lightbox-controls.ts";
+import { lightboxLabels, renderLightboxAction, renderSvgFrame } from "./image-lightbox-controls.ts";
 import {
   canSwipeLightboxVideo,
   ImageLightboxGalleryController,
@@ -21,9 +16,9 @@ import {
   isOriginalImageDataUrl,
   isOriginalImageMimeType,
 } from "./image-lightbox-original-source.ts";
+import { ImageLightboxSvgController } from "./image-lightbox-svg.ts";
 import { imageLightboxStyles } from "./image-lightbox.styles.ts";
 import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
-import { interactiveSvgDocument } from "./interactive-svg-document.ts";
 import "./modal-dialog.ts";
 
 const MAX_SCALE = 4;
@@ -58,9 +53,9 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   @query(".stage") private stage?: HTMLDivElement;
   @query(".video") private video?: HTMLVideoElement;
   @query(".image") private image?: HTMLImageElement;
-  @queryAll(".action, video[controls], iframe") private focusables!: NodeListOf<HTMLElement>;
-  @state() private svgDocument?: { source: ImageLightboxItem["svgSource"]; document: string };
-  @state() private svgError = false;
+  @query(".interactive-svg") private svgFrame?: HTMLIFrameElement;
+  @queryAll(".action, video[controls], iframe, .svg-search input")
+  private focusables!: NodeListOf<HTMLElement>;
   @state() private openOriginalUrl = "";
   @state() private resolvingOriginal = false;
   private originalBlobUrl = "";
@@ -75,6 +70,13 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   private readonly galleryController = new ImageLightboxGalleryController(() =>
     this.requestUpdate(),
   );
+  private readonly svgController = new ImageLightboxSvgController({
+    readItem: () => this.currentImage,
+    getFrame: () => this.svgFrame ?? null,
+    invalidate: () => this.requestUpdate(),
+    closeViewer: () => this.emitClose(),
+    readColorScheme: () => (getComputedStyle(this).colorScheme === "dark" ? "dark" : "light"),
+  });
   private displayedIndex = 0;
   private displayedSource = "";
   private slideAnimation?: Animation;
@@ -96,19 +98,6 @@ class OpenClawImageLightbox extends OpenClawLitElement {
 
   private get hasGallery() {
     return this.galleryController.count > 1;
-  }
-
-  private get currentSvgSource() {
-    const item = this.currentImage;
-    return item?.kind !== "video" && item?.svgSource?.src === item?.src
-      ? item?.svgSource
-      : undefined;
-  }
-
-  private get activeSvgDocument() {
-    return this.svgDocument?.source === this.currentSvgSource
-      ? this.svgDocument?.document
-      : undefined;
   }
 
   private get direction() {
@@ -145,8 +134,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     this.motionQuery?.removeEventListener("change", this.handleMotionPreferenceChange);
     this.motionQuery = undefined;
     this.destroyPanzoom();
-    this.svgDocument = undefined;
-    this.svgError = false;
+    this.svgController.dispose();
     this.originalUrlRequest += 1;
     this.revokeOriginalBlobUrl();
     super.disconnectedCallback();
@@ -173,8 +161,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     if (GALLERY_INPUTS.some((key) => changed.has(key))) {
       this.cancelSwipe();
       this.resetGallery();
-      this.svgDocument = undefined;
-      this.svgError = false;
+      this.svgController.reset();
     }
   }
 
@@ -189,10 +176,10 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       this.displayedIndex = this.galleryController.index;
       this.destroyPanzoom();
       this.scale = 1;
-      this.svgDocument = undefined;
-      this.svgError = false;
+      this.svgController.reset();
     }
     this.galleryController.connectPlayer(this.video);
+    this.svgController.bind(this.svgFrame ?? null);
     const source = this.video?.getAttribute("src") ?? this.currentImage?.src ?? this.src;
     if (selectionChanged || this.displayedSource !== source) {
       this.displayedSource = source;
@@ -209,7 +196,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       t("chat.imageLightbox.untitled");
     const { dialogLabel, closeLabel } = lightboxLabels(this.mediaKind, title);
     const canZoom = this.panzoom !== undefined;
-    const svgDocument = this.activeSvgDocument;
+    const svg = this.svgController.active;
     const width = this.currentImage?.width;
     const height = this.currentImage?.height;
     const sized = Number.isFinite(width) && width! > 0 && Number.isFinite(height) && height! > 0;
@@ -227,7 +214,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
           <header class="header">
             <strong class="title">${title}</strong>
             <div class="actions">
-              ${this.currentSvgSource ? renderSvgAction(Boolean(svgDocument), this.toggleSvgInteraction) : nothing}
+              ${this.svgController.renderAction(this.toggleSvgInteraction)}
               ${
                 this.openOriginalUrl || (this.hasGallery && this.resolvingOriginal)
                   ? html`
@@ -262,7 +249,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
             </div>
           </header>
           <div
-            class=${svgDocument ? "stage stage--interactive" : this.mediaKind === "video" ? "stage stage--video" : this.hasGallery ? "stage stage--gallery" : "stage"}
+            class=${svg ? "stage stage--interactive" : this.mediaKind === "video" ? "stage stage--video" : this.hasGallery ? "stage stage--gallery" : "stage"}
             @pointerdown=${{ handleEvent: this.handleStagePointerDown, capture: true }}
             @pointermove=${this.handleStagePointerMove}
             @pointerup=${this.handleStagePointerUp}
@@ -270,8 +257,10 @@ class OpenClawImageLightbox extends OpenClawLitElement {
             @dblclick=${this.handleDoubleClick}
           >
             ${
-              svgDocument
-                ? renderSvgFrame(svgDocument, title)
+              svg
+                ? renderSvgFrame(title, svg.scheme, (frame) =>
+                    this.svgController.frameLoaded(frame),
+                  )
                 : this.mediaKind === "video"
                   ? html`<video
                       class="video"
@@ -298,8 +287,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
                     </div>`
             }
           </div>
-          ${svgDocument ? html`<p class="svg-notice" role="status">${t("chat.imageLightbox.svgInteractionHelp")}</p>` : nothing}
-          ${this.svgError ? html`<p class="gallery-error" role="alert">${t("chat.imageLightbox.svgInvalid")}</p>` : nothing}
+          ${this.svgController.renderNotice()} ${this.svgController.renderSearch()}
           ${
             this.hasGallery
               ? html`
@@ -327,7 +315,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
               : nothing
           }
           ${
-            this.mediaKind === "image" && !svgDocument
+            this.mediaKind === "image" && !svg
               ? html`<div class="zoom-controls">
                   ${renderLightboxAction("zoom-control", "chat.imageLightbox.zoomOut", !canZoom || this.scale <= 1, this.zoomOut, "−")}
                   ${renderLightboxAction("zoom-control zoom-level", "chat.imageLightbox.resetZoom", !canZoom || this.scale === 1, this.resetZoom, html`${Math.round(this.scale * 100)}%`)}
@@ -341,25 +329,14 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   }
 
   private toggleSvgInteraction = () => {
-    if (this.activeSvgDocument) {
-      this.svgDocument = undefined;
+    this.svgController.toggle();
+    if (this.svgController.active) {
+      this.cancelSwipe();
+      this.destroyPanzoom();
+    } else {
       void this.updateComplete.then(() =>
         this.shadowRoot?.querySelector<HTMLElement>(".svg-interaction")?.focus(),
       );
-      return;
-    }
-    const source = this.currentSvgSource;
-    if (!source) {
-      return;
-    }
-    try {
-      const document = interactiveSvgDocument(source.text);
-      this.cancelSwipe();
-      this.destroyPanzoom();
-      this.svgDocument = { source, document };
-      this.svgError = false;
-    } catch {
-      this.svgError = true;
     }
   };
 
@@ -470,6 +447,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       : undefined;
     if (
       event.pointerType === "touch" &&
+      !this.svgController.active &&
       this.hasGallery &&
       !this.galleryController.busy &&
       this.scale <= 1 &&
@@ -674,6 +652,22 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   }
 
   private handleKeydown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && this.svgController.dismissSearch()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    trapLightboxTabFocus(event, this.focusables);
+    const textField = event
+      .composedPath()
+      .some(
+        (target) =>
+          target instanceof HTMLElement &&
+          (target.matches("input, textarea, select") || target.isContentEditable),
+      );
+    if (textField) {
+      return;
+    }
     if (event.key === "Escape" && exitLightboxVideoFullscreen(this.video, event)) {
       return;
     }
@@ -706,16 +700,19 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     if (this.panzoom && zoom) {
       event.preventDefault();
       zoom();
-      return;
     }
-    trapLightboxTabFocus(event, this.focusables);
   };
 
   private emitClose = (event?: Event) => {
+    if (event?.type === "modal-cancel" && this.svgController.dismissSearch()) {
+      event.preventDefault();
+      return;
+    }
     if (event?.type === "modal-cancel" && exitLightboxVideoFullscreen(this.video, event)) {
       return;
     }
     this.galleryController.stopPlayer();
+    this.svgController.reset();
     this.dispatchEvent(
       new CustomEvent("image-lightbox-close", {
         bubbles: true,
