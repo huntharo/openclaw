@@ -296,6 +296,68 @@ do not run it alongside another debugger, profiler, tracer, or coverage owner. A
 response names the reason and whether cleanup failed. If cleanup remains uncertain,
 further captures are refused; the RPC never restarts the Gateway automatically.
 
+### Armed hot-CPU lookback
+
+To reproduce an intermittent main-thread spike, arm a bounded observation before
+performing the operation:
+
+```bash
+openclaw gateway call diagnostics.cpuProfile --params '{"mode":"hot","observeMs":60000,"cpuThresholdPercent":80}' --timeout 90000 --json
+```
+
+`mode: "hot"` enables request-owned rolling sampling. `observeMs` is an integer
+from 1 to 60000 (default 60000); `cpuThresholdPercent` is greater than zero and
+at most 100 (default 80). Empty params retain the five-second forward capture.
+Nothing runs before the request or remains armed after it finishes. Lookback
+means **pre-trigger activity within this armed observation**, not activity before
+invocation.
+
+The recorder rotates five-second windows, shortening the last window to the
+remaining observation budget. It stops at the first window whose average main
+thread CPU reaches the threshold, or when the observation expires. The trigger
+uses Node's main-thread user and system CPU time divided by the window's elapsed
+time: 100% means one busy main thread. Worker CPU does not trigger it. Native work
+on that thread can trigger a capture without appearing as a JavaScript stack.
+Profiler start, stop, and completed-window sanitization are excluded from the CPU
+trigger. Short spikes may average below the threshold; choose a lower threshold
+when investigating them.
+
+The current window retains the ordinary profile response fields and adds
+`mainThreadCpuPercent` and `hot`, containing `observeMs`, `observedDurationMs`,
+`cpuThresholdPercent`, and `triggered`. After a rotation, `hot.previousWindow`
+contains the preceding sanitized profile and its CPU percentage. An expired
+observation returns `triggered: false` with the newest windows; a trigger in the
+first window has no previous window. Each `profile` can be opened independently
+in a V8 profile viewer. Stop/start gaps are unrecorded; the windows are not joined
+or charged to sampled functions.
+
+Only the prior and current sanitized windows are retained, under the existing
+combined 1 MiB, 16384-node, and 65536-sample limits. Exceeding a limit fails the
+request without publishing partial history. The existing admin authority,
+connection/shutdown cancellation, tracing/debugger refusal, and cleanup rules
+apply throughout the observation. Other CPU or allocation-profile requests fail
+with `busy` while it holds the shared inspector owner. There is no new config,
+background monitor, disk artifact, or automatic heap capture.
+
+Every rotation repeats V8's synchronous profiler startup, including its possible
+large-heap stall. `startBlockedMs` describes each window's startup. Observation
+timers cannot interrupt a blocked event loop; actual observation and window
+durations may exceed the requested budget. Use this mode during a deliberate
+debugging window and stop other profilers first.
+
+### Control UI browser profiling
+
+These RPCs profile the Gateway's Node main isolate, not the Control UI renderer.
+The Control UI uses Lit. Use the browser's Performance panel for renderer CPU
+recordings and its Memory panel for heap snapshots and allocation sampling.
+Browser CDP automation requires an external debugger that owns the target;
+ordinary webpage JavaScript cannot start a V8 CPU profiler or write a heap
+snapshot. The repository's browser performance tests use external CDP sessions
+for scoped captures. There is no automatic renderer hot-CPU lookback monitor or
+React DevTools integration in the page. Start the external recording before
+reproducing the issue, stop competing debugger/profiler sessions, and treat
+browser heap snapshots as unredacted sensitive artifacts.
+
 ## Full heap snapshot
 
 An operator with `operator.admin` can explicitly capture the Gateway's main V8
