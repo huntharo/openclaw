@@ -153,6 +153,7 @@ export async function handleDirectiveOnly(
     currentThinkLevel: currentThinkLevel ?? "off",
     thinkingCatalog,
     runtimePolicySessionKey,
+    accountId: params.ctx?.AccountId,
   });
   if (modelInfo) {
     return acknowledgeIgnoredDirective(modelInfo, "hasModelDirective");
@@ -200,7 +201,9 @@ export async function handleDirectiveOnly(
   thinkingCatalog = preparedModel?.catalog ?? thinkingCatalog;
   const modelRuntimeResolution = preparedModel?.runtime ?? { kind: "unchanged" as const };
   const validateSelection = () =>
-    modelResolution.validateModelSelection?.() ?? preparedModel?.validateRuntimeSelection?.();
+    params.validateCommandSelection?.() ??
+    modelResolution.validateModelSelection?.() ??
+    preparedModel?.validateRuntimeSelection?.();
   const prospectiveSessionEntry = { ...sessionEntry };
   applyModelRuntimeDirective(prospectiveSessionEntry, modelRuntimeResolution);
   const selectedCatalogEntry = findSelectedCatalogEntry({

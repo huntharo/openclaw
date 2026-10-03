@@ -8,6 +8,14 @@ title: "Plugin runtime config and utilities"
 sidebarTitle: "Config and utilities"
 ---
 
+Model menu helpers in `openclaw/plugin-sdk/interactive-runtime` are pure:
+`buildModelPickerPresentation`, `createModelPickerCapabilityProfile`, and
+`resolveModelPickerAction` consume admitted catalog facts and existing
+outbound presentation capabilities. They expose no config, session, authority,
+or mutation API. Use `models-provider-runtime` for fresh catalog preparation,
+then re-enter canonical command ingress with a resolved typed command. See
+[channel menu ownership](/plugins/sdk-channel-plugins#what-your-plugin-owns).
+
 How plugin code reads the runtime config snapshot, persists config writes, and reuses the shared runtime utilities. Part of the [Plugin runtime helpers](/plugins/sdk-runtime) reference; the [`api.runtime.config` namespace](/plugins/sdk-runtime/state-and-system#api-runtime-config) holds the matching namespace entry.
 
 ## Config loading and writes
@@ -57,6 +65,14 @@ preserves an explicitly scoped config otherwise, including when no runtime has
 been published yet. Read once per turn and carry that snapshot through admission
 and replies. Process-wide controls such as diagnostics should read at the point
 of emission.
+
+For awaited work, retain `captureRuntimeConfigPublicationCurrent(cfg)` at initial
+config admission. Its read-only predicate tests whether that publication is still
+current, including same-object republication, source-only publication, and clear
+or restart. A captured immutable config retains its original generation; taking
+another capture later cannot admit its old values into a newer generation. A
+scoped, copied, or unrelated config returns `undefined`. This fact grants no
+actor, route, or write authority and performs no file reads or deep comparisons.
 
 `createChannelInboundDebouncer` keeps its returned numeric `debounceMs` and default
 queue timing as startup snapshots. For live timing, pass its existing

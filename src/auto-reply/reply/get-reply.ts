@@ -8,16 +8,12 @@ import {
   resolveAgentWorkspaceDir,
   resolveAgentSkillsFilter,
 } from "../../agents/agent-scope.js";
-import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
-import { projectConversationToolNames } from "../../agents/conversation-tool-policy-pipeline.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { publishedModelCatalogOwnerMatchesAgent } from "../../agents/prepared-model-catalog-owner.js";
-import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../../agents/spawned-context.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
-import { resolveEffectiveToolFsRootExpansionAllowed } from "../../agents/tool-fs-policy.js";
 import {
   WorkspaceAliasRepointedError,
   WorkspaceVanishedError,
@@ -25,7 +21,7 @@ import {
 import { DEFAULT_AGENT_WORKSPACE_DIR } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
-import { resolveGroupSessionKey } from "../../config/sessions/group.js";
+import { captureRuntimeConfigPublicationCurrent } from "../../config/runtime-snapshot.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
@@ -71,6 +67,7 @@ import { maybeResolveNativeSlashCommandFastReply } from "./get-reply-native-slas
 import {
   applyLinkUnderstandingIfNeeded,
   applyMediaUnderstandingIfNeeded,
+  canSelfServeLocalPaths,
   hasExplicitAudioUnderstandingConfig,
   hasLinkCandidate,
   resolveReplyAgentScope,
@@ -85,7 +82,6 @@ import {
 } from "./inbound-media.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createModelSelectionState } from "./model-selection.js";
-import { resolveOriginMessageProvider } from "./origin-routing.js";
 import {
   classifyHeartbeatPendingFinalDelivery,
   PENDING_FINAL_DELIVERY_CLEAR_PATCH,
@@ -103,6 +99,7 @@ import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { prepareReplyWorkspace } from "./reply-workspace.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
+import { capturePreparedPureAdapterRouteAssertion } from "./session-conversation-binding.js";
 import { prepareReplySessionDiffBaseline } from "./session-diff-baseline.js";
 import { resolveReplySessionInitializationOptions } from "./session-initialization-admission.js";
 import { SessionResetCleanupError } from "./session-reset-cleanup.js";
@@ -151,6 +148,22 @@ export async function getReplyFromConfig(
   const finalized = resolverTiming.measureSync("reply.finalize_context", () =>
     finalizeInboundContext(ctx),
   );
+  const coreSelectionCurrent = {
+    publicationCurrent: captureRuntimeConfigPublicationCurrent(cfg),
+    assertRouteCurrent: capturePreparedPureAdapterRouteAssertion(finalized),
+  };
+  const sourceSelectionCurrent = opts?.commandSelectionCurrent;
+  const commandSelectionCurrent = sourceSelectionCurrent
+    ? {
+        publicationCurrent: () =>
+          coreSelectionCurrent.publicationCurrent?.() !== false &&
+          sourceSelectionCurrent.publicationCurrent?.() !== false,
+        assertRouteCurrent: () => {
+          coreSelectionCurrent.assertRouteCurrent?.();
+          sourceSelectionCurrent.assertRouteCurrent?.();
+        },
+      }
+    : coreSelectionCurrent;
   // Resolve legacy text-slash source lanes before any session-scoped work.
   // The explicit steer command itself still flows through normal command and
   // prepared-reply handling; this only gives that path the active owner's key.
@@ -315,6 +328,7 @@ export async function getReplyFromConfig(
       maybeResolveNativeSlashCommandFastReply({
         ctx: finalized,
         cfg,
+        commandSelectionCurrent,
         agentId,
         agentDir,
         agentCfg,
@@ -756,6 +770,7 @@ export async function getReplyFromConfig(
     resolveReplyDirectives({
       ctx: finalized,
       ...replyContext,
+      commandSelectionCurrent,
       agentCfg,
       sessionCtx,
       sessionScope,

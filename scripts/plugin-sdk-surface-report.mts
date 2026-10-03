@@ -224,7 +224,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +5: approved sync-to-async replacements: inspectConversationBinding,
       // resolveCommandAuthorization, createApproverRestrictedNativeApprovalCapability,
       // createChannelApprovalNativeRuntimeAdapter, and createLazyChannelApprovalNativeRuntimeAdapter.
-      3661,
+      // +7: approved portable model-menu exports and read-only publication capture (2026-10-03).
+      3668,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -242,7 +243,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: the same four CLI state-owner and transport functions.
       // +1: runWithLocalStateMutationOwner shares the existing transport authority scope.
       // +5: the five awaited inspection, authorization, and approval factory replacements above.
-      2127,
+      // +4: approved pure model-menu functions and read-only publication capture (2026-10-03).
+      2131,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

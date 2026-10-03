@@ -7,7 +7,10 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { ResolvedTelegramAccount } from "./accounts.js";
 import { renderTelegramHtmlText } from "./format.js";
 import { buildInlineKeyboard } from "./inline-keyboard.js";
-import { recordOutboundMessageForPromptContext } from "./outbound-message-context.js";
+import {
+  recordOutboundMessageForPromptContext,
+  recordTelegramAcknowledgedMessageEdit,
+} from "./outbound-message-context.js";
 import type { TelegramOutboundPromptContextMessage as TelegramMessageLike } from "./outbound-message-context.js";
 import type { TelegramRichMessageContextParams } from "./rich-message.js";
 import { isTelegramEmptyContentError } from "./rich-plain-fallback.js";
@@ -120,8 +123,15 @@ export function createTelegramTextSender(config: {
       let keyboardError: unknown;
       if (finalPart && replyMarkup && !chunk.hasInlineKeyboard) {
         try {
-          await api.editMessageReplyMarkup(chunk.reportChatId, chunk.messageId, {
+          const result = await api.editMessageReplyMarkup(chunk.reportChatId, chunk.messageId, {
             reply_markup: replyMarkup,
+          });
+          await recordTelegramAcknowledgedMessageEdit({
+            cfg,
+            accountId: account.accountId,
+            chatId: chunk.reportChatId,
+            messageId: chunk.messageId,
+            result,
           });
           finalMeta = {
             telegramDeliveredText: chunk.plainText,

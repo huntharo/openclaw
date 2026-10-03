@@ -59,13 +59,6 @@ import {
 import type { TelegramBotInfo } from "./bot-info.js";
 import { buildTelegramRoutingTarget, type TelegramThreadSpec } from "./bot/helpers.js";
 import { telegramMessageActions } from "./channel-actions.js";
-import {
-  buildTelegramCommandsListChannelData,
-  buildTelegramModelBrowseChannelData,
-  buildTelegramModelsAddProviderChannelData,
-  buildTelegramModelsListChannelData,
-  buildTelegramModelsProviderChannelData,
-} from "./command-ui.js";
 import { resolveTelegramConfigAccessorAccount, telegramConfigAdapter } from "./config-adapter.js";
 import { inspectTelegramConversationRouteOwner } from "./conversation-route-owner.js";
 import { resolveTelegramConversationBaseSessionKey } from "./conversation-route.js";
@@ -605,12 +598,6 @@ export const telegramPlugin = createChatChannelPlugin({
     commands: {
       nativeCommandsAutoEnabled: true,
       nativeSkillsAutoEnabled: true,
-      buildCommandsListChannelData: buildTelegramCommandsListChannelData,
-      buildModelsMenuChannelData: buildTelegramModelsProviderChannelData,
-      buildModelsProviderChannelData: buildTelegramModelsProviderChannelData,
-      buildModelsAddProviderChannelData: buildTelegramModelsAddProviderChannelData,
-      buildModelsListChannelData: buildTelegramModelsListChannelData,
-      buildModelBrowseChannelData: buildTelegramModelBrowseChannelData,
     },
     doctor: telegramDoctor,
     security: telegramSecurityAdapter,

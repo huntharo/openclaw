@@ -5,10 +5,12 @@ import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import { modelKey } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
 import { resolveStickyModelSelectionScope } from "../../agents/sticky-model-selection.js";
+import { captureRuntimeConfigPublicationCurrent } from "../../config/runtime-snapshot.js";
 import type { SessionEntry, SessionScope } from "../../config/sessions/types.js";
 import type { AgentConfig } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import {
@@ -29,9 +31,11 @@ import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
 import { hasSessionDirectives, type InlineDirectives } from "./directive-handling.parse.js";
 import { formatModelSelectionScopeAck } from "./directive-handling.shared.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
+import type { CommandSelectionCurrent } from "./get-reply.types.js";
 import type { createModelSelectionState } from "./model-selection.js";
 import type { ReplyPreRunRejectionCode } from "./reply-operation-run-state.js";
 import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
+import { capturePreparedPureAdapterRouteAssertion } from "./session-conversation-binding.js";
 import type { TypingController } from "./typing.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
@@ -95,6 +99,7 @@ export async function applyInlineDirectiveOverrides(params: {
   ctx: MsgContext;
   abortSignal?: AbortSignal;
   cfg: OpenClawConfig;
+  commandSelectionCurrent?: CommandSelectionCurrent;
   agentId: string;
   agentDir: string;
   workspaceDir: string;
@@ -159,6 +164,23 @@ export async function applyInlineDirectiveOverrides(params: {
     return { kind: "reply", reply: { text, isError: true }, preRunRejection: code };
   };
   const requesterProfileId = readSessionInputProfileId(ctx);
+  const commandSelectionCurrent = params.commandSelectionCurrent ?? {
+    publicationCurrent: captureRuntimeConfigPublicationCurrent(cfg),
+    assertRouteCurrent: capturePreparedPureAdapterRouteAssertion(ctx),
+  };
+  const validateCommandSelection = () => {
+    try {
+      command.assertOwnerCurrent?.();
+      assertReplyPreprocessingActive(params.abortSignal);
+      commandSelectionCurrent.assertRouteCurrent?.();
+      if (commandSelectionCurrent.publicationCurrent?.() === false) {
+        return "Configuration changed while preparing this command. Send a new request.";
+      }
+      return undefined;
+    } catch (error) {
+      return formatErrorMessage(error);
+    }
+  };
   let { directives, provider, model, contextTokens, contextTokenProjection } = params;
   let directiveAck: ReplyPayload | undefined;
   let selectionCatalog = modelState.allowedModelCatalog;
@@ -330,6 +352,7 @@ export async function applyInlineDirectiveOverrides(params: {
       gatewayClientScopes: ctx.GatewayClientScopes,
       commandAuthorized: command.isAuthorizedSender,
       senderIsOwner: command.senderIsOwner,
+      validateCommandSelection,
       onRejection: () => {
         rejected = true;
       },
@@ -384,7 +407,8 @@ export async function applyInlineDirectiveOverrides(params: {
           modelCatalog: modelState.allowedModelCatalog,
           thinkingCatalog: modelState.allowedModelCatalog,
           canPersistStickyModelSelection,
-          validateAuthProfileSelection: modelResolution.validateAuthProfileSelection,
+          validateAuthProfileSelection: () =>
+            validateCommandSelection() ?? modelResolution.validateAuthProfileSelection?.(),
           ...(stickyModelSelectionTarget ? { stickyModelSelectionTarget } : {}),
           request: {
             ...modelSelection,

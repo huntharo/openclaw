@@ -34,6 +34,11 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import { dispatchReplyFromConfig } from "./dispatch-from-config.js";
 import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
+import {
+  createCommandSelectionFixture,
+  exerciseSelectionRevocation,
+  type SelectionRevocation,
+} from "./get-reply.command-selection-current.test-support.js";
 import { getReplyFromConfig } from "./get-reply.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import { claimInboundDedupe, resetInboundDedupe } from "./inbound-dedupe.js";
@@ -95,6 +100,70 @@ afterEach(async () => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });
+
+it.each(["owner", "guest"])(
+  "persists an admitted session model through actual inbound dispatch for %s",
+  async (sender) => {
+    const fixture = await createCommandSelectionFixture({ state, sender, registerAdapter });
+    expect(fixture.authorization.senderIsOwner).toBe(sender === "owner");
+    expect(fixture.authorization.isAuthorizedSender).toBe(true);
+    const result = await fixture.run();
+    expect(result.dispatched).toBe(true);
+    expect(fixture.readRecorded()?.delivery).toMatchObject({ kind: "internal" });
+    expect(fixture.readRecorded()?.modelOverride).toBeUndefined();
+    expect(fixture.read()).toMatchObject({
+      sessionId: "selection-session",
+      providerOverride: "mock-openai",
+      modelOverride: "selected",
+      delivery: { kind: "internal" },
+    });
+    expect(fixture.replies.some((reply) => reply.text?.includes("mock-openai/selected"))).toBe(
+      true,
+    );
+  },
+);
+
+const selectionRevocations: SelectionRevocation[] = [
+  "source-publication",
+  "source-route",
+  "core-publication",
+  "adapter-registration",
+  "binding-selection",
+  "binding-unbind",
+  "binding-close",
+];
+it.for(
+  selectionRevocations.flatMap((revocation) =>
+    (["preparation", "queued-commit"] as const).map((phase) => ({ revocation, phase })),
+  ),
+)(
+  "rejects $revocation during $phase at the canonical model write",
+  async ({ revocation, phase }, { signal }) => {
+    const fixture = await createCommandSelectionFixture({
+      state,
+      sender: "guest",
+      registerAdapter,
+    });
+    expect(fixture.authorization).toMatchObject({ senderIsOwner: false, isAuthorizedSender: true });
+    const proof = await exerciseSelectionRevocation({ fixture, phase, revocation, signal });
+    expect(proof.result.dispatched).toBe(true);
+    expect(fixture.readRecorded()?.delivery).toMatchObject({ kind: "internal" });
+    expect(fixture.read()).toMatchObject({
+      sessionId: "selection-session",
+      delivery: { kind: "internal" },
+    });
+    expect(fixture.read()?.modelOverride).toBeUndefined();
+    expect(fixture.read()?.providerOverride).toBeUndefined();
+    const reply = fixture.replies.map((payload) => payload.text ?? "").join("\n");
+    expect(reply).toMatch(
+      revocation.endsWith("publication") ? /Configuration changed/ : /changed/i,
+    );
+    expect(proof.transactions).toEqual(phase === "queued-commit" ? [true] : []);
+    if (phase === "queued-commit" && revocation.startsWith("source-")) {
+      expect(proof.sourceChecksAtCommit).toBe(1);
+    }
+  },
+);
 
 function registerAdapter(
   lookup: (ref: ConversationRef) => SessionBindingRecord | null,

@@ -21,7 +21,10 @@ import {
   prepareTelegramOutboundMedia,
   resolveTelegramOutboundMediaSenders,
 } from "./outbound-media.js";
-import { recordOutboundMessageForPromptContext } from "./outbound-message-context.js";
+import {
+  recordOutboundMessageForPromptContext,
+  recordTelegramAcknowledgedMessageEdit,
+} from "./outbound-message-context.js";
 import { buildTelegramThreadReplyParams } from "./reply-parameters.js";
 import { resolveTelegramRichMessages, resolveTelegramTableMode } from "./rich-messages-config.js";
 import { isTelegramEmptyContentError } from "./rich-plain-fallback.js";
@@ -468,8 +471,15 @@ export async function sendMessageTelegram(
             let keyboardError: unknown;
             if (batchReplyMarkup) {
               try {
-                await api.editMessageReplyMarkup(resolvedChatId, mediaMessageId, {
+                const result = await api.editMessageReplyMarkup(resolvedChatId, mediaMessageId, {
                   reply_markup: batchReplyMarkup,
+                });
+                await recordTelegramAcknowledgedMessageEdit({
+                  cfg,
+                  accountId: account.accountId,
+                  chatId: resolvedChatId,
+                  messageId: mediaMessageId,
+                  result,
                 });
                 hasInlineKeyboard = true;
               } catch (editError) {

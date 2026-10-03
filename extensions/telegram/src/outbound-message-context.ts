@@ -25,6 +25,7 @@ export type TelegramOutboundPromptContextMessage = {
   from?: TelegramOutboundPromptContextUser;
   sender_chat?: { id?: number; title?: string; username?: string };
   sender_business_bot?: TelegramOutboundPromptContextUser;
+  business_connection_id?: string;
   openclaw_prompt_context_timestamp_ms?: number;
   text?: string;
   caption?: string;
@@ -40,6 +41,68 @@ type TelegramOutboundPromptContextAccount = {
 
 function inferTelegramChatType(chatId: string | number): "private" | "supergroup" {
   return String(chatId).startsWith("-") ? "supergroup" : "private";
+}
+
+function buildOutboundCacheMessage(params: {
+  account: TelegramOutboundPromptContextAccount;
+  chatId: string | number;
+  message: TelegramOutboundPromptContextMessage;
+  messageId: number;
+  botUserId?: number;
+  text?: string;
+  messageThreadId?: number;
+  promptContextTimestampMs?: number;
+}): TelegramOutboundPromptContextMessage {
+  const chat = params.message.chat ?? {};
+  const text = params.message.text ?? params.message.caption ?? params.text;
+  const rawSender = params.message.from;
+  const stableSender = params.message.sender_chat ? undefined : rawSender;
+  const selfSenderName = buildTelegramSelfSenderName(
+    params.account.name,
+    params.account.bot ?? stableSender,
+  );
+  return {
+    ...params.message,
+    message_id: params.messageId,
+    ...(params.promptContextTimestampMs !== undefined
+      ? { openclaw_prompt_context_timestamp_ms: params.promptContextTimestampMs }
+      : {}),
+    date:
+      typeof params.message.date === "number" && Number.isFinite(params.message.date)
+        ? params.message.date
+        : Math.floor(Date.now() / 1000),
+    chat: {
+      id: chat.id ?? params.chatId,
+      type: chat.type ?? inferTelegramChatType(params.chatId),
+      ...(chat.title ? { title: chat.title } : {}),
+      ...(chat.username ? { username: chat.username } : {}),
+    },
+    // Every message entering here came from this bot. Keep only Telegram's real
+    // id/username; sender_chat uses a synthetic compatibility user.
+    from: {
+      id: params.message.sender_chat ? 0 : (stableSender?.id ?? params.botUserId ?? 0),
+      is_bot: true,
+      first_name: selfSenderName,
+      ...(stableSender?.username ? { username: stableSender.username } : {}),
+    },
+    ...(text ? { text } : {}),
+    ...(params.messageThreadId !== undefined ? { message_thread_id: params.messageThreadId } : {}),
+  };
+}
+
+/** Account-owned scope keeps callback captures and accepted send/edit observations in one bucket. */
+export function getTelegramObservedMessageCache(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  ownerAgentId?: string;
+}) {
+  return createTelegramMessageCache({
+    scope: resolveTelegramMessageCacheScope(
+      resolveStorePath(params.cfg.session?.store, {
+        agentId: params.ownerAgentId?.trim() || resolveTelegramAccountOwnerAgentId(params),
+      }),
+    ),
+  });
 }
 
 export async function recordOutboundMessageForPromptContext(params: {
@@ -64,52 +127,14 @@ export async function recordOutboundMessageForPromptContext(params: {
       successfulSendThread: params.successfulSendThread,
     });
     const messageThreadId = providerObservedThread?.id ?? params.messageThreadId;
-    const chat = params.message.chat ?? {};
-    const text = params.message.text ?? params.message.caption ?? params.text;
-    const rawSender = params.message.from;
-    const stableSender = params.message.sender_chat ? undefined : rawSender;
-    const selfSenderName = buildTelegramSelfSenderName(
-      params.account.name,
-      params.account.bot ?? stableSender,
-    );
-    const cacheMessage: TelegramOutboundPromptContextMessage = {
-      ...params.message,
-      message_id: params.messageId,
-      ...(params.promptContextTimestampMs !== undefined
-        ? { openclaw_prompt_context_timestamp_ms: params.promptContextTimestampMs }
-        : {}),
-      date:
-        typeof params.message.date === "number" && Number.isFinite(params.message.date)
-          ? params.message.date
-          : Math.floor(Date.now() / 1000),
-      chat: {
-        id: chat.id ?? params.chatId,
-        type: chat.type ?? inferTelegramChatType(params.chatId),
-        ...(chat.title ? { title: chat.title } : {}),
-        ...(chat.username ? { username: chat.username } : {}),
-      },
-      // Every message entering here came from this bot. Keep only Telegram's real
-      // id/username; sender_chat uses a synthetic compatibility user.
-      from: {
-        id: params.message.sender_chat ? 0 : (stableSender?.id ?? params.botUserId ?? 0),
-        is_bot: true,
-        first_name: selfSenderName,
-        ...(stableSender?.username ? { username: stableSender.username } : {}),
-      },
-      ...(text ? { text } : {}),
-      ...(messageThreadId !== undefined ? { message_thread_id: messageThreadId } : {}),
-    };
-    const cache = createTelegramMessageCache({
-      scope: resolveTelegramMessageCacheScope(
-        resolveStorePath(params.cfg.session?.store, {
-          agentId:
-            params.ownerAgentId?.trim() ||
-            resolveTelegramAccountOwnerAgentId({
-              cfg: params.cfg,
-              accountId: params.account.accountId,
-            }),
-        }),
-      ),
+    const cacheMessage = buildOutboundCacheMessage({
+      ...params,
+      ...(messageThreadId !== undefined ? { messageThreadId } : {}),
+    });
+    const cache = getTelegramObservedMessageCache({
+      cfg: params.cfg,
+      accountId: params.account.accountId,
+      ownerAgentId: params.ownerAgentId,
     });
     await cache.record({
       accountId: params.account.accountId,
@@ -132,4 +157,33 @@ export async function recordOutboundMessageForPromptContext(params: {
     logVerbose(`telegram: failed to record outbound message context: ${String(error)}`);
     return false;
   }
+}
+
+/** Acknowledged callback edits share the observed-message owner with ordinary outbound replies. */
+export async function recordTelegramAcknowledgedMessageEdit(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  chatId: string | number;
+  messageId: number;
+  businessConnectionId?: string;
+  result: Message | true;
+}) {
+  if (params.result === true) {
+    getTelegramObservedMessageCache(params).invalidateObservedMessageCaptures({
+      accountId: params.accountId,
+      chatId: params.chatId,
+      messageId: String(params.messageId),
+      businessConnectionId: params.businessConnectionId,
+    });
+    return;
+  }
+  await recordOutboundMessageForPromptContext({
+    cfg: params.cfg,
+    account: { accountId: params.accountId },
+    chatId: params.chatId,
+    message: params.result,
+    messageId: params.result.message_id,
+    ...(params.result.from?.id !== undefined ? { botUserId: params.result.from.id } : {}),
+    successfulSendThread: resolveTelegramProviderObservedThreadSpec({ message: params.result }),
+  });
 }

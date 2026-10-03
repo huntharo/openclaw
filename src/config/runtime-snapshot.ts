@@ -373,9 +373,28 @@ export function getRuntimeConfigSnapshot(options?: { capture?: boolean }): OpenC
     return (runtimeConfigCapturedSnapshot ??= captureRuntimeConfigWithSource(
       runtimeConfigSnapshot,
       runtimeConfigSourceSnapshot ?? runtimeConfigSnapshot,
+      captureRuntimeConfigPublicationCurrent(runtimeConfigSnapshot),
     ));
   }
   return runtimeConfigSnapshot;
+}
+
+/**
+ * Capture at admission, before yielding. This is publication freshness, not actor authority.
+ * Frozen reads retain their original fence; republishing their origin cannot refresh them.
+ */
+export function captureRuntimeConfigPublicationCurrent(
+  config: OpenClawConfig,
+): (() => boolean) | undefined {
+  const captured = getRuntimeConfigCapture(config);
+  if (captured) {
+    return captured.publicationCurrent;
+  }
+  if (config !== runtimeConfigSnapshot && config !== runtimeConfigSourceSnapshot) {
+    return undefined;
+  }
+  const generation = runtimeConfigSnapshotGeneration;
+  return () => runtimeConfigSnapshotGeneration === generation;
 }
 
 export function getRuntimeConfigSourceSnapshot(): OpenClawConfig | null {
@@ -569,7 +588,11 @@ export async function loadPinnedRuntimeConfigAsync(
           config:
             config === runtimeConfigSnapshot
               ? getRuntimeConfigSnapshot({ capture: true })!
-              : captureRuntimeConfigWithSource(config, runtimeConfigSourceSnapshot ?? config),
+              : captureRuntimeConfigWithSource(
+                  config,
+                  runtimeConfigSourceSnapshot ?? config,
+                  captureRuntimeConfigPublicationCurrent(config),
+                ),
           env: cloneEnvWithPlatformSemantics(process.env),
         }
       : config;

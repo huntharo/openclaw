@@ -2,7 +2,11 @@ import { freezeJsonSnapshot } from "../shared/immutable-data.js";
 import { cloneConfigWithResolutionFacts } from "./resolution-facts.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
-type RuntimeConfigCapture = Readonly<{ source: OpenClawConfig; origin: OpenClawConfig }>;
+type RuntimeConfigCapture = Readonly<{
+  source: OpenClawConfig;
+  origin: OpenClawConfig;
+  publicationCurrent?: () => boolean;
+}>;
 
 const captures = new WeakMap<OpenClawConfig, RuntimeConfigCapture>();
 
@@ -16,14 +20,25 @@ export function getRuntimeConfigCapture(
 export function captureRuntimeConfigWithSource(
   config: OpenClawConfig,
   source: OpenClawConfig,
+  publicationCurrent?: () => boolean,
 ): OpenClawConfig {
   const clone = (value: OpenClawConfig) =>
     freezeJsonSnapshot(cloneConfigWithResolutionFacts(value));
   const captured = clone(config);
   const capturedSource = source === config ? captured : clone(source);
-  captures.set(captured, { source: capturedSource, origin: config });
+  const previous = getRuntimeConfigCapture(config);
+  const current = previous?.publicationCurrent ?? publicationCurrent;
+  captures.set(captured, {
+    source: capturedSource,
+    origin: previous?.origin ?? config,
+    publicationCurrent: current,
+  });
   if (capturedSource !== captured) {
-    captures.set(capturedSource, { source: capturedSource, origin: source });
+    captures.set(capturedSource, {
+      source: capturedSource,
+      origin: getRuntimeConfigCapture(source)?.origin ?? source,
+      publicationCurrent: current,
+    });
   }
   return captured;
 }
