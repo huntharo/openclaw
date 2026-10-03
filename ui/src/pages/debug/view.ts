@@ -22,6 +22,8 @@ import type {
 import { KEYBOARD_SHORTCUT_COMBOS } from "../../lib/keyboard-shortcut-contract.ts";
 import { formatEventPayload } from "../../lib/presenter.ts";
 import { renderCommandLaneRows } from "./lane-table.ts";
+import { renderTraffic } from "./traffic-view.ts";
+import type { TrafficSnapshot } from "./traffic-window.ts";
 
 type DebugProps = {
   connected: boolean;
@@ -45,6 +47,8 @@ type DebugProps = {
   onRefresh: () => void;
   onOpenOverlay: () => void;
   onCall: () => void;
+  traffic?: TrafficSnapshot | null;
+  onToggleTraffic?: () => void;
 };
 
 function renderJsonRow(title: string, value: unknown) {
@@ -282,7 +286,8 @@ ${guard([props.models], () => unsafeHTML(highlightJsonHtml(JSON.stringify(props.
   );
 
   return renderSettingsPage(
-    html`${snapshotsSection} ${lanesSection} ${rpcSection} ${modelsSection} ${eventLogSection}`,
+    html`${props.onToggleTraffic ? renderTraffic(props.connected, props.traffic ?? null, props.onToggleTraffic) : nothing}
+    ${snapshotsSection} ${lanesSection} ${rpcSection} ${modelsSection} ${eventLogSection}`,
     { wide: true },
   );
 }

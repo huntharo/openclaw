@@ -4,6 +4,20 @@ import { en } from "./en.ts";
 // Diagnostic data copy loads with its content; panel headings and labels stay eager.
 const enDebug = {
   debug: {
+    traffic: {
+      title: "Gateway traffic",
+      scope:
+        "Decoded payload bytes for this browser client and the selected Gateway. Excludes TLS, framing, compression, and other clients or workers.",
+      start: "Start monitoring",
+      stop: "Stop monitoring",
+      inactive: "Monitoring is off. Start to collect local counters for the last 60 seconds.",
+      refresh:
+        "One-second buckets, refreshed every three seconds. Hiding or leaving this page, disconnecting, or switching Gateways clears the window.",
+      sent: "Sent",
+      received: "Received",
+      total: "{bytes} · {frames} frames / last 60s",
+      frameRate: "{count} frames/s",
+    },
     snapshotsTitle: "Snapshots",
     snapshotsSubtitle:
       "Refresh to update status and health snapshots. Heartbeat data updates live.",

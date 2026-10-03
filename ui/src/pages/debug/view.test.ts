@@ -498,7 +498,9 @@ describe("DebugPage", () => {
       expect(page.debugLanes).toEqual([expect.objectContaining({ lane: "live" })]);
       expect(normalizedText(page.querySelector(".command-lane-row"))).toContain("live");
       marker = "manual";
-      page.querySelector<HTMLButtonElement>(".settings-section button")!.click();
+      [...page.querySelectorAll<HTMLButtonElement>(".settings-section button")]
+        .find((button) => normalizedText(button) === "Refresh")!
+        .click();
       await vi.advanceTimersByTimeAsync(0);
       await page.updateComplete;
       expectSnapshots(page, "manual");
