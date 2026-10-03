@@ -509,6 +509,60 @@ match. Warm task workers still collect released payloads in place; critical
 pressure, cancellation, rotation, and shutdown retain their existing cleanup
 paths. No configuration setting is needed.
 
+## Control UI renderer lookback
+
+The Control UI uses Lit. Browser pages cannot capture V8 CPU profiles or full
+heap snapshots themselves; these require an external debugger such as Chromium
+DevTools. From a source checkout with the existing Playwright Chromium installed,
+run this opt-in developer recorder:
+
+```bash
+node --import ./scripts/tsx.mjs scripts/perf/control-ui-hot-cpu.mts \
+  --url http://127.0.0.1:5173 --output renderer-hot.json \
+  --observe-ms 60000 --task-threshold-percent 80
+```
+
+It launches a fresh Chromium window and starts observation after the document
+loads. Authenticate and reproduce the issue in that window. It never attaches to
+an existing browser, debugger, user profile, or tab. `--headless` is available for
+developer fixtures. Use `--help` for the invocation and Ctrl-C to cancel.
+
+The trigger measures **renderer main-thread task time**, using the change in
+Chromium's `TaskDuration` divided by elapsed `Timestamp`. It is not OS CPU
+utilization: a task that waits still occupies task time, and workers and GPU
+activity are outside the trigger. Observation is bounded to 1–60,000 ms, with
+five-second windows and a final partial window. Lookback covers only activity
+after this explicit observation starts. A first-window trigger has no preceding
+window; expiry returns the latest windows with `triggered: false`.
+
+The private, exclusively created output contains `currentWindow` and optionally
+`previousWindow`, with separate sanitized CPU graphs, task percentages, and
+`heapUsedBytes`/`heapTotalBytes` readings. Retained windows share the existing
+1 MiB, 16,384-node, and 65,536-sample limits. Only the selected exact origin's
+locally known Control UI `/assets/*.js` and source-owned `/src/...` scripts retain
+symbols when the profile's script ID and URL match an admitted
+`Debugger.scriptParsed` identity. Scripts with `hasSourceURL` labels are never
+admitted. The bounded script inventory retires on document replacement and
+clears when the owned CDP session closes. Unknown scripts, other origins, inline/eval code, credentials, and
+private filesystem paths are redacted; retained paths omit origin, query, and
+fragment. A different UI build can therefore produce redacted asset frames.
+Extract a window's `profile` as a `.cpuprofile` to import it into Chromium DevTools.
+
+`profilerStartElapsedMs` measures the CDP start command's elapsed time, including
+transport; it does not measure Node main-thread blocking. Stop/start gaps remain
+unrecorded. Native debugger work and a busy renderer can overrun a requested
+window; a separate observation-plus-30-second lifetime closes the owned browser
+on abort. Document replacement, native failures, or retained-history limits
+produce no completed artifact. Existing output files are never overwritten.
+
+Heap-size readings help locate growth, but they do not identify retaining paths
+or prove a leak. For full renderer snapshots and allocation analysis, use
+Chromium's Memory panel on the relevant page. The existing Gateway
+`diagnostics.heapSnapshot` and `scripts/heap-snapshot-diff.mjs` remain the owners
+of main-process snapshots and retained-size comparisons. Snapshots contain raw
+application data and need separate review before sharing. This recorder adds no
+automatic heap dump, persistent monitor, configuration, or React DevTools hook.
+
 ## Related
 
 - [Health checks](/gateway/health)

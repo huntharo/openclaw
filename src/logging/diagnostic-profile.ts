@@ -58,6 +58,40 @@ function hasProfilerConflict() {
   );
 }
 
+export type ControlUiProfileLocation = {
+  origin: string;
+  scriptPaths: ReadonlySet<string>;
+  scripts: ReadonlyMap<string, string>;
+};
+
+/** Shares the browser code-location decision with the owned CDP script inventory. */
+export function resolveControlUiProfileCodeUrl(
+  url: string,
+  controlUi: Pick<ControlUiProfileLocation, "origin" | "scriptPaths">,
+): string | undefined {
+  if (url.length > 2_048) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname;
+    if (
+      /^https?:$/.test(parsed.protocol) &&
+      !parsed.username &&
+      !parsed.password &&
+      parsed.origin === controlUi.origin &&
+      controlUi.scriptPaths.has(pathname) &&
+      (/^\/assets\/[A-Za-z0-9_+-]+\.js$/.test(pathname) ||
+        /^\/src\/[A-Za-z0-9_./+-]+\.[cm]?[jt]s$/.test(pathname))
+    ) {
+      return `control-ui:${pathname.slice(1)}`;
+    }
+  } catch {
+    /* Non-URL eval and native labels have no browser code location. */
+  }
+  return undefined;
+}
+
 function codeUrl(url: string, packageRoot: string | null): string | undefined {
   if (/^node:[a-zA-Z0-9_./-]+$/.test(url)) {
     return url;
@@ -91,6 +125,7 @@ function codeUrl(url: string, packageRoot: string | null): string | undefined {
 export function sanitizeDiagnosticProfileFrame(
   frame: Runtime.CallFrame,
   packageRoot: string | null,
+  controlUi?: ControlUiProfileLocation,
 ) {
   // V8 emits signed source offsets and negative script IDs for WebAssembly wrappers.
   assertProfile(
@@ -102,7 +137,11 @@ export function sanitizeDiagnosticProfileFrame(
       Number.isSafeInteger(frame.lineNumber) &&
       Number.isSafeInteger(frame.columnNumber),
   );
-  const url = codeUrl(frame.url, packageRoot);
+  const url = controlUi
+    ? controlUi.scripts.get(frame.scriptId) === frame.url
+      ? resolveControlUiProfileCodeUrl(frame.url, controlUi)
+      : undefined
+    : codeUrl(frame.url, packageRoot);
   const engine = frame.url === "" && ENGINE_NAMES.has(frame.functionName);
   const safeName =
     engine ||

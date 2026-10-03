@@ -6,6 +6,7 @@ import {
   DIAGNOSTIC_PROFILE_MAX_BYTES,
   ProfileFailure,
   sanitizeDiagnosticProfileFrame,
+  type ControlUiProfileLocation,
 } from "./diagnostic-profile.js";
 
 const DURATION_MS = 5_000;
@@ -16,7 +17,11 @@ const MAX_SAMPLES = 65_536;
 function sanitizeProfile(
   profile: Profiler.Profile,
   packageRoot: string | null,
-  { startBlockedMs }: { startBlockedMs: number },
+  {
+    startBlockedMs,
+    requestedDurationMs = DURATION_MS,
+  }: { startBlockedMs: number; requestedDurationMs?: number },
+  controlUi?: ControlUiProfileLocation,
 ) {
   assertProfile(
     Array.isArray(profile.nodes) &&
@@ -37,7 +42,11 @@ function sanitizeProfile(
   const nodes = profile.nodes.map((node): Profiler.ProfileNode => {
     assertProfile(Number.isSafeInteger(node.id) && node.id > 0 && !ids.has(node.id));
     ids.add(node.id);
-    const { callFrame, redacted } = sanitizeDiagnosticProfileFrame(node.callFrame, packageRoot);
+    const { callFrame, redacted } = sanitizeDiagnosticProfileFrame(
+      node.callFrame,
+      packageRoot,
+      controlUi,
+    );
     redactedNodeCount += Number(redacted || node.deoptReason !== undefined);
     if (node.children !== undefined) {
       assertProfile(Array.isArray(node.children));
@@ -85,7 +94,7 @@ function sanitizeProfile(
   // V8 deoptimization samples can arrive out of timestamp order; preserve their signed deltas.
   assertProfile(profile.timeDeltas.every((delta) => Number.isFinite(delta)));
   const result = {
-    requestedDurationMs: DURATION_MS,
+    requestedDurationMs,
     actualDurationMs: (profile.endTime - profile.startTime) / 1_000,
     startBlockedMs,
     samplingIntervalMicros: INTERVAL_MICROS,
@@ -123,3 +132,9 @@ export function captureDiagnosticCpuProfile(options: {
     sanitize: sanitizeProfile,
   });
 }
+
+export {
+  MAX_NODES as DIAGNOSTIC_CPU_MAX_NODES,
+  MAX_SAMPLES as DIAGNOSTIC_CPU_MAX_SAMPLES,
+  sanitizeProfile as sanitizeDiagnosticCpuProfile,
+};
