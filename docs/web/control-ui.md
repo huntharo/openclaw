@@ -22,6 +22,18 @@ For unmatched HTTP paths, the app-shell fallback respects the request's `Accept`
 
 It speaks **directly to the Gateway WebSocket** on the same port.
 
+In chat, type `#` to reference an available session or pull request. In chat
+or New Session, type `@/` to reference a registered project or its directory.
+In New Session, type `@:` to reference an environment already listed by its
+placement controls. Type more to filter, use the arrow keys to select, and press
+Enter or Tab to insert. Session and pull-request selections insert links; project
+and environment selections insert their exact identities as text; session links
+also include the session key and agent ID. Environment suggestions show their
+current status, including unavailable targets. Suggestions use the current
+Gateway's accessible catalogs; they do not discover other Gateways or change
+where the conversation runs. Human `@` mentions and `$` skills keep their
+existing behavior.
+
 If the Gateway's request queue is full, automatic sidebar session discovery keeps the current rows and retries up to three times, respecting the server's retry delay. A persistent failure shows "The server is busy. Please try again in a moment." Other actions can show this message immediately; wait briefly, then retry the action.
 
 While the initial connection or a route loads, shimmer placeholders reserve the chat layout. Home and System busyness open directly in their destination panels, with working headers and Close controls while the content loads. Brief loads do not flash placeholders; slower loads show placeholders inside the panel, and load errors offer Retry in the same place. The rest of the page stays usable. Drag the System busyness title bar to move the panel; its position is remembered in this browser. You can also focus the title bar and use the arrow keys (Shift moves farther). Compact/expanded transitions animate briefly, respect reduced motion, and keep the panel inside the window. Loading indicators respect your theme and reduced-motion preference; Gateway startup progress remains visible when available.

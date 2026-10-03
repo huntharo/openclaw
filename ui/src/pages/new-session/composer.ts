@@ -45,6 +45,7 @@ registerNewSessionSetupEnglish();
 function submitNewSession(options: NewSessionComposerOptions) {
   options.textareaController.emojiMenu.close();
   options.textareaController.mentionMenu.close();
+  options.textareaController.referenceMenu.close();
   resetSkillMenuState(options.textareaController.skillMenuState);
   resetSlashMenuState(options.textareaController.slashMenuState);
   options.onSubmit();
@@ -101,6 +102,11 @@ function handleComposerKeydown(
       mentionMenuHost,
       options.requestUpdate,
     ) ||
+    options.textareaController.referenceMenu.handleKeydown(
+      event,
+      mentionMenuHost,
+      options.requestUpdate,
+    ) ||
     handleSkillMenuKeydown(
       event,
       options.textareaController.skillMenuState,
@@ -133,6 +139,7 @@ function handleComposerKeydown(
       resetSkillMenuState(options.textareaController.skillMenuState);
       resetSlashMenuState(options.textareaController.slashMenuState);
       options.textareaController.mentionMenu.close();
+      options.textareaController.referenceMenu.close();
       options.onBackgroundSubmit();
     }
     return;
@@ -158,10 +165,14 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
   const skillMenuState = options.textareaController.skillMenuState;
   const slashMenuState = options.textareaController.slashMenuState;
   const mentionMenu = options.textareaController.mentionMenu;
+  const referenceMenu = options.textareaController.referenceMenu;
   const emojiMenu = options.textareaController.emojiMenu;
   const composerLocked =
     options.submitting || options.messageLocked === true || options.dictationActive === true;
   mentionMenu.syncDirectory(composerLocked ? undefined : options.mentionDirectory);
+  referenceMenu.syncSources(
+    composerLocked || options.nativeTerminal ? undefined : options.referenceSources,
+  );
   const skillMenuHost: SkillMenuHost = {
     paneId: "new-session",
     getDraft: () => options.textareaController.getTextarea()?.value ?? options.message,
@@ -192,7 +203,8 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
         !options.textareaController.composing &&
         !skillMenuState.skillMenuOpen &&
         !slashMenuState.slashMenuOpen &&
-        !mentionMenu.open,
+        !mentionMenu.open &&
+        !referenceMenu.open,
     );
   };
   const updateMenus = (target: HTMLTextAreaElement, event?: InputEvent) => {
@@ -210,6 +222,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     );
     if (event?.inputType === "insertFromPaste" || event?.inputType === "insertFromDrop") {
       mentionMenu.close();
+      referenceMenu.close();
     } else {
       mentionMenu.update(
         target,
@@ -217,6 +230,16 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
         !event
           ? "selection"
           : event.inputType === "insertText" && event.data?.includes("@") === true
+            ? "trigger"
+            : "input",
+      );
+      referenceMenu.update(
+        target,
+        options.requestUpdate,
+        !event
+          ? "selection"
+          : event.inputType === "insertText" &&
+              /(?:#|@\/|@:)$/u.test(target.value.slice(0, target.selectionStart))
             ? "trigger"
             : "input",
       );
@@ -228,6 +251,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     if (target instanceof HTMLTextAreaElement) {
       if (event.type === "keyup") {
         mentionMenu.update(target, options.requestUpdate);
+        referenceMenu.update(target, options.requestUpdate);
         updateEmojiMenu(target);
       } else {
         updateMenus(target);
@@ -263,9 +287,10 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
   });
   const visibleMessage = options.dictationPreview ?? options.message;
   options.textareaController.syncDraft(visibleMessage);
-  const messagePlaceholder = t(
+  const basePlaceholder = t(
     options.nativeTerminal ? "newSession.nativeTerminalPrompt" : "newSession.messagePlaceholder",
   );
+  const messagePlaceholder = `${basePlaceholder}${referenceMenu.hint() ? ` · ${referenceMenu.hint()}` : ""}`;
   const animatedPlaceholder = options.dictationActive
     ? ""
     : options.textareaController.getPlaceholder(
@@ -287,6 +312,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     slashMenuState,
     mentionMenu,
     emojiMenu,
+    referenceMenu,
   );
   const menuAnnouncementId = paneDomId(skillMenuHost.paneId, "active-menu-announcement");
   const ordinaryShortcut = options.requiresModifier ? "Control+Enter Meta+Enter" : "Enter";
@@ -317,6 +343,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
         }"
         @openclaw-composer-dismiss-invocations=${() => {
           mentionMenu.close();
+          referenceMenu.close();
           emojiMenu.dismiss(options.textareaController.getTextarea());
           options.requestUpdate();
         }}
@@ -330,6 +357,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
             !options.textareaController.capabilityMenuOpen,
         )}
         ${mentionMenu.render(mentionMenuHost, options.requestUpdate)}
+        ${referenceMenu.render(mentionMenuHost, options.requestUpdate)}
         ${emojiMenu.render("new-session", options.textareaController.getTextarea(), options.requestUpdate)}
         ${options.nativeTerminal ? nothing : renderChatAttachmentInputs(attachmentProps)}
         ${renderSelectedHumanMentions(
@@ -448,6 +476,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
                 options.textareaController.composing = true;
                 emojiMenu.close();
                 mentionMenu.close();
+                referenceMenu.close();
                 options.requestUpdate();
               }}
               @paste=${(event: ClipboardEvent) => {

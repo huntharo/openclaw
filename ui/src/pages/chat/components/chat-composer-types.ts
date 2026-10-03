@@ -39,6 +39,10 @@ import type {
   ChatComposerCapabilityMenuProps,
   ChatComposerPlusMenuView,
 } from "./chat-composer-plus-menu.ts";
+import type {
+  ComposerReferenceMenu,
+  ComposerReferenceSources,
+} from "./chat-composer-reference-menu.ts";
 import type { SkillMenuState } from "./chat-composer-skill-menu.ts";
 import type { SlashMenuState } from "./chat-composer-slash-menu.ts";
 import type { ChatPermissionPickerProps } from "./chat-permission-picker.ts";
@@ -118,6 +122,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   mentions?: readonly HumanMention[];
   getMentions?: () => readonly HumanMention[];
   mentionDirectory?: HumanMentionDirectory;
+  referenceSources?: ComposerReferenceSources;
   mentionsUnsupported?: boolean;
   modelCatalog: readonly ModelCatalogEntry[];
   modelSwitching: boolean;
@@ -203,6 +208,7 @@ export type ChatComposerState = SkillMenuState &
     composerComposing: boolean;
     editRevision: number;
     mentionMenu: HumanMentionMenu;
+    referenceMenu: ComposerReferenceMenu;
     emojiMenu: ComposerEmojiMenu;
     mentionInput?: HumanMentionInput;
     composingDraft: ScopedComposerDraft | null;

@@ -512,3 +512,24 @@ export function createChatPaneSessionActionCallbacks(params: {
       : undefined,
   };
 }
+
+export function createChatPaneReplyCallbacks(state: ChatPageHost, disabled: boolean) {
+  const setReply = (target: ChatProps["replyTarget"]) => {
+    state.chatReplyTarget = target;
+    state.handleChatDraftChange(state.chatMessage);
+    state.requestUpdate?.();
+  };
+  return { onClearReply: () => setReply(null), onSetReply: disabled ? undefined : setReply };
+}
+
+export function createChatPanePlacementRetry(
+  readKey: () => string | undefined,
+  retry: (key: string) => void,
+) {
+  return () => {
+    const key = readKey();
+    if (key) {
+      retry(key);
+    }
+  };
+}

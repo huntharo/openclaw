@@ -158,6 +158,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     slashMenuVisible,
     skillMenuVisible,
     mentionMenuVisible,
+    referenceMenuVisible,
     menuVisible,
     activeMenuOptionId: activeSlashMenuOptionId,
     activeMenuOptionLabel: activeSlashMenuOptionLabel,
@@ -177,7 +178,9 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     ? t("chat.goals.objectivePlaceholder")
     : (props.attachments ?? []).some((attachment) => !isPastedTextAttachment(attachment))
       ? t("chat.composer.placeholderWithAttachments")
-      : t("chat.composer.placeholder", { name: props.assistantName || "agent" });
+      : `${t("chat.composer.placeholder", { name: props.assistantName || "agent" })}${
+          state.referenceMenu.hint() ? ` · ${state.referenceMenu.hint()}` : ""
+        }`;
   const mirrorCameraPreview =
     props.realtimeTalkVideoStream?.getVideoTracks?.()[0]?.getSettings?.().facingMode !==
     "environment";
@@ -404,6 +407,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                 resetSlashMenuState(state);
                 resetSkillMenuState(state);
                 state.mentionMenu.close();
+                state.referenceMenu.close();
                 state.emojiMenu.dismiss(state.composerTextarea);
                 requestUpdate();
               }}
@@ -426,6 +430,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                   ? state.mentionMenu.render(mentionMenuHost, requestUpdate)
                   : nothing
               }
+              ${referenceMenuVisible ? state.referenceMenu.render(mentionMenuHost, requestUpdate) : nothing}
               <div class="agent-chat__composer-lede">
                 <openclaw-mcp-app-catalog
                   surface="thread"
@@ -568,8 +573,9 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                       }
                     }}
                     @compositionstart=${(event: CompositionEvent) => {
-                      const emojiWasOpen = state.emojiMenu.open;
+                      const menuWasOpen = state.emojiMenu.open || state.referenceMenu.open;
                       state.mentionMenu.close();
+                      state.referenceMenu.close();
                       state.emojiMenu.close();
                       state.editRevision += 1;
                       state.composerComposing = true;
@@ -577,7 +583,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                         key: draftKey,
                         value: (event.target as HTMLTextAreaElement).value,
                       };
-                      if (emojiWasOpen) {
+                      if (menuWasOpen) {
                         requestUpdate();
                       }
                     }}

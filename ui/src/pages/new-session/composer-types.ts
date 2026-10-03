@@ -6,6 +6,7 @@ import type { SessionToolOverrides } from "../../lib/sessions/patch.ts";
 import type { ChatAttachmentLimits } from "../chat/components/chat-attachment-admission.ts";
 import type { ChatAttachmentReadLifecycle } from "../chat/components/chat-attachment-reads.ts";
 import type { HumanMentionDirectory } from "../chat/components/chat-composer-mention-menu.ts";
+import type { ComposerReferenceSources } from "../chat/components/chat-composer-reference-menu.ts";
 import type { CapabilityMenuProps } from "../chat/components/chat-composer-types.ts";
 import type { SidebarContent } from "../chat/components/chat-sidebar-content-types.ts";
 import type { NewSessionComposerTextareaController } from "./composer-controller.ts";
@@ -23,6 +24,7 @@ export type NewSessionComposerOptions = {
   mentions?: readonly HumanMention[];
   getMentions?: () => readonly HumanMention[];
   mentionDirectory?: HumanMentionDirectory;
+  referenceSources?: ComposerReferenceSources;
   modelControl?: TemplateResult | typeof nothing;
   permissionControl?: TemplateResult | typeof nothing;
   pendingAttachmentReads: number;
