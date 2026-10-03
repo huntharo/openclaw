@@ -19,12 +19,14 @@ import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { InternalSessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createModelPickerCapabilityProfile } from "../../model-picker/menu.js";
 import { readSessionFallbackModel } from "../../status/session-fallback-model.js";
 import { shortenHomePath } from "../../utils.js";
 import { resolveSelectedAndActiveModel } from "../model-runtime.js";
 import { resolveSupportedThinkingLevel } from "../thinking.js";
 import type { ThinkingCatalogEntry } from "../thinking.shared.js";
 import type { ReplyPayload } from "../types.js";
+import { resolveCommandPresentationCapabilities } from "./channel-context.js";
 import { resolveModelsCommandReply } from "./commands-models.js";
 import type { InlineDirectives } from "./directive-handling.parse.js";
 import type { ThinkLevel } from "./directives.js";
@@ -124,6 +126,7 @@ export async function maybeHandleModelDirectiveInfo(params: {
   resetModelOverride: boolean;
   workspaceDir?: string;
   surface?: string;
+  accountId?: string;
   sessionEntry?: InternalSessionEntry;
 }): Promise<ReplyPayload | undefined> {
   if (!params.directives.hasModelDirective) {
@@ -164,6 +167,7 @@ export async function maybeHandleModelDirectiveInfo(params: {
       cfg: params.cfg,
       commandBodyNormalized: "/models",
       surface: params.surface,
+      accountId: params.accountId,
       currentModel: `${params.provider}/${params.model}`,
       agentId: params.activeAgentId,
       agentDir: params.agentDir,
@@ -213,24 +217,31 @@ export async function maybeHandleModelDirectiveInfo(params: {
       ? `Active: ${modelRefs.active.label} (runtime)`
       : null;
     const commandPlugin = params.surface ? getChannelPlugin(params.surface) : null;
-    const channelData = commandPlugin?.commands?.buildModelBrowseChannelData?.();
-    const instructions = channelData
-      ? [
-          "Tap below to select a model, or use:",
-          "/model <provider/model> -s for this session only",
-          "/model <provider/model> -a to update this agent's default",
-          "/model <provider/model> -g to update the global default",
-          "/model <provider/model> --runtime <runtime> -s to switch harnesses",
-          "/model status for details",
-        ]
-      : [
-          "Session: /model <provider/model> -s",
-          "Agent default: /model <provider/model> -a",
-          "Global default: /model <provider/model> -g",
-          "Runtime: /model <provider/model> --runtime <runtime> -s",
-          "Browse: /models (providers) or /models <provider> (models)",
-          "More: /model status",
-        ];
+    const portable = createModelPickerCapabilityProfile(
+      resolveCommandPresentationCapabilities(params),
+    );
+    const channelData = portable
+      ? undefined
+      : commandPlugin?.commands?.buildModelBrowseChannelData?.();
+    const instructions =
+      portable || channelData
+        ? [
+            "Tap below to select a model, or use:",
+            "Browse: /models",
+            "/model <provider/model> -s for this session only",
+            "/model <provider/model> -a to update this agent's default",
+            "/model <provider/model> -g to update the global default",
+            "/model <provider/model> --runtime <runtime> -s to switch harnesses",
+            "/model status for details",
+          ]
+        : [
+            "Session: /model <provider/model> -s",
+            "Agent default: /model <provider/model> -a",
+            "Global default: /model <provider/model> -g",
+            "Runtime: /model <provider/model> --runtime <runtime> -s",
+            "Browse: /models (providers) or /models <provider> (models)",
+            "More: /model status",
+          ];
     return {
       text: [
         `Current: ${current}${modelRefs.activeDiffers ? " (selected)" : ""}`,
@@ -242,6 +253,23 @@ export async function maybeHandleModelDirectiveInfo(params: {
         .filter(Boolean)
         .join("\n"),
       ...(channelData ? { channelData } : {}),
+      ...(portable
+        ? {
+            presentation: {
+              blocks: [
+                {
+                  type: "buttons" as const,
+                  buttons: [
+                    {
+                      label: "Browse models",
+                      action: { type: "command" as const, command: "/models" },
+                    },
+                  ],
+                },
+              ],
+            },
+          }
+        : {}),
     };
   }
 

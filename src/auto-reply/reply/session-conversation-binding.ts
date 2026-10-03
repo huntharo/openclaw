@@ -12,6 +12,7 @@ import { SessionWorkStartChangedError } from "../../config/sessions/lifecycle.js
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   getSessionBindingService,
+  capturePureSessionBindingAdapterSelection,
   isSessionBindingError,
   readSessionBindingSelectionCurrent,
   type SessionBindingRecord,
@@ -159,6 +160,29 @@ export async function assertPreparedConversationBindingRouteCurrent(
   if (!resolveCommandTurnTargetSessionKey(ctx)) {
     await readPreparedConversationBindingRouteCurrent(ctx);
   }
+}
+
+/** Commit-time checks use the original adapter's pure projection, never generic SQLite reads. */
+export function capturePreparedPureAdapterRouteAssertion(
+  ctx: Pick<MsgContext, "SessionKey">,
+): (() => void) | undefined {
+  const observations = readConversationBindingRouteObservations(ctx);
+  const read = capturePureSessionBindingAdapterSelection(
+    observations.map((expected) => expected.conversation),
+  );
+  if (!read) {
+    return undefined;
+  }
+  return () => {
+    const records = read();
+    for (const [index, expected] of observations.entries()) {
+      if (!matchesConversationBindingRouteFacts(expected, records[index] ?? null)) {
+        throw new SessionWorkStartChangedError(
+          "Conversation binding changed while preparing the command. Send a new request.",
+        );
+      }
+    }
+  };
 }
 
 export async function resolveSessionConversationBinding(params: {

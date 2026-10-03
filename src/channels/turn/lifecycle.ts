@@ -4,6 +4,7 @@ import { dispatchInboundMessageWithRoutedChannelDispatcher } from "../../auto-re
 import { getGroupThreadDispatchContext } from "../../auto-reply/group-thread-context.js";
 import { copyReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { suppressPendingFinalDelivery } from "../../auto-reply/reply/dispatch-from-config.pending-final.js";
+import type { InternalGetReplyOptions } from "../../auto-reply/reply/get-reply.types.js";
 import { isReplyDispatchDeliveryPending } from "../../auto-reply/reply/reply-dispatch-outcome.js";
 import { runWithSessionInitConflictRetry } from "../../auto-reply/reply/session-init-conflict-retry.js";
 import { withReplySystemEventContext } from "../../auto-reply/reply/system-event-session-key.js";
@@ -129,11 +130,18 @@ export function assembleResolvedChannelTurn<
 
 function resolveAssembledReplyPipeline(
   params: AssembledChannelTurn | RoutedAssembledChannelTurn,
-): Pick<AssembledChannelTurn, "dispatcherOptions" | "replyOptions"> {
+): Pick<AssembledChannelTurn, "dispatcherOptions"> & {
+  replyOptions?: Omit<InternalGetReplyOptions, "onBlockReply" | "onPreparedBlockReply">;
+} {
   const adoption = params.turnAdoptionLifecycle ?? params.replyOptions?.turnAdoptionLifecycle;
-  let replyOptions = adoption
+  let replyOptions:
+    | Omit<InternalGetReplyOptions, "onBlockReply" | "onPreparedBlockReply">
+    | undefined = adoption
     ? { ...params.replyOptions, turnAdoptionLifecycle: adoption }
     : params.replyOptions;
+  if (params.commandSelectionCurrent) {
+    replyOptions = { ...replyOptions, commandSelectionCurrent: params.commandSelectionCurrent };
+  }
   if (params.routeSessionKey !== params.ctxPayload.SessionKey) {
     replyOptions = withReplySystemEventContext(replyOptions ?? {}, {
       sessionKey: params.routeSessionKey,

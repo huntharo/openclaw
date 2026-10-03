@@ -272,6 +272,7 @@ export function createTelegramMessagePipeline({
         if (node) {
           await recordReplyMessageResolvedMedia({
             chatId: node.sourceMessage.chat.id,
+            businessConnectionId: node.sourceMessage.business_connection_id,
             messageId: node.messageId,
             media,
             botUserId: ctx.me?.id,

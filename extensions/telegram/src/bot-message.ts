@@ -265,11 +265,12 @@ export const createTelegramMessageProcessor = (
       try {
         const dispatchResult = await dispatchTelegramMessage({
           context,
+          callbackReply: options?.callbackReply,
           bot,
           cfg: context.cfg,
           runtime,
           replyToMode: turnSettings.replyToMode,
-          streamMode: turnSettings.streamMode,
+          streamMode: options?.callbackReply ? "off" : turnSettings.streamMode,
           textLimit: turnSettings.textLimit,
           telegramCfg: turnTelegramCfg,
           telegramDeps,

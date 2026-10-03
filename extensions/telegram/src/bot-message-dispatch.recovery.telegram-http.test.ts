@@ -20,6 +20,7 @@ import { patchSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { makeAgentAssistantMessage, makeAgentUserMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it } from "vitest";
 import { createTelegramDispatchHttpFixture } from "./bot-message-dispatch.telegram-http.test-support.js";
+import { registerTelegramModelCallbackHttpTests } from "./model-callback.telegram-http.test-support.js";
 import { resolveTelegramTestUpload } from "./send.telegram-http.test-support.js";
 
 const recoveryPrefix = "The complete answer preserves this sufficiently long opening paragraph";
@@ -42,6 +43,7 @@ function installHook(
 
 describe("Telegram transcript-backed answer recovery through HTTP", () => {
   const http = createTelegramDispatchHttpFixture();
+  registerTelegramModelCallbackHttpTests(http);
   const { calls, visibleMessages, acceptedCalls, dispatchProgressTurn, waitForBotApiCall } = http;
   const sends = () => acceptedCalls.filter((call) => call.method === "sendMessage");
   const uploads = () =>

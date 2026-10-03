@@ -18,6 +18,7 @@ import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import type { readLatestAssistantTextByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import type { TelegramBotDeps } from "./bot-deps.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
+import type { TelegramMessageContextOptions } from "./bot-message-context.types.js";
 import type { TelegramBotOptions } from "./bot.types.js";
 import type { TelegramNativeQuoteCandidateByMessageId } from "./bot/native-quote.js";
 import type { TelegramStreamMode } from "./bot/types.js";
@@ -30,6 +31,7 @@ import type {
 import type { createTelegramReasoningStepState } from "./reasoning-lane-coordinator.js";
 
 export type DispatchTelegramMessageParams = {
+  callbackReply?: TelegramMessageContextOptions["callbackReply"];
   context: TelegramMessageContext;
   bot: Bot;
   cfg: OpenClawConfig;

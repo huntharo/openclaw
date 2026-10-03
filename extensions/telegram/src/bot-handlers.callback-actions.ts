@@ -1,7 +1,13 @@
 import type { Message, User } from "grammy/types";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
 import { buildTelegramThreadParams, type TelegramThreadSpec } from "./bot/helpers.js";
+import { isTelegramMessageNotModifiedError } from "./network-errors.js";
+import {
+  getTelegramObservedMessageCache,
+  recordTelegramAcknowledgedMessageEdit,
+} from "./outbound-message-context.js";
 import type { TelegramQuestionCallback } from "./question-callback-data.js";
 import { buildInlineKeyboard } from "./send.js";
 
@@ -27,6 +33,8 @@ export function createTelegramCallbackMessageActions(params: {
   bot: RegisterTelegramHandlerParams["bot"];
   callbackMessage: Message;
   threadSpec: TelegramThreadSpec;
+  cfg: OpenClawConfig;
+  accountId: string;
 }) {
   const { bot, callbackMessage, threadSpec } = params;
   const callbackBusinessParams =
@@ -36,31 +44,70 @@ export function createTelegramCallbackMessageActions(params: {
   const withCallbackBusinessParams = <T extends object>(value: T) =>
     callbackBusinessParams ? { ...callbackBusinessParams, ...value } : value;
 
+  const observeEdit = async (edit: () => Promise<Message | true>) => {
+    let result: Message | true;
+    try {
+      result = await edit();
+    } catch (error) {
+      if (isTelegramMessageNotModifiedError(error)) {
+        await recordTelegramAcknowledgedMessageEdit({
+          cfg: params.cfg,
+          accountId: params.accountId,
+          chatId: callbackMessage.chat.id,
+          messageId: callbackMessage.message_id,
+          businessConnectionId: callbackMessage.business_connection_id,
+          result: true,
+        });
+      }
+      throw error;
+    }
+    await recordTelegramAcknowledgedMessageEdit({
+      cfg: params.cfg,
+      accountId: params.accountId,
+      chatId: callbackMessage.chat.id,
+      messageId: callbackMessage.message_id,
+      businessConnectionId: callbackMessage.business_connection_id,
+      result,
+    });
+    return result;
+  };
+
   const editCallbackMessage = async (text: string, editParams?: TelegramCallbackEditParams) => {
-    return await bot.api.editMessageText(
-      callbackMessage.chat.id,
-      callbackMessage.message_id,
-      text,
-      editParams ? withCallbackBusinessParams(editParams) : callbackBusinessParams,
+    return await observeEdit(() =>
+      bot.api.editMessageText(
+        callbackMessage.chat.id,
+        callbackMessage.message_id,
+        text,
+        editParams ? withCallbackBusinessParams(editParams) : callbackBusinessParams,
+      ),
     );
   };
 
   const editCallbackButtons = async (buttons: TelegramCallbackButton[][]) => {
-    return await bot.api.editMessageReplyMarkup(
-      callbackMessage.chat.id,
-      callbackMessage.message_id,
-      withCallbackBusinessParams({
-        reply_markup: buildInlineKeyboard(buttons) ?? { inline_keyboard: [] },
-      }),
+    return await observeEdit(() =>
+      bot.api.editMessageReplyMarkup(
+        callbackMessage.chat.id,
+        callbackMessage.message_id,
+        withCallbackBusinessParams({
+          reply_markup: buildInlineKeyboard(buttons) ?? { inline_keyboard: [] },
+        }),
+      ),
     );
   };
 
   const deleteCallbackMessage = async () => {
-    return callbackBusinessParams
+    const result = callbackBusinessParams
       ? await bot.api.deleteBusinessMessages(callbackBusinessParams.business_connection_id, [
           callbackMessage.message_id,
         ])
       : await bot.api.deleteMessage(callbackMessage.chat.id, callbackMessage.message_id);
+    getTelegramObservedMessageCache(params).invalidateObservedMessageCaptures({
+      accountId: params.accountId,
+      chatId: callbackMessage.chat.id,
+      messageId: String(callbackMessage.message_id),
+      businessConnectionId: callbackMessage.business_connection_id,
+    });
+    return result;
   };
 
   const replyToCallbackChat = async (text: string, replyParams?: TelegramCallbackReplyParams) => {

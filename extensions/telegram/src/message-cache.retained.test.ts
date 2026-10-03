@@ -9,17 +9,15 @@ import {
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveProviderObservedTelegramThreadSpec } from "./message-cache-codec.js";
+import { buildTelegramReplyChain } from "./message-cache-context.js";
 import {
   type PersistedTelegramMessageCacheValue,
   resolveTelegramMessageCachePersistentScopeKey,
   TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_MESSAGES,
   TELEGRAM_MESSAGE_CACHE_PERSISTENT_NAMESPACE,
 } from "./message-cache-persistence.js";
-import {
-  buildTelegramReplyChain,
-  createTelegramMessageCache,
-  type TelegramMessageCache,
-} from "./message-cache.js";
+import { registerTelegramMessageCacheBusinessDomainTests } from "./message-cache.business-domain.test-support.js";
+import { createTelegramMessageCache, type TelegramMessageCache } from "./message-cache.js";
 import { setTelegramRuntime } from "./runtime.js";
 import {
   clearTelegramRuntimeForTest,
@@ -77,6 +75,7 @@ function get(cache: TelegramMessageCache, messageId: number) {
 describe("Telegram retained message history", () => {
   let state: OpenClawTestState;
   let beforeCompare: ((key: string) => Promise<void>) | undefined;
+  let afterLookup: (() => Promise<void>) | undefined;
   let beforeMove: (() => Promise<void>) | undefined;
   let afterMove: (() => Promise<void>) | undefined;
 
@@ -101,6 +100,7 @@ describe("Telegram retained message history", () => {
   beforeEach(async () => {
     state = await createOpenClawTestState({ prefix: "telegram-history-", layout: "state-only" });
     beforeCompare = undefined;
+    afterLookup = undefined;
     beforeMove = undefined;
     afterMove = undefined;
     const openKeyedStore: TelegramRuntime["state"]["openKeyedStore"] = <T>(
@@ -115,6 +115,13 @@ describe("Telegram retained message history", () => {
       }
       return {
         ...store,
+        async lookup(key) {
+          const value = await store.lookup(key);
+          const interrupt = afterLookup;
+          afterLookup = undefined;
+          await interrupt?.();
+          return value;
+        },
         async compareAndApply(key, comparison, intent) {
           const interrupt = beforeCompare;
           beforeCompare = undefined;
@@ -140,6 +147,8 @@ describe("Telegram retained message history", () => {
     resetPluginStateStoreForTests();
     await state.cleanup();
   });
+
+  registerTelegramMessageCacheBusinessDomainTests({ scope, accountId, state: () => state });
 
   function seedFullLegacyNamespace() {
     const stores = openStores();
@@ -581,6 +590,100 @@ describe("Telegram retained message history", () => {
       scope: "direct-messages",
       id: 77,
     });
+  });
+
+  it("rejects a pending source capture when a newer keyboard wins retained admission", async () => {
+    const first = createTelegramMessageCache({ scope });
+    const second = createTelegramMessageCache({ scope });
+    const original = message(22, {
+      reply_markup: { inline_keyboard: [[{ text: "Original", callback_data: "original" }]] },
+    });
+    const newer = message(22, {
+      reply_markup: { inline_keyboard: [[{ text: "Newer", callback_data: "newer" }]] },
+    });
+    const source = first.beginObservedMessageCapture({ accountId, chatId, messageId: "22" });
+    try {
+      beforeCompare = async () => {
+        await record(second, newer);
+      };
+      const admitted = await first.record({
+        accountId,
+        chatId,
+        msg: original,
+        observationMode: "partial",
+      });
+      expect(() => source.capture(admitted, original)).toThrow("source changed");
+      expect((await get(second, 22))?.sourceMessage.reply_markup).toEqual(newer.reply_markup);
+    } finally {
+      source.dispose();
+    }
+  });
+
+  it("retires pending captures across full A-to-B-to-A publications during a retained read", async () => {
+    const first = createTelegramMessageCache({ scope });
+    const second = createTelegramMessageCache({ scope });
+    const original = message(22, {
+      edit_date: 1_736_380_720,
+      reply_markup: { inline_keyboard: [[{ text: "Original", callback_data: "original" }]] },
+    });
+    await record(first, original);
+    const source = first.beginObservedMessageCapture({ accountId, chatId, messageId: "22" });
+    try {
+      afterLookup = async () => {
+        await record(second, original);
+        await record(second, {
+          ...original,
+          reply_markup: { inline_keyboard: [[{ text: "Replacement", callback_data: "new" }]] },
+        });
+        await record(second, original);
+      };
+      const admitted = (await get(first, 22))!;
+      expect((await get(second, 22))?.sourceMessage.reply_markup).toEqual(original.reply_markup);
+      expect(() => source.capture(admitted, original)).toThrow("source changed");
+    } finally {
+      source.dispose();
+    }
+  });
+
+  it("shares active source captures while ignoring stale ancestry, and retires them on disposal", async () => {
+    const first = createTelegramMessageCache({ scope });
+    const second = createTelegramMessageCache({ scope });
+    const original = message(22, {
+      edit_date: 1_736_380_720,
+      reply_markup: { inline_keyboard: [[{ text: "Current", callback_data: "current" }]] },
+    });
+    const source = first.beginObservedMessageCapture({ accountId, chatId, messageId: "22" });
+    try {
+      source.capture(await record(first, original), original);
+      await record(
+        second,
+        message(23, {
+          reply_to_message: message(22, {
+            reply_markup: { inline_keyboard: [[{ text: "Stale", callback_data: "stale" }]] },
+          }),
+        }),
+      );
+      source.assertCurrent();
+      await record(second, {
+        ...original,
+        edit_date: 1_736_380_721,
+        reply_markup: { inline_keyboard: [] },
+      });
+      expect(() => source.assertCurrent()).toThrow("source changed");
+      await record(second, original);
+      expect(() => source.assertCurrent()).toThrow("source changed");
+    } finally {
+      source.dispose();
+    }
+    expect(() => source.assertCurrent()).toThrow("source changed");
+    const fresh = second.beginObservedMessageCapture({ accountId, chatId, messageId: "22" });
+    try {
+      const current = (await get(second, 22))!;
+      fresh.capture(current, current.sourceMessage);
+      fresh.assertCurrent();
+    } finally {
+      fresh.dispose();
+    }
   });
 
   it("merges late media against a concurrently edited canonical source", async () => {

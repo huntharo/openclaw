@@ -25,6 +25,7 @@ export type TelegramOutboundPromptContextMessage = {
   from?: TelegramOutboundPromptContextUser;
   sender_chat?: { id?: number; title?: string; username?: string };
   sender_business_bot?: TelegramOutboundPromptContextUser;
+  business_connection_id?: string;
   openclaw_prompt_context_timestamp_ms?: number;
   text?: string;
   caption?: string;
@@ -89,6 +90,21 @@ function buildOutboundCacheMessage(params: {
   };
 }
 
+/** Account-owned scope keeps callback captures and accepted send/edit observations in one bucket. */
+export function getTelegramObservedMessageCache(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  ownerAgentId?: string;
+}) {
+  return createTelegramMessageCache({
+    scope: resolveTelegramMessageCacheScope(
+      resolveStorePath(params.cfg.session?.store, {
+        agentId: params.ownerAgentId?.trim() || resolveTelegramAccountOwnerAgentId(params),
+      }),
+    ),
+  });
+}
+
 export async function recordOutboundMessageForPromptContext(params: {
   cfg: OpenClawConfig;
   account: TelegramOutboundPromptContextAccount;
@@ -115,17 +131,10 @@ export async function recordOutboundMessageForPromptContext(params: {
       ...params,
       ...(messageThreadId !== undefined ? { messageThreadId } : {}),
     });
-    const cache = createTelegramMessageCache({
-      scope: resolveTelegramMessageCacheScope(
-        resolveStorePath(params.cfg.session?.store, {
-          agentId:
-            params.ownerAgentId?.trim() ||
-            resolveTelegramAccountOwnerAgentId({
-              cfg: params.cfg,
-              accountId: params.account.accountId,
-            }),
-        }),
-      ),
+    const cache = getTelegramObservedMessageCache({
+      cfg: params.cfg,
+      accountId: params.account.accountId,
+      ownerAgentId: params.ownerAgentId,
     });
     await cache.record({
       accountId: params.account.accountId,
@@ -148,4 +157,33 @@ export async function recordOutboundMessageForPromptContext(params: {
     logVerbose(`telegram: failed to record outbound message context: ${String(error)}`);
     return false;
   }
+}
+
+/** Acknowledged callback edits share the observed-message owner with ordinary outbound replies. */
+export async function recordTelegramAcknowledgedMessageEdit(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  chatId: string | number;
+  messageId: number;
+  businessConnectionId?: string;
+  result: Message | true;
+}) {
+  if (params.result === true) {
+    getTelegramObservedMessageCache(params).invalidateObservedMessageCaptures({
+      accountId: params.accountId,
+      chatId: params.chatId,
+      messageId: String(params.messageId),
+      businessConnectionId: params.businessConnectionId,
+    });
+    return;
+  }
+  await recordOutboundMessageForPromptContext({
+    cfg: params.cfg,
+    account: { accountId: params.accountId },
+    chatId: params.chatId,
+    message: params.result,
+    messageId: params.result.message_id,
+    ...(params.result.from?.id !== undefined ? { botUserId: params.result.from.id } : {}),
+    successfulSendThread: resolveTelegramProviderObservedThreadSpec({ message: params.result }),
+  });
 }

@@ -2,6 +2,10 @@
  * Runtime SDK subpath for conversation binding routes and session binding records.
  */
 export {
+  readConversationBindingRouteObservations,
+  matchesConversationBindingRouteFacts,
+} from "../channels/conversation-binding-route-facts.js";
+export {
   ensureConfiguredBindingRouteReady,
   resolveConfiguredBindingRoute,
   type ConfiguredBindingRouteResult,
@@ -11,7 +15,9 @@ export {
   type RuntimeConversationBindingRouteResult,
 } from "../channels/plugins/binding-routing.js";
 export {
+  type ConversationRef,
   type SessionBindingRecord,
+  capturePureSessionBindingAdapterSelection,
   getSessionBindingService,
 } from "../infra/outbound/session-binding-service.js";
 export { isPluginOwnedSessionBindingRecord } from "../plugins/conversation-binding-metadata.js";

@@ -2,6 +2,7 @@
  * Runtime SDK subpath for config snapshot and config cache access.
  */
 export {
+  captureRuntimeConfigPublicationCurrent,
   clearRuntimeConfigSnapshot,
   createRuntimeConfigReader,
   getRuntimeConfigSnapshot,

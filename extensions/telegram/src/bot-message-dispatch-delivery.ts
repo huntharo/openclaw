@@ -16,6 +16,7 @@ import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime
 import { copyReplyPayloadMetadata, type ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { isSingleUseReplyToMode } from "openclaw/plugin-sdk/reply-reference";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
+import { deliverTelegramCallbackReply } from "./bot-message-dispatch-callback.js";
 import {
   resetLaneState,
   rotateAnswerLaneAfterQueuedBlocksSettle,
@@ -197,6 +198,9 @@ export async function sendPayload(
         mediaLocalRoots: getAgentScopedMediaLocalRoots(sourceTurn.cfg, deliverySession.agentId),
       }
     : sourceTurn;
+  if (turn.callbackReply) {
+    return await deliverTelegramCallbackReply(turn, payload, turn.callbackReply);
+  }
   const targetedPayload = applyQuoteReplyTarget(turn, payload);
   const finalReplyTargetId = resolveTelegramReplyId(targetedPayload.replyToId);
   const targetsDifferentMessage =

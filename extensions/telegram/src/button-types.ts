@@ -21,6 +21,10 @@ import {
   sanitizeTelegramCallbackData,
 } from "./approval-callback-data.js";
 import {
+  buildTelegramModelPickerCallbackData,
+  hasTelegramModelPickerCallbackPrefix,
+} from "./model-picker-callback-data.js";
+import {
   buildTelegramNativeCommandCallbackData,
   buildTelegramOpaqueCallbackData,
 } from "./native-command-callback-data.js";
@@ -109,7 +113,7 @@ function toTelegramInlineButton(
   options?: TelegramButtonBuildOptions,
 ): TelegramInlineButton | undefined {
   const style = toTelegramButtonStyle(button.style);
-  const action = resolveMessagePresentationButtonAction(button);
+  const action = resolveMessagePresentationButtonAction(button, { modelPicker: true });
   if (!action) {
     return recordDroppedControl(button, options, "invalid_action");
   }
@@ -129,6 +133,9 @@ function toTelegramInlineButton(
     data
       ? { text: button.label, callback_data: data, style }
       : recordDroppedControl(button, options, reason, candidate);
+  if (action.type === "model-picker") {
+    return callbackButton(buildTelegramModelPickerCallbackData(action));
+  }
   if (action.type === "approval") {
     return callbackButton(buildTelegramApprovalCallbackData(action));
   }
@@ -171,6 +178,7 @@ function toTelegramInlineButton(
   const normalizedCallbackValue = action.value.trim();
   const needsOpaqueEnvelope =
     Boolean(button.action) ||
+    hasTelegramModelPickerCallbackPrefix(normalizedCallbackValue) ||
     hasTelegramApprovalCallbackPrefix(normalizedCallbackValue) ||
     hasTelegramQuestionCallbackPrefix(normalizedCallbackValue);
   const callbackDataCandidate = needsOpaqueEnvelope

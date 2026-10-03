@@ -45,12 +45,68 @@ generic `:thread:` bookkeeping, and dispatch. For configured agent group
 threads, core also owns participant selection, follow-up rounds, and turn
 budgets. Keep those policies out of channel adapters.
 
-Core also owns model-picker product actions. A channel that renders a
-`ModelPickerAction` declares its `ModelPickerCapabilityProfile`, then encodes
-the typed action in a transport-private authenticated callback envelope. Keep
+Core also owns command and model menus. Opt in with
+`outbound.presentationCapabilities.modelPicker: true` and render
+`ReplyPayload.presentation` through the existing outbound renderer. Derive
+`ModelPickerCapabilityProfile` with `createModelPickerCapabilityProfile` from
+that exact held capability object; do not declare a second command capability.
+The existing dynamic `resolvePresentationCapabilities` owns account and
+formatting differences. Core model-menu producers use its effective account
+capabilities, with the exact static declaration as fallback. Accounts without
+buttons retain model IDs and usable text browsing through canonical commands.
+
+Channel turn plans may carry optional `commandSelectionCurrent` restrictions
+from the original callback admission. The host composes them with its own
+initial config and conversation-route checks before awaited preparation and at
+the existing commit boundary. They never replace actor authorization, grant a
+role, or make an absent constraint authoritative. A no-op channel predicate
+cannot bypass the host's checks.
+
+Bundled channels can use the existing private `conversation-binding-runtime`
+barrel to read route observations, compare them with current binding records,
+and capture an exact registered adapter's pure in-memory selection. Those
+read-only facts are routing observations, not user authorization. Captures
+invalidate when the admitted adapter is replaced or closed and never use the
+generic SQLite fallback. Adapters without a pure projection retain their
+existing async flow; these captures do not prove unobserved foreign commits.
+Telegram supplies its lifecycle-owned binding Map projection and preserves the
+original observations across canonical command admission.
+
+Encode `ModelPickerAction` in a transport-private callback envelope. Keep
 approval, command, URL, web-app, question, callback, and model-picker actions
 distinguishable until that encoding boundary; never infer picker intent from a
 raw callback string. Actor and source-message checks remain channel-owned.
+
+Use `buildPreparedModelsProviderData` from
+`openclaw/plugin-sdk/models-provider-runtime` to obtain current admitted
+catalog facts, including runtime choices. Pass rows with `provider`, `id`,
+optional `name`, and optional `runtimes` to the pure
+`buildModelPickerPresentation` and `resolveModelPickerAction` exports in
+`openclaw/plugin-sdk/interactive-runtime`. An undefined runtime list is
+unknown; an empty list refuses selection. Snapshot and selection tokens are
+at most 12 ASCII characters. They identify facts and confer no authority.
+
+Resolve each callback against a freshly admitted catalog. A changed snapshot,
+ambiguous identity, removed model/runtime, or unrepresentable command reference
+returns `{ kind: "unavailable" }`; display a visible instruction to reopen
+`/models`. A successful result contains a typed command action. Send it
+through canonical inbound command processing so the current agent route,
+permissions, model policy, and session mutation remain with their existing
+owners. Revalidate current channel actor, config, route, and source-message
+authority after awaited work and before transport edits.
+
+Portable pagination uses `/commands <page>`, `/models page=<page>`, and
+`/models list <provider> <page>`. Runtime navigation uses
+`/models runtimes <provider/model>`; selection uses
+`/model <provider/model> --runtime <runtime> -s`. Provider ids containing
+slashes and references containing whitespace or `@` cannot be represented
+by the existing command grammar and remain visibly unavailable.
+
+The six legacy `commands.build*ChannelData` hooks remain available without
+signature or fallback changes for plugins that do not opt in, throughout every
+2026 release. Their removal requires an explicitly approved breaking SDK
+release in 2027 or later. Keep transport-only decoding for already delivered
+controls, or provide a visible terminal response when retiring them.
 
 ## Return to the source conversation
 

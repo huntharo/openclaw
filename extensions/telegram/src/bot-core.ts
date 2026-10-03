@@ -378,6 +378,7 @@ export async function createTelegramBotCore(
         }),
       })
     : null;
+  const inspectUnboundConversation = () => null;
   const disabledBindingAdapter: SessionBindingAdapter | undefined = threadBindingManager
     ? undefined
     : {
@@ -385,7 +386,8 @@ export async function createTelegramBotCore(
         accountId: account.accountId,
         capabilities: { bindSupported: false, unbindSupported: false, placements: [] },
         listBySession: () => [],
-        resolveByConversation: () => null,
+        inspectByConversation: inspectUnboundConversation,
+        resolveByConversation: inspectUnboundConversation,
       };
   bot.stop = (async (...args: Parameters<typeof originalStop>) => {
     if (disabledBindingAdapter) {

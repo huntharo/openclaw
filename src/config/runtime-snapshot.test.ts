@@ -11,6 +11,8 @@ import {
   setConfigResolutionFacts,
 } from "./resolution-facts.js";
 import {
+  captureRuntimeConfigPublicationCurrent,
+  clearRuntimeConfigSnapshot,
   createRuntimeConfigReader,
   finalizeRuntimeSnapshotWrite,
   getRuntimeConfigAppliedHash,
@@ -42,6 +44,51 @@ function resetRuntimeConfigState(): void {
 describe("runtime snapshot state", () => {
   afterEach(() => {
     resetRuntimeConfigState();
+  });
+
+  it.each(["same object", "replacement", "source only", "clear and restart"] as const)(
+    "invalidates held publication reads after %s publication",
+    (change) => {
+      const runtime: OpenClawConfig = { gateway: { port: 18789 } };
+      const source: OpenClawConfig = { gateway: { port: 18789 } };
+      setRuntimeConfigSnapshot(runtime, source);
+      const frozen = captureRuntimeConfig(runtime);
+      const held = captureRuntimeConfigPublicationCurrent(frozen);
+      const heldSource = captureRuntimeConfigPublicationCurrent(source);
+      expect(held?.()).toBe(true);
+      expect(heldSource?.()).toBe(true);
+      if (change === "source only") {
+        expect(
+          setRuntimeConfigSourceSnapshotIfCurrent({
+            expectedRevision: getRuntimeConfigSnapshotMetadata()!.revision,
+            sourceConfig: { gateway: { port: 19001 } },
+          }),
+        ).toBe(true);
+      } else if (change === "clear and restart") {
+        clearRuntimeConfigSnapshot();
+        setRuntimeConfigSnapshot(runtime, source);
+      } else {
+        setRuntimeConfigSnapshot(change === "replacement" ? { ...runtime } : runtime, source);
+      }
+      expect(held?.()).toBe(false);
+      expect(heldSource?.()).toBe(false);
+      // A delayed caller cannot turn the frozen read into a newer publication.
+      expect(captureRuntimeConfigPublicationCurrent(frozen)?.()).toBe(false);
+      expect(captureRuntimeConfigPublicationCurrent(getRuntimeConfigSnapshot()!)?.()).toBe(true);
+    },
+  );
+
+  it("does not invent publication facts for copied, scoped, or unrelated reads", () => {
+    const runtime: OpenClawConfig = { gateway: { port: 18789 } };
+    setRuntimeConfigSnapshot(runtime);
+    for (const config of [
+      structuredClone(runtime),
+      { ...runtime, tools: { updatePlan: true } },
+      {},
+    ]) {
+      expect(captureRuntimeConfigPublicationCurrent(config)).toBeUndefined();
+      expect(captureRuntimeConfigPublicationCurrent(captureRuntimeConfig(config))).toBeUndefined();
+    }
   });
 
   it.each<[string, OpenClawConfig, string]>([

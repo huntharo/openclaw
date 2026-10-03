@@ -4,6 +4,7 @@ import {
   acquireEffectiveToolInventoryRuntimeModelContext,
 } from "../../agents/tools-effective-inventory.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
+import { createModelPickerCapabilityProfile } from "../../model-picker/menu.js";
 import {
   prepareSkillCommandsForAgents,
   resolveSkillCommandInvocation,
@@ -59,17 +60,26 @@ export const handleHelpCommand: CommandHandler = defineAuthorizedTextCommand(
 export const handleCommandsListCommand: CommandHandler = defineAuthorizedTextCommand(
   {
     label: "/commands",
-    match: (body) => (body === "/commands" ? true : null),
+    match: (body) => {
+      const match = /^\/commands(?: ([1-9][0-9]{0,5}))?$/u.exec(body);
+      return match ? Number(match[1] ?? 1) : null;
+    },
     silentUnauthorized: true,
   },
-  async (params) => {
+  async (params, page) => {
     const skillCommands = await resolveSkillCommands(params);
     const surface = params.ctx.Surface;
     const commandPlugin = surface ? getChannelPlugin(surface) : null;
     const paginated = buildCommandsMessagePaginated(params.cfg, skillCommands, {
-      page: 1,
+      page,
       surface,
     });
+    if (createModelPickerCapabilityProfile(commandPlugin?.outbound?.presentationCapabilities)) {
+      return {
+        shouldContinue: false,
+        reply: { text: paginated.text, presentation: paginated.presentation },
+      };
+    }
     const channelData = commandPlugin?.commands?.buildCommandsListChannelData?.({
       currentPage: paginated.currentPage,
       totalPages: paginated.totalPages,

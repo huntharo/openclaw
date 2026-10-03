@@ -152,23 +152,6 @@ export function resolveModelSelection(params: {
       };
 }
 
-export function resolveModelListCallback(params: {
-  callback: Extract<ParsedModelCallback, { type: "list" | "list-ref" }>;
-  providers: readonly string[];
-}): { provider: string; page: number } | undefined {
-  const { callback } = params;
-  if (callback.type === "list") {
-    return { provider: callback.provider, page: callback.page };
-  }
-  const matches = params.providers.filter(
-    (provider) => hashOpaqueCallback("provider", provider) === callback.digest,
-  );
-  const [provider] = matches;
-  return matches.length === 1 && provider !== undefined
-    ? { provider, page: callback.page }
-    : undefined;
-}
-
 export function buildProviderKeyboard(providers: ProviderInfo[]): ButtonRow[] {
   const rows: ButtonRow[] = [];
   for (const [index, provider] of providers.entries()) {

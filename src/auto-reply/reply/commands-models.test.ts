@@ -6,11 +6,14 @@ import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-su
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import * as preparedCatalog from "../../agents/prepared-model-catalog.js";
 import { bindPreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
+import { getChannelPlugin } from "../../channels/plugins/index.js";
+import { renderPresentationForDelivery } from "../../channels/plugins/outbound/presentation-delivery.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import type { ProviderCatalogOutcome } from "../../plugins/provider-catalog-outcome.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { createChannelTestPluginBase } from "../../test-utils/channel-plugins.js";
 import { buildPreparedModelsProviderData } from "./commands-models-catalog.js";
 import { handleModelsCommand } from "./commands-models.js";
 import {
@@ -176,6 +179,126 @@ function buildParams(
 }
 
 describe("handleModelsCommand", () => {
+  it("delivers portable controls through a registered non-Telegram renderer", async () => {
+    const registry = createModelsTestRegistry();
+    registry.channels.push({
+      pluginId: "portable",
+      source: "test",
+      plugin: {
+        ...createChannelTestPluginBase({ id: "portable" }),
+        outbound: {
+          deliveryMode: "direct",
+          presentationCapabilities: {
+            supported: true,
+            buttons: true,
+            modelPicker: true,
+            limits: { actions: { maxValueBytes: 64, maxActionsPerRow: 3 } },
+          },
+          renderPresentation: ({ payload, presentation }) => ({
+            ...payload,
+            channelData: {
+              portable: {
+                actions: presentation.blocks.flatMap((block) =>
+                  block.type === "buttons" ? block.buttons.map((button) => button.action) : [],
+                ),
+              },
+            },
+          }),
+        },
+      },
+    });
+    setActivePluginRegistry(registry);
+    const params = buildParams("/models");
+    params.ctx.Surface = "portable";
+    const result = await handleModelsCommand(params, true);
+    const reply = expectDefined(result?.reply, "expected model reply");
+    expect(reply.presentation).toBeDefined();
+    expect(reply.channelData).toBeUndefined();
+    const outbound = expectDefined(
+      getChannelPlugin("portable")?.outbound,
+      "expected registered outbound adapter",
+    );
+    const rendered = await renderPresentationForDelivery(
+      {
+        presentationCapabilities: outbound.presentationCapabilities,
+        renderPresentation: (payload) =>
+          outbound.renderPresentation?.({
+            payload,
+            presentation: payload.presentation,
+            ctx: { cfg: params.cfg, to: "fixture-user", text: payload.text ?? "", payload },
+          }) ?? null,
+      },
+      reply,
+    );
+    expect(rendered.text).toContain("Providers:");
+    expect(rendered.channelData?.portable).toMatchObject({
+      actions: expect.arrayContaining([
+        expect.objectContaining({ type: "model-picker", intent: "show-models" }),
+      ]),
+    });
+
+    params.command.commandBodyNormalized = "/models anthropic";
+    const models = await handleModelsCommand(params, true);
+    expect(
+      models?.reply?.text?.match(/Anthropic models can use the API or Claude CLI\./gu),
+    ).toHaveLength(1);
+    expect(
+      models?.reply?.presentation?.blocks.flatMap((block) =>
+        block.type === "buttons" ? block.buttons : [],
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "✓ Claude Opus",
+          action: expect.objectContaining({ type: "model-picker", intent: "choose-model" }),
+        }),
+      ]),
+    );
+    params.command.commandBodyNormalized = "/models runtimes anthropic/claude-opus-4-5";
+    const runtimes = await handleModelsCommand(params, true);
+    expect(runtimes?.reply?.text).toContain("Choose a runtime for anthropic/claude-opus-4-5:");
+    expect(
+      runtimes?.reply?.presentation?.blocks.flatMap((block) =>
+        block.type === "buttons" ? block.buttons : [],
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: expect.objectContaining({ type: "model-picker", intent: "choose-runtime" }),
+        }),
+      ]),
+    );
+
+    const providerIds = Array.from({ length: 9 }, (_, index) => "provider-" + index);
+    setCredentials(["anthropic", ...providerIds]);
+    modelCatalogMocks.loadModelCatalog.mockReturnValue([
+      { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
+      ...providerIds.map((provider) => ({ provider, id: "fixture-model", name: "Fixture model" })),
+    ]);
+    params.command.commandBodyNormalized = "/models page=2";
+    const secondPage = await handleModelsCommand(params, true);
+    expect(secondPage?.reply?.text).not.toContain("Unknown provider");
+    expect(secondPage?.reply?.presentation?.blocks).toContainEqual({
+      type: "context",
+      text: expect.stringMatching(/^Page 2\/[2-9][0-9]*$/u),
+    });
+    expect(
+      secondPage?.reply?.presentation?.blocks.flatMap((block) =>
+        block.type === "buttons" ? block.buttons : [],
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "Previous",
+          action: expect.objectContaining({
+            type: "command",
+            command: "/models page=1",
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("shows the providers published by the prepared owner", async () => {
     pluginMetadataMocks.getCurrent.mockReturnValue(createPluginMetadataSnapshotFixture());
     const result = await handleModelsCommand(buildParams("/models"), true);

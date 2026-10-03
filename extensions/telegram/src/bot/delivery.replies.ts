@@ -8,7 +8,6 @@ import {
   type MessageReceipt,
 } from "openclaw/plugin-sdk/channel-outbound";
 import type { MarkdownTableMode, ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
-import type { ReplyPayloadDelivery } from "openclaw/plugin-sdk/interactive-runtime";
 import { normalizeMessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 import {
   buildOutboundMediaLoadOptions,
@@ -34,6 +33,7 @@ import {
   resolveTelegramOutboundMediaSenders,
   type TelegramOutboundMediaSender,
 } from "../outbound-media.js";
+import { recordTelegramAcknowledgedMessageEdit } from "../outbound-message-context.js";
 import type { TelegramPromptContextProjectionSequence } from "../prompt-context-projection.js";
 import { buildTelegramSendParams } from "../reply-parameters.js";
 import { TELEGRAM_RICH_TEXT_LIMIT } from "../rich-message.js";
@@ -60,6 +60,7 @@ import {
   type TelegramTextDeliveryPage,
 } from "../telegram-text-delivery.js";
 import { emitTelegramMessageSentHooks } from "./delivery.hooks.js";
+import { maybePinFirstDeliveredMessage } from "./delivery.pin.js";
 import { resolveTelegramReplyId, type TelegramThreadSpec } from "./helpers.js";
 import {
   resolveReplyQuoteForSend,
@@ -221,6 +222,8 @@ async function deliverMediaReply(
     reply: ReplyPayload;
     mediaList: string[];
     bot: Bot;
+    cfg: import("openclaw/plugin-sdk/config-contracts").OpenClawConfig;
+    accountId: string;
     tableMode?: MarkdownTableMode;
     mediaLocalRoots?: readonly string[];
     mediaMaxBytes?: number;
@@ -493,8 +496,19 @@ async function deliverMediaReply(
         }
         visibleFallbackText = firstDeliveredCaption ?? "";
         if (params.replyMarkup && firstDeliveredMessageId !== undefined) {
-          await params.bot.api.editMessageReplyMarkup(params.chatId, firstDeliveredMessageId, {
-            reply_markup: params.replyMarkup,
+          const result = await params.bot.api.editMessageReplyMarkup(
+            params.chatId,
+            firstDeliveredMessageId,
+            {
+              reply_markup: params.replyMarkup,
+            },
+          );
+          await recordTelegramAcknowledgedMessageEdit({
+            cfg: params.cfg,
+            accountId: params.accountId,
+            chatId: params.chatId,
+            messageId: firstDeliveredMessageId,
+            result,
           });
         }
       }
@@ -509,31 +523,6 @@ async function deliverMediaReply(
     await deliverMediaBatch(batch);
   }
   return { firstDeliveredMessageId, visibleFallbackText, mediaUrls };
-}
-
-async function maybePinFirstDeliveredMessage(params: {
-  pin: ReplyPayloadDelivery["pin"];
-  bot: Bot;
-  chatId: string;
-  firstDeliveredMessageId?: number;
-}): Promise<void> {
-  const shouldPin = params.pin === true || (typeof params.pin === "object" && params.pin.enabled);
-  if (!shouldPin || typeof params.firstDeliveredMessageId !== "number") {
-    return;
-  }
-  const notify = typeof params.pin === "object" && params.pin.notify === true;
-  try {
-    await params.bot.api.pinChatMessage(params.chatId, params.firstDeliveredMessageId, {
-      disable_notification: !notify,
-    });
-  } catch (err) {
-    if (typeof params.pin === "object" && params.pin.required === true) {
-      throw err;
-    }
-    logVerbose(
-      `telegram pinChatMessage failed chat=${params.chatId} message=${params.firstDeliveredMessageId}: ${formatErrorMessage(err)}`,
-    );
-  }
 }
 
 type DeliverRepliesParams = {
@@ -830,6 +819,8 @@ async function deliverReplyPlan(
         firstDeliveredMessageId = await deliverTextReply(textReply);
       } else if (mediaList.length > 0) {
         const mediaDelivery = await deliverMediaReply({
+          cfg: params.cfg ?? { channels: { telegram: { botToken: params.token } } },
+          accountId: params.accountId ?? "default",
           ...textReply,
           reply,
           mediaList,

@@ -44,14 +44,14 @@ import {
   type TelegramReplyChainEntry,
 } from "./message-cache-codec.js";
 import {
+  buildTelegramConversationContext,
+  buildTelegramReplyChain,
+} from "./message-cache-context.js";
+import {
   resolveTelegramMessageCacheScope,
   type TelegramResolvedMedia,
 } from "./message-cache-persistence.js";
-import {
-  buildTelegramConversationContext,
-  buildTelegramReplyChain,
-  createTelegramMessageCache,
-} from "./message-cache.js";
+import { createTelegramMessageCache } from "./message-cache.js";
 import { resolveCompleteTelegramPromptContextProjectionIds } from "./prompt-context-projection.js";
 
 function legacyAssistantTextKey(node: TelegramCachedMessageNode, botUserId?: number) {
@@ -73,6 +73,7 @@ function legacyAssistantTextKey(node: TelegramCachedMessageNode, botUserId?: num
 export type TelegramPromptContextMessageSelection = ReadonlyMap<string, "include" | "exclude">;
 
 export type TelegramSessionState = {
+  route: Awaited<ReturnType<typeof resolveTelegramConversationRoute>>["route"];
   agentId: string;
   bindingMode: Awaited<ReturnType<typeof resolveTelegramConversationRoute>>["bindingMode"];
   sessionEntry: SessionEntry | undefined;
@@ -233,6 +234,7 @@ export function createTelegramMessageSessionRuntime({
     const model = entry?.model?.trim();
     const modelCfg = params.runtimeCfg.agents?.defaults?.model;
     return {
+      route,
       agentId: route.agentId,
       bindingMode,
       sessionEntry: entry,
@@ -334,6 +336,7 @@ export function createTelegramMessageContextRuntime({
     messageCache.recordResolvedMedia({
       accountId,
       chatId: params.msg.chat.id,
+      businessConnectionId: params.msg.business_connection_id,
       messageId: String(params.msg.message_id),
       media: params.media,
       ...(params.botUserId !== undefined ? { botUserId: params.botUserId } : {}),
@@ -341,6 +344,7 @@ export function createTelegramMessageContextRuntime({
 
   const recordReplyMessageResolvedMedia = async (params: {
     chatId: string | number;
+    businessConnectionId?: string;
     messageId: string;
     media: TelegramResolvedMedia;
     botUserId?: number;
@@ -348,6 +352,7 @@ export function createTelegramMessageContextRuntime({
     const cachedNode = await messageCache.get({
       accountId,
       chatId: params.chatId,
+      businessConnectionId: params.businessConnectionId,
       messageId: params.messageId,
     });
     if (!cachedNode) {
@@ -356,6 +361,7 @@ export function createTelegramMessageContextRuntime({
     await messageCache.recordResolvedMedia({
       accountId,
       chatId: params.chatId,
+      businessConnectionId: params.businessConnectionId,
       messageId: params.messageId,
       media: params.media,
       ...(params.botUserId !== undefined ? { botUserId: params.botUserId } : {}),
@@ -459,7 +465,12 @@ export function createTelegramMessageContextRuntime({
       return [];
     }
     const messageId = typeof msg.message_id === "number" ? String(msg.message_id) : undefined;
-    const currentNode = await messageCache.get({ accountId, chatId: msg.chat.id, messageId });
+    const currentNode = await messageCache.get({
+      accountId,
+      chatId: msg.chat.id,
+      businessConnectionId: msg.business_connection_id,
+      messageId,
+    });
     const threadId =
       options?.threadSpec?.id ?? (currentNode?.threadId ? Number(currentNode.threadId) : undefined);
     const historyScope = {
@@ -467,6 +478,7 @@ export function createTelegramMessageContextRuntime({
       cfg: runtimeCfg,
       accountId,
       chatId: msg.chat.id,
+      businessConnectionId: msg.business_connection_id,
       ...(Number.isFinite(threadId) ? { threadId } : {}),
       botUserId: ctx.me?.id ?? opts.botInfo?.id,
     };
@@ -475,6 +487,7 @@ export function createTelegramMessageContextRuntime({
       messageId,
       accountId,
       chatId: msg.chat.id,
+      businessConnectionId: msg.business_connection_id,
       ...(Number.isFinite(threadId) ? { threadId } : {}),
       replyChainNodes,
       recentLimit: isGroup ? 0 : dmHistoryLimit,
@@ -519,6 +532,7 @@ export function createTelegramMessageContextRuntime({
       const node = await messageCache.get({
         accountId,
         chatId: msg.chat.id,
+        businessConnectionId: msg.business_connection_id,
         messageId: selectedMessageId,
       });
       if (

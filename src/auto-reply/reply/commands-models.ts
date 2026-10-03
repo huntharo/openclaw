@@ -14,14 +14,25 @@ import {
 } from "../../agents/prepared-model-runtime.errors.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  buildModelPickerPresentation,
+  createModelPickerCapabilityProfile,
+  type ModelPickerCatalog,
+} from "../../model-picker/menu.js";
 import type { ReplyPayload } from "../types.js";
+import { resolveCommandPresentationCapabilities } from "./channel-context.js";
 import { defineAuthorizedTextCommand } from "./command-gates.js";
 import {
   loadModelsProviderData,
   type ModelsCommandSessionEntry,
   type PreparedModelsProviderData,
 } from "./commands-models-catalog.js";
-import type { ModelsProviderMenu } from "./commands-models-menu.js";
+import {
+  buildModelsProviderMenuReply,
+  buildModelsMenuText,
+  buildModelsAvailabilityText,
+  type ModelsProviderMenu,
+} from "./commands-models-menu.js";
 import type { CommandHandler } from "./commands-types.js";
 
 const PAGE_SIZE_DEFAULT = 20;
@@ -32,7 +43,8 @@ export const MODEL_PICKER_CHANGED_MESSAGE =
   "Available models changed. Open /models and choose again.";
 
 type ParsedModelsCommand =
-  | { action: "providers" }
+  | { action: "providers"; page: number }
+  | { action: "runtimes"; provider: string; model: string }
   | {
       action: "list";
       provider?: string;
@@ -90,14 +102,29 @@ function parseListArgs(tokens: string[]): Extract<ParsedModelsCommand, { action:
 function parseModelsArgs(raw: string): ParsedModelsCommand {
   const trimmed = raw.trim();
   if (!trimmed) {
-    return { action: "providers" };
+    return { action: "providers", page: 1 };
   }
 
   const tokens = trimmed.split(/\s+/g).filter(Boolean);
   const first = normalizeLowercaseStringOrEmpty(tokens[0]);
+  if (first.startsWith("page=")) {
+    return { action: "providers", page: parseStrictPositiveInteger(first.slice(5)) ?? 1 };
+  }
   switch (first) {
     case "providers":
-      return { action: "providers" };
+      return {
+        action: "providers",
+        page: parseStrictPositiveInteger(tokens[1]?.replace(/^page=/u, "")) ?? 1,
+      };
+    case "runtimes": {
+      const ref = tokens[1] ?? "";
+      const slash = ref.indexOf("/");
+      return {
+        action: "runtimes",
+        provider: slash > 0 ? normalizeProviderId(ref.slice(0, slash)) : "",
+        model: slash > 0 ? ref.slice(slash + 1) : "",
+      };
+    }
     case "list":
       return parseListArgs(tokens.slice(1));
     case "add":
@@ -159,25 +186,11 @@ export function formatModelsAvailableHeader(params: {
     .join("\n\n");
 }
 
-function buildModelsMenuText(params: {
-  providers: string[];
-  byProvider: ReadonlyMap<string, ReadonlySet<string>>;
-}): string {
-  return [
-    "Providers:",
-    ...params.providers.map(
-      (provider) => `- ${provider} (${params.byProvider.get(provider)?.size ?? 0})`,
-    ),
-    "",
-    "Use: /models <provider>",
-    "Switch: /model <provider/model>",
-  ].join("\n");
-}
-
 type ModelsCommandReplyParams = {
   cfg: OpenClawConfig;
   commandBodyNormalized: string;
   surface?: string;
+  accountId?: string;
   currentModel?: string;
   agentId?: string;
   agentDir?: string;
@@ -219,6 +232,9 @@ export async function resolveModelsCommandReply(
     }
     throw error;
   }
+  if (data.isCurrent?.() === false) {
+    return { text: MODEL_PICKER_CHANGED_MESSAGE };
+  }
   const reply = buildModelsCommandReply(params, parsed, data);
   return { ...reply, text: [data.refreshWarning, reply.text].filter(Boolean).join("\n\n") };
 }
@@ -229,32 +245,50 @@ function buildModelsCommandReply(
   data: PreparedModelsProviderData,
 ): ReplyPayload & { text: string } {
   const { byProvider, providers } = data;
-  const availability =
-    parsed.action === "list" && parsed.provider
-      ? data.modelMenu?.byProvider.get(parsed.provider)
-      : undefined;
+  const { availability, notice, checking } = buildModelsAvailabilityText(
+    data,
+    parsed.action === "list" ? parsed.provider : undefined,
+  );
   const modelNames = data.modelMenu?.modelNames ?? data.modelNames;
-  const notice =
-    parsed.action === "list" && parsed.provider
-      ? availability?.notice
-      : [...(data.modelMenu?.byProvider.values() ?? [])]
-          .map((provider) => provider.notice)
-          .filter(Boolean)
-          .join("\n");
-  const checking = data.pendingProviders
-    ?.filter(
-      (provider) => parsed.action !== "list" || !parsed.provider || parsed.provider === provider,
-    )
-    .map((provider) => `${provider}: checking models…`)
-    .join("\n");
   const withAvailability = (text: string) => [text, notice, checking].filter(Boolean).join("\n\n");
   const commandPlugin = params.surface ? getChannelPlugin(params.surface) : null;
+  const capabilityProfile = createModelPickerCapabilityProfile(
+    resolveCommandPresentationCapabilities(params),
+  );
+  const pickerCatalog: ModelPickerCatalog = capabilityProfile
+    ? providers.flatMap((provider) =>
+        [...(byProvider.get(provider) ?? [])].map((id) => ({
+          provider,
+          id,
+          name: modelNames.get(provider + "/" + id),
+          runtimes: data.runtimeChoicesByModel?.get(provider + "/" + id),
+        })),
+      )
+    : [];
+  const presentation = (provider?: string, model?: string, page?: number) =>
+    capabilityProfile
+      ? buildModelPickerPresentation({
+          catalog: pickerCatalog,
+          capabilityProfile,
+          currentModel: params.currentModel,
+          provider,
+          model,
+          page,
+        })
+      : undefined;
   const providerInfos = providers.map((provider) => ({
     id: provider,
     count: byProvider.get(provider)?.size ?? 0,
   }));
 
   const providerMenuReply = (preferMenu: boolean): ReplyPayload & { text: string } => {
+    if (capabilityProfile) {
+      return buildModelsProviderMenuReply(data, {
+        catalog: pickerCatalog,
+        capabilityProfile,
+        page: parsed.action === "providers" ? parsed.page : 1,
+      });
+    }
     const channelData =
       (preferMenu
         ? commandPlugin?.commands?.buildModelsMenuChannelData?.({ providers: providerInfos })
@@ -279,6 +313,24 @@ function buildModelsCommandReply(
 
   if (parsed.action === "add") {
     return { text: MODELS_ADD_DEPRECATED_TEXT };
+  }
+
+  if (parsed.action === "runtimes") {
+    const ref = parsed.provider + "/" + parsed.model;
+    const choices = data.runtimeChoicesByModel?.get(ref);
+    if (!byProvider.get(parsed.provider)?.has(parsed.model) || !choices?.length) {
+      return { text: MODEL_PICKER_CHANGED_MESSAGE };
+    }
+    return {
+      text: [
+        "Choose a runtime for " + ref + ":",
+        ...choices.map(
+          (choice) => choice.label + (choice.description ? " — " + choice.description : ""),
+        ),
+        "Switch: /model " + ref + " --runtime <runtime> -s",
+      ].join("\n"),
+      presentation: presentation(parsed.provider, parsed.model),
+    };
   }
 
   const { provider, page, pageSize, all } = parsed;
@@ -314,6 +366,15 @@ function buildModelsCommandReply(
         "Browse: /models",
         "Switch: /model <provider/model>",
       ].join("\n"),
+    };
+  }
+
+  if (capabilityProfile) {
+    return {
+      text: [formatModelsAvailableHeader({ ...params, provider, total, availability }), checking]
+        .filter(Boolean)
+        .join("\n\n"),
+      presentation: presentation(provider, undefined, page),
     };
   }
 
@@ -411,6 +472,7 @@ export const handleModelsCommand: CommandHandler = defineAuthorizedTextCommand(
       cfg: params.cfg,
       commandBodyNormalized,
       surface: params.ctx.Surface,
+      accountId: params.ctx.AccountId,
       currentModel: params.model ? `${params.provider}/${params.model}` : undefined,
       agentId: modelsAgentId,
       agentDir: modelsAgentDir,

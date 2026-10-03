@@ -3,9 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildTelegramConversationContext,
   buildTelegramReplyChain,
-  createTelegramMessageCache,
-  type TelegramMessageCache,
-} from "./message-cache.js";
+} from "./message-cache-context.js";
+import { createTelegramMessageCache, type TelegramMessageCache } from "./message-cache.js";
 import {
   clearTelegramRuntimeForTest,
   resetTelegramMessageCacheForTest,

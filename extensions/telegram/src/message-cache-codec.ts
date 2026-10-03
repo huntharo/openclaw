@@ -53,6 +53,32 @@ type TelegramCachedMessageObservation = {
   mode: TelegramMessageObservationMode;
 };
 
+export function telegramMessageCacheKey(params: {
+  scopeKey: string | undefined;
+  accountId: string;
+  chatId: string | number;
+  businessConnectionId?: string;
+  messageId: string;
+}) {
+  return `${telegramMessageCacheKeyPrefix(params)}${params.messageId}`;
+}
+
+export function telegramMessageCacheKeyPrefix(params: {
+  scopeKey: string | undefined;
+  accountId: string;
+  chatId: string | number;
+  businessConnectionId?: string;
+}) {
+  // Keep ordinary key bytes and numeric message ordering. Business chats are
+  // independent domains; their opaque identity must also sit outside ordinary ranges.
+  const domain =
+    params.businessConnectionId === undefined
+      ? ""
+      : `business:${Buffer.from(params.businessConnectionId, "utf8").toString("base64url")}:`;
+  const prefix = `${params.accountId}:${domain}${params.chatId}:`;
+  return params.scopeKey ? `${params.scopeKey}:${prefix}` : prefix;
+}
+
 export function retainedMessageId(messageId: string): string | undefined {
   const id = parseStrictPositiveInteger(messageId);
   return id !== undefined && id <= 9_999_999_999 ? String(id).padStart(10, "0") : undefined;
@@ -64,7 +90,10 @@ export function isGroupMessage(msg: Message): boolean {
 
 export function resolveReplyMessage(msg: Message) {
   if (msg.reply_to_message) {
-    return msg.reply_to_message;
+    const domain = msg.reply_to_message.business_connection_id;
+    return domain === undefined || domain === msg.business_connection_id
+      ? msg.reply_to_message
+      : undefined;
   }
   const externalReply = msg.external_reply;
   return externalReply?.chat && externalReply.chat.id === msg.chat?.id ? externalReply : undefined;
@@ -100,15 +129,20 @@ function resolveMessageTimestamp(msg: MessageWithPromptContextTimestamp): number
 }
 
 export function normalizeMessageNode(
-  msg: Message,
+  input: Message,
   params: {
     threadId?: number;
+    businessConnectionId?: string;
     promptContextProjectionMarker?: TelegramPromptContextProjectionMarker;
     resolvedMedia?: TelegramResolvedMedia;
     threadBinding?: TelegramMessageThreadBinding;
     historyEligible?: boolean;
   },
 ): TelegramCachedMessageNode {
+  const msg =
+    input.business_connection_id === undefined && params.businessConnectionId !== undefined
+      ? { ...input, business_connection_id: params.businessConnectionId }
+      : input;
   const media = resolveTelegramPrimaryMedia(msg);
   const fileId = media?.fileRef.file_id;
   const forwardedFrom = normalizeForwardedContext(msg);
@@ -197,6 +231,7 @@ export function resolveProviderObservedTelegramThreadSpec(
 export function normalizeMessageNodes(
   msg: Message,
   params: Parameters<typeof normalizeMessageNode>[1],
+  rootMode: TelegramMessageObservationMode = "authoritative",
 ): TelegramCachedMessageObservation[] {
   const observations: TelegramCachedMessageObservation[] = [];
   const visited = new Set<string>();
@@ -205,6 +240,12 @@ export function normalizeMessageNodes(
     options: Parameters<typeof normalizeMessageNode>[1],
     mode: TelegramMessageObservationMode,
   ) => {
+    if (
+      message.business_connection_id !== undefined &&
+      message.business_connection_id !== msg.business_connection_id
+    ) {
+      return;
+    }
     const embeddedThreadId = parseTelegramMessageThreadId(message.message_thread_id);
     const inheritedThread = parseTelegramMessageThreadId(options.threadId);
     const observedBinding = normalizeTelegramMessageThreadBinding(options.threadBinding);
@@ -216,6 +257,7 @@ export function normalizeMessageNodes(
         : (embeddedThreadId ?? inheritedThread);
     const node = normalizeMessageNode(message, {
       ...options,
+      businessConnectionId: msg.business_connection_id,
       threadId,
       threadBinding: observedBinding?.threadSpec.id === threadId ? observedBinding : undefined,
     });
@@ -239,7 +281,7 @@ export function normalizeMessageNodes(
     }
     observations.push({ node, mode });
   };
-  visit(msg, params, "authoritative");
+  visit(msg, params, rootMode);
   return observations;
 }
 
@@ -292,16 +334,28 @@ function mergeTelegramSourceMessage<T extends Message>(existing: T, incoming: Me
   return reply === existingReply ? existing : { ...existing, reply_to_message: reply };
 }
 
+/** Partial and older provider observations must retain the published source. */
+export function preferExistingTelegramMessageObservation(
+  existing: Pick<Message, "date" | "edit_date">,
+  incoming: Pick<Message, "date" | "edit_date">,
+  mode: TelegramMessageObservationMode,
+): boolean {
+  return (
+    mode === "partial" ||
+    (existing.edit_date !== undefined && existing.edit_date > (incoming.edit_date ?? incoming.date))
+  );
+}
+
 export function mergeCachedMessageNode(
   existing: TelegramCachedMessageNode,
   incoming: TelegramCachedMessageNode,
   mode: TelegramMessageObservationMode,
 ): TelegramCachedMessageNode {
-  const preferExisting =
-    mode === "partial" ||
-    (existing.sourceMessage.edit_date !== undefined &&
-      existing.sourceMessage.edit_date >
-        (incoming.sourceMessage.edit_date ?? incoming.sourceMessage.date));
+  const preferExisting = preferExistingTelegramMessageObservation(
+    existing.sourceMessage,
+    incoming.sourceMessage,
+    mode,
+  );
   const mergedSourceMessage = preferExisting
     ? mergeTelegramSourceMessage(existing.sourceMessage, incoming.sourceMessage)
     : mergeTelegramSourceMessage(incoming.sourceMessage, existing.sourceMessage);

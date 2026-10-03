@@ -115,6 +115,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
         }),
         resolveTurn: (): ChannelInboundTurnPlan<"provider_message_sending"> => ({
           cfg: turn.cfg,
+          commandSelectionCurrent: turn.callbackReply?.commandSelectionCurrent,
           channel: "telegram",
           accountId: context.route.accountId,
           route: {
@@ -158,7 +159,14 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             skillFilter: context.skillFilter,
             disableBlockStreaming: turn.disableBlockStreaming,
             preserveProgressCallbackStartOrder: true,
-            abortSignal: turn.turnAdoptionLifecycle?.abortSignal,
+            abortSignal: turn.callbackReply
+              ? AbortSignal.any([
+                  turn.callbackReply.abortSignal,
+                  ...(turn.turnAdoptionLifecycle?.abortSignal
+                    ? [turn.turnAdoptionLifecycle.abortSignal]
+                    : []),
+                ])
+              : turn.turnAdoptionLifecycle?.abortSignal,
             turnAdoptionLifecycle: turn.turnAdoptionLifecycle
               ? {
                   ...turn.turnAdoptionLifecycle,

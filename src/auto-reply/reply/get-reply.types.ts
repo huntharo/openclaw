@@ -25,6 +25,12 @@ import type { ReplyOptionsWithAdmissionTicket } from "./reply-admission-ticket.j
 import type { ReplyOptionsWithOperationRunState } from "./reply-operation-run-state.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
+/** Original read-only publication and routing observations; never an actor grant. */
+export type CommandSelectionCurrent = Readonly<{
+  publicationCurrent?: () => boolean;
+  assertRouteCurrent?: () => void;
+}>;
+
 export type ReplySessionBinding = {
   sessionKey?: string;
   sessionId: string;
@@ -42,6 +48,8 @@ export type ReplyRunVerbosity = {
 };
 
 type InternalReplySessionOptions = {
+  /** Supplementary channel restrictions; never a substitute for host or actor admission. */
+  commandSelectionCurrent?: CommandSelectionCurrent;
   /** Source-owned cancellation retained when dispatch borrows an active lane for queued followups. */
   queuedFollowupAbortSignal?: AbortSignal;
   /** Host-minted original operator authority; never restored from session metadata. */
