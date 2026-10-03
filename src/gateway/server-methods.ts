@@ -52,6 +52,7 @@ import {
   readGatewayRequestMutationAuthority,
   withSessionMutationCommitGuard,
 } from "./server-methods/session-mutation-guards.js";
+import { guardSessionResponse } from "./server-methods/session-response.js";
 import type {
   GatewayRequestHandler,
   GatewayRequestHandlers,
@@ -440,21 +441,13 @@ export async function handleGatewayRequest(
             }
           : undefined,
       );
-      const respondAuthorized: GatewayRequestOptions["respond"] =
-        authorization.sessionScope === "operator.sessions.read"
-          ? (...response) => {
-              try {
-                sessionMutationAuthorization?.assertCurrent();
-              } catch (error) {
-                if (!(error instanceof SessionMutationAuthorizationChangedError)) {
-                  throw error;
-                }
-                respond(false, undefined, error.error);
-                return;
-              }
-              respond(...response);
-            }
-          : respond;
+      const respondAuthorized = guardSessionResponse({
+        respond,
+        readResource: methodRegistry.getSessionAccess?.(req.method)?.mode === "read",
+        sessionScope: authorization.sessionScope,
+        sessionAccessAuthority: authorization.sessionAccessAuthority,
+        sessionMutationAuthorization,
+      });
       const invokeHandler = async () => {
         retainRoot?.();
         subscribeDiagnostics?.mark("handlerPreparation");

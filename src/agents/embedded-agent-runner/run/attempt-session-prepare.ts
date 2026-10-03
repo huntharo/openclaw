@@ -1,7 +1,8 @@
 import { isAnthropicOAuthApiKey, isDirectAnthropicModel } from "@openclaw/ai/internal/anthropic";
 import { supportsClaudeInHistorySystemMessages } from "@openclaw/llm-core";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
-import { getOwnedSessionTranscriptReader } from "../../../config/sessions/transcript-write-context.js";
+import { sameSessionTranscriptTargetBinding } from "../../../config/sessions/transcript-target-binding.js";
+import { captureOwnedTranscriptWriteAssertion, getOwnedSessionTranscriptReader } from "../../../config/sessions/transcript-write-context.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
 import {
@@ -16,6 +17,7 @@ import {
   shouldPreserveUserFacingSessionStateForInputProvenance,
 } from "../../../sessions/input-provenance.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
+import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
 import {
   applyAgentAutoCompactionGuard,
@@ -131,6 +133,14 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   });
 
   // These factories carry compaction/pruning runtime state into the resource loader.
+  const middlewareTarget = input.sessionManager.getSessionTarget();
+  const assertMiddlewareRun = resolveAdmittedRunActiveAssertion(
+    attempt.admittedRunContext,
+    input.runAbortSignal,
+  );
+  const assertMiddlewareTranscript = middlewareTarget
+    ? captureOwnedTranscriptWriteAssertion(middlewareTarget)
+    : undefined;
   const extensionFactories = buildEmbeddedExtensionFactories({
     cfg: attempt.config,
     sessionManager: input.sessionManager,
@@ -140,6 +150,28 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     sessionId: attempt.sessionId,
     sessionKey: attempt.sessionKey ?? attempt.sandboxSessionKey,
     runId: attempt.runId,
+    toolNames: () =>
+      input.clientToolPreparation.toolSearchCatalogRef?.current?.entries.map(
+        (entry) => entry.name,
+      ) ?? [],
+    task: attempt.prompt,
+    signal: input.runAbortSignal,
+    detached: attempt.sessionPersistence === "detached",
+    assertCurrent: assertMiddlewareRun
+      ? () => {
+          assertMiddlewareRun();
+          input.runAbortSignal.throwIfAborted();
+          assertMiddlewareTranscript?.();
+          if (
+            !sameSessionTranscriptTargetBinding(
+              middlewareTarget,
+              input.sessionManager.getSessionTarget(),
+            )
+          ) {
+            throw new Error("Tool-result middleware lost its transcript binding.");
+          }
+        }
+      : undefined,
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.effectiveCwd,

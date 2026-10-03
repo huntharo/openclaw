@@ -465,9 +465,19 @@ export async function runCodexAppServerSideQuestion(
     const exposedTools = tools.filter(
       (tool) => tool.name !== "web_search" && tool.name !== "computer",
     );
+    const resultPolicy = sideRunParams.hostCapabilities.toolResultPolicy?.();
     return {
       toolBridge: createCodexDynamicToolBridge({
         assertCurrent: nativeExecutionPolicy.assertCurrent,
+        resultPolicy: resultPolicy && {
+          ...resultPolicy,
+          assertCurrent: () => {
+            resultPolicy.assertCurrent?.();
+            assertCurrent();
+            nativeExecutionPolicy.assertCurrent();
+            runAbortController.signal.throwIfAborted();
+          },
+        },
         tools: exposedTools,
         signal: runAbortController.signal,
         loading: resolveCodexDynamicToolsLoading(pluginConfig),

@@ -222,6 +222,14 @@ export class ToolSearchRuntime {
       prepareInput?: boolean;
       validateInput?: boolean;
       callIdScope?: string;
+      onToolStart?: (input: { toolCallId: string; toolName: string; args: unknown }) => void;
+      onAcceptedResult?: (input: {
+        toolCallId: string;
+        toolName: string;
+        args: unknown;
+        result: AgentToolResult<unknown>;
+      }) => void;
+      onResultFailure?: () => void;
     } = {},
   ) {}
 
@@ -336,6 +344,10 @@ export class ToolSearchRuntime {
     this.networkInvocations.set(parentToolCallId, state);
   }
 
+  observeResultFailure(): void {
+    this.options.onResultFailure?.();
+  }
+
   hasNetworkContent(parentToolCallId?: string): boolean {
     return parentToolCallId
       ? this.networkInvocations.has(parentToolCallId)
@@ -374,18 +386,24 @@ export class ToolSearchRuntime {
     return isAgentToolReplaySafe(entry.tool);
   };
 
-  private readonly callEntry = (
+  private readonly callEntry = async (
     entry: ToolSearchCatalogEntry,
     input?: unknown,
     options?: ToolSearchCallOptions,
-  ) =>
-    runScheduledToolSearchCall({
-      ctx: this.ctx,
-      entry,
-      signal: options?.signal,
-      execute: (currentEntry, signal) =>
-        this.executeEntry(resolveCatalog(this.ctx), currentEntry, input, { ...options, signal }),
-    });
+  ) => {
+    try {
+      return await runScheduledToolSearchCall({
+        ctx: this.ctx,
+        entry,
+        signal: options?.signal,
+        execute: (currentEntry, signal) =>
+          this.executeEntry(resolveCatalog(this.ctx), currentEntry, input, { ...options, signal }),
+      });
+    } catch (error) {
+      this.options.onResultFailure?.();
+      throw error;
+    }
+  };
 
   private readonly executeEntry = async (
     catalog: ToolSearchCatalogSession,
@@ -404,6 +422,7 @@ export class ToolSearchRuntime {
       ? `${sanitizeToolCallIdPart(this.options.callIdScope)}:`
       : "";
     const toolCallId = `tool_call:${parentId}:${scope}${entry.name}:${++this.callSequence}`;
+    this.options.onToolStart?.({ toolCallId, toolName: entry.name, args: normalizedInput });
     bindJoinedCollectorInvocation(entry.tool, toolCallId);
     await assertCatalogOutputSchemaIsValid(entry);
     const outputVariants =
@@ -533,6 +552,12 @@ export class ToolSearchRuntime {
           )
         : await runExecution();
       acceptedResult = await acceptResultBeforeProjection(result);
+      this.options.onAcceptedResult?.({
+        toolCallId,
+        toolName: entry.name,
+        args: normalizedInput,
+        result: acceptedResult,
+      });
       if (options?.parentToolCallId) {
         this.terminalTargetBatchByParent.set(
           options.parentToolCallId,

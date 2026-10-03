@@ -87,6 +87,46 @@ Omitting `runtimes` uses every supported runtime declared in the plugin's
 Supply `runtimes` only to select a subset of that declaration. Registration
 rejects an empty runtime list or any targeted runtime missing from the manifest.
 
+A consumer can request `originalTextMaxBytes` (1,024–33,554,432) for an
+immutable, copied text-only snapshot in `event.originalTextContent`. This is
+optional; absent or incomplete capture cannot support exact retention. The
+host admits the aggregate output and accepted nested Code Mode members within
+the registration and runtime memory limits. `originalTextMembers` contains only
+copied JSON-safe arguments and exact text for completed accepted nested calls.
+Capture consumers also receive copied, frozen pre-middleware `event.args`, admitted
+by the existing JSON shape limits and a 100,000-byte ceiling within the aggregate
+capture cap. Unsupported or over-budget arguments mark capture incomplete;
+legacy consumers keep their existing argument semantics.
+Native details, methods, and capabilities are never part of this snapshot.
+Each consumer receives only the capture it admitted. When no middleware is
+registered, the existing fast path remains. Native observation relays set `resultVisibility: "observe"`
+and cannot accept a replacement for native model context.
+
+`failureMode: "passthrough"` isolates the handler's JSON-admitted current result
+before invocation. On failure or the configured hook-policy timeout, later
+middleware receives that unchanged pre-handler result. Successful in-place
+mutation remains supported and validated. The default `"error"` retains legacy
+failure behavior. Repeated registration of a handler must use the same capture
+cap and failure mode. Passthrough does not waive host authority or cancellation.
+The registrar combines cooperative cancellation with the existing timeout owner,
+tracks late work, and discards a late projection without selecting it. It cannot
+stop arbitrary side effects in trusted handler code.
+
+A retained replacement may return `projection` with `select`, `discard`, and
+optional `assertCurrent`/`selected` callbacks. The harness validates all candidate
+handlers, applies its final canonical projection and output budget, and calls
+selectors with a detached, immutable JSON-safe model-facing view. The returned
+selection has independently copied, frozen admitted content and details; it
+cannot alias a plugin-held candidate across awaited settlement. A failed selector falls back to
+the pre-middleware result and discards staged artifacts. Every selector must
+retain rollback custody until all selectors and the final live-authority fences
+succeed. The synchronous `selected` notification follows those fences without an
+async gap; it cannot change the result. Release retained originals before
+accounting so a notification failure can leave a counter gap but cannot make a
+published reference unavailable. These facts describe selected projections,
+not acknowledgement by a native provider. Legacy callers without host authority
+cannot safely retain a continuation.
+
 Legacy bundled plugins can still use
 `api.registerCodexAppServerExtensionFactory(...)` for Codex app-server-only
 middleware, but new result transforms should use the runtime-neutral API. The
