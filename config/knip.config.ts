@@ -178,6 +178,8 @@ const repositoryScriptEntries = [
   "scripts/generate-browser-inspect-script-swift.mts!",
   // The diagnostics guide invokes the sustained Gateway heap rig by path.
   "scripts/gateway-heap-rig.mjs!",
+  // The Control UI development guide invokes this CDP recorder by path.
+  "scripts/gateway-traffic.mts!",
   // The diagnostics guide invokes this offline snapshot comparison CLI by path.
   "scripts/heap-snapshot-diff.mjs!",
   // CI executes screenshot evidence from the workflow-owned harness copy.

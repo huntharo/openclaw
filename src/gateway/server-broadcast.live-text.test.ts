@@ -2,6 +2,7 @@ import { EventEmitter, getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
+import { createGatewayTrafficCapture } from "../../scripts/lib/gateway-traffic.ts";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { createSessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
@@ -88,6 +89,48 @@ const textProjection = {
 };
 
 describe("connection live-text delivery", () => {
+  it.each([16, 64, 256])(
+    "bounds decoded traffic for %i appends and one final snapshot",
+    (chunks) => {
+      const measure = (snapshot: boolean) => {
+        const peer = createPeer("traffic-budget", true);
+        const capture = createGatewayTrafficCapture();
+        const send = peer.socket.send;
+        peer.socket.send = (wire, options, callback) => {
+          capture.record(peer.client.connId, "received", 1, String(wire));
+          send(wire, options, callback);
+        };
+        const { broadcast } = createGatewayBroadcaster({
+          clients: new GatewayClientRegistry([peer.client]),
+        });
+        const owner = new AbortController();
+        let accumulated = "";
+        for (let index = 0; index < chunks; index += 1) {
+          const delta = `${String(index).padStart(4, "0")}🦞\n`;
+          accumulated += delta;
+          broadcast("chat", text(accumulated, delta), {
+            liveText: {
+              group: owner.signal,
+              coalesce: { key: "text", merge: mergeText },
+              projection: { ...textProjection, snapshot },
+            },
+          });
+        }
+        broadcast("chat", text(accumulated), { liveText: { group: owner.signal } });
+        const measured = capture.snapshot();
+        expect(peer.frames.at(-1)?.payload.text).toBe(accumulated);
+        owner.abort();
+        return measured.received;
+      };
+      const projected = measure(false);
+      expect(projected.frames).toBe(chunks + 1);
+      expect(projected.payloadBytes).toBeLessThanOrEqual(140 * chunks + 140);
+      expect(projected.repeatedPayloads).toBe(0);
+      // Actual snapshot delivery is a negative control for replaying the growing prefix.
+      expect(measure(true).payloadBytes).toBeGreaterThan(140 * chunks + 140);
+    },
+  );
+
   it("sends one baseline per recipient and concatenates blocked appends without repeating it", () => {
     const slow = createPeer("slow");
     const fast = createPeer("fast", true);
