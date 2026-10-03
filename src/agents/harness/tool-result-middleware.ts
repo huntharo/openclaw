@@ -8,342 +8,41 @@ import type {
   AgentToolResultMiddleware,
   AgentToolResultMiddlewareContext,
   AgentToolResultMiddlewareEvent,
+  AgentToolResultMiddlewareProjection,
   OpenClawAgentToolResult,
 } from "../../plugins/agent-tool-result-middleware-types.js";
 import { getPluginValueInstance } from "../../plugins/plugin-instance-scope.js";
 import { getPluginRegistryGatewayOwner } from "../../plugins/registry-lifecycle.js";
 import { createLazyPromiseLoader } from "../../shared/lazy-promise.js";
 import { truncateUtf16Safe } from "../../utils.js";
+import { getCodeModeOriginalTextCapture } from "../code-mode-original-text.js";
 import { readEmbeddedMessageDeliveryFact } from "../embedded-agent-message-delivery.js";
 import { isDeliveredMessagingToolResult } from "../embedded-agent-message-tool-source-reply.js";
 import { isMessagingToolSendAction } from "../embedded-agent-messaging.js";
 import { isToolResultError } from "../tool-result-error.js";
+import {
+  coerceMiddlewareToolResult,
+  sanitizeToolResultForMiddleware,
+  snapshotToolResultForSelection,
+  detachToolResultForMiddleware,
+  snapshotMiddlewareArgs,
+} from "./tool-result-middleware-coercion.js";
 
 const log = createSubsystemLogger("agents/harness");
-const MAX_MIDDLEWARE_CONTENT_BLOCKS = 200;
-const MAX_MIDDLEWARE_TEXT_CHARS = 100_000;
-const MAX_MIDDLEWARE_IMAGE_DATA_CHARS = 5_000_000;
-const MAX_MIDDLEWARE_CONTENT_DEPTH = 20;
-const MAX_MIDDLEWARE_DETAILS_BYTES = 100_000;
-const MAX_MIDDLEWARE_DETAILS_DEPTH = 20;
-const MAX_MIDDLEWARE_DETAILS_KEYS = 1_000;
-const NESTED_TOOL_RESULT_BLOCK_TYPES = new Set(["toolresult", "tool_result"]);
 
-type MiddlewareContentBlock = OpenClawAgentToolResult["content"][number];
-type MiddlewareContentCoerceState = { depth: number; seen: Set<object> };
-type MiddlewareToolResultCoerceOptions = {
-  sanitizeContent?: boolean;
-  sanitizeDetails?: boolean;
-};
-
-function isValidMiddlewareContentBlock(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.type !== "string") {
-    return false;
-  }
-  if (value.type === "text") {
-    return typeof value.text === "string" && value.text.length <= MAX_MIDDLEWARE_TEXT_CHARS;
-  }
-  if (value.type === "image") {
-    return (
-      typeof value.mimeType === "string" &&
-      value.mimeType.trim().length > 0 &&
-      typeof value.data === "string" &&
-      value.data.length <= MAX_MIDDLEWARE_IMAGE_DATA_CHARS
-    );
-  }
-  return false;
-}
-
-function hasValidMiddlewareDetailsShape(
-  value: unknown,
-  state: { keys: number; seen: WeakSet<object> } = { keys: 0, seen: new WeakSet() },
-  depth = 0,
-): boolean {
-  if (value === undefined || value === null) {
-    return true;
-  }
-  if (depth > MAX_MIDDLEWARE_DETAILS_DEPTH) {
-    return false;
-  }
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return true;
-  }
-  if (typeof value !== "object" || state.seen.has(value)) {
-    return false;
-  }
-  state.seen.add(value);
-  const entries = Array.isArray(value) ? value : Object.values(value);
-  state.keys += entries.length;
-  return (
-    state.keys <= MAX_MIDDLEWARE_DETAILS_KEYS &&
-    entries.every((entry) => hasValidMiddlewareDetailsShape(entry, state, depth + 1))
-  );
-}
-
-function isValidMiddlewareDetails(value: unknown): boolean {
-  if (value === undefined) {
-    return true;
-  }
-  if (!hasValidMiddlewareDetailsShape(value)) {
-    return false;
-  }
-  const size = boundedJsonUtf8Bytes(value, MAX_MIDDLEWARE_DETAILS_BYTES);
-  return size.complete && size.bytes <= MAX_MIDDLEWARE_DETAILS_BYTES;
-}
-
-function isValidMiddlewareToolResult(value: unknown): value is OpenClawAgentToolResult {
-  if (!isRecord(value) || !Array.isArray(value.content)) {
-    return false;
-  }
-  if (value.content.length > MAX_MIDDLEWARE_CONTENT_BLOCKS) {
-    return false;
-  }
-  return (
-    value.content.every(isValidMiddlewareContentBlock) && isValidMiddlewareDetails(value.details)
-  );
-}
-
-function descendMiddlewareContentCoerceState(
-  value: unknown,
-  state: MiddlewareContentCoerceState,
-): MiddlewareContentCoerceState | undefined {
-  if (state.depth >= MAX_MIDDLEWARE_CONTENT_DEPTH) {
-    return undefined;
-  }
-  if (value === null || typeof value !== "object") {
-    return { depth: state.depth + 1, seen: state.seen };
-  }
-  return state.seen.has(value)
-    ? undefined
-    : { depth: state.depth + 1, seen: new Set([...state.seen, value]) };
-}
-
-function serializeMiddlewareValue(value: unknown): string | undefined {
-  const seen = new WeakSet<object>();
-  try {
-    return JSON.stringify(value, (_key, val) => {
-      if (typeof val === "bigint") {
-        return val.toString();
-      }
-      if (typeof val === "function" || typeof val === "symbol" || val === undefined) {
-        return undefined;
-      }
-      if (val !== null && typeof val === "object") {
-        if (seen.has(val)) {
-          return undefined;
-        }
-        seen.add(val);
-      }
-      return val;
-    });
-  } catch {
-    return undefined;
-  }
-}
-
-function coerceMiddlewareText(
-  value: unknown,
-  state: MiddlewareContentCoerceState,
-  options: MiddlewareToolResultCoerceOptions = {},
-): string | undefined {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const nextState = descendMiddlewareContentCoerceState(value, state);
-  if (!nextState) {
-    return undefined;
-  }
-  for (const key of ["text", "output", "result", "message"]) {
-    const text = coerceMiddlewareText(value[key], nextState, options);
-    if (text !== undefined) {
-      return text;
+function captureOriginalText(
+  result: OpenClawAgentToolResult,
+  maxBytes: number,
+): AgentToolResultMiddlewareEvent["originalTextContent"] {
+  const content: Array<Readonly<{ type: "text"; text: string }>> = [];
+  for (const block of result.content) {
+    if (block.type !== "text" || typeof block.text !== "string") {
+      return undefined;
     }
+    content.push(Object.freeze({ type: "text", text: block.text }));
   }
-  if (Array.isArray(value.content)) {
-    const text = coerceMiddlewareContentArray(value.content, nextState, options)
-      .flatMap((block) => (block.type === "text" && block.text ? [block.text] : []))
-      .join("\n");
-    return text || undefined;
-  }
-  return serializeMiddlewareValue(value);
-}
-
-function appendMiddlewareContentBlock(
-  blocks: MiddlewareContentBlock[],
-  block: MiddlewareContentBlock,
-): void {
-  if (blocks.length >= MAX_MIDDLEWARE_CONTENT_BLOCKS) {
-    return;
-  }
-  if (block.type !== "text") {
-    blocks.push(block);
-    return;
-  }
-  if (!block.text) {
-    return;
-  }
-  const previous = blocks.at(-1);
-  if (previous?.type !== "text") {
-    blocks.push({
-      type: "text",
-      text: truncateUtf16Safe(block.text, MAX_MIDDLEWARE_TEXT_CHARS),
-    });
-    return;
-  }
-  const remainingChars = MAX_MIDDLEWARE_TEXT_CHARS - previous.text.length - 1;
-  if (remainingChars > 0) {
-    previous.text = `${previous.text}\n${truncateUtf16Safe(block.text, remainingChars)}`;
-  }
-}
-
-function coerceMiddlewareContentArray(
-  content: unknown[],
-  state: MiddlewareContentCoerceState,
-  options: MiddlewareToolResultCoerceOptions = {},
-): MiddlewareContentBlock[] {
-  const blocks: MiddlewareContentBlock[] = [];
-  for (const entry of content.slice(0, MAX_MIDDLEWARE_CONTENT_BLOCKS)) {
-    if (blocks.length >= MAX_MIDDLEWARE_CONTENT_BLOCKS) {
-      break;
-    }
-    const coerced = coerceMiddlewareContentBlocks(entry, state, options);
-    const text = coerced.length === 0 ? coerceMiddlewareText(entry, state, options) : undefined;
-    for (const block of text
-      ? [{ type: "text" as const, text: truncateUtf16Safe(text, MAX_MIDDLEWARE_TEXT_CHARS) }]
-      : coerced) {
-      appendMiddlewareContentBlock(blocks, block);
-    }
-  }
-  return blocks;
-}
-
-function coerceMiddlewareContentBlocks(
-  value: unknown,
-  state: MiddlewareContentCoerceState,
-  options: MiddlewareToolResultCoerceOptions = {},
-): MiddlewareContentBlock[] {
-  if (isValidMiddlewareContentBlock(value)) {
-    return [value as MiddlewareContentBlock];
-  }
-  // Tool emitters can produce legitimate transcript text larger than the
-  // middleware cap. Normalize that only before the first handler; handlers
-  // remain fail-closed if they return an oversized replacement.
-  if (
-    options.sanitizeContent === true &&
-    isRecord(value) &&
-    value.type === "text" &&
-    typeof value.text === "string"
-  ) {
-    return [{ type: "text", text: truncateUtf16Safe(value.text, MAX_MIDDLEWARE_TEXT_CHARS) }];
-  }
-  if (!isRecord(value) || typeof value.type !== "string") {
-    return [];
-  }
-  const normalizedType = value.type.toLowerCase();
-  if (!NESTED_TOOL_RESULT_BLOCK_TYPES.has(normalizedType)) {
-    return [];
-  }
-  const content = value.content;
-  if (Array.isArray(content) && content.length > 0) {
-    const nextState = descendMiddlewareContentCoerceState(value, state);
-    return nextState ? coerceMiddlewareContentArray(content, nextState, options) : [];
-  }
-  const text =
-    coerceMiddlewareText(content, state, options) ?? coerceMiddlewareText(value, state, options);
-  if (!text) {
-    return [];
-  }
-  return [
-    {
-      type: "text",
-      text: truncateUtf16Safe(text, MAX_MIDDLEWARE_TEXT_CHARS),
-    },
-  ];
-}
-
-function coerceMiddlewareToolResult(
-  value: unknown,
-  options: MiddlewareToolResultCoerceOptions = {},
-): OpenClawAgentToolResult | undefined {
-  if (isValidMiddlewareToolResult(value)) {
-    return value;
-  }
-  if (!isRecord(value) || !Array.isArray(value.content)) {
-    return undefined;
-  }
-  const state: MiddlewareContentCoerceState = { depth: 0, seen: new Set() };
-  const content: OpenClawAgentToolResult["content"] = [];
-  for (const block of value.content.slice(0, MAX_MIDDLEWARE_CONTENT_BLOCKS)) {
-    for (const coerced of coerceMiddlewareContentBlocks(block, state, options)) {
-      if (content.length >= MAX_MIDDLEWARE_CONTENT_BLOCKS) {
-        break;
-      }
-      content.push(coerced);
-    }
-    if (content.length >= MAX_MIDDLEWARE_CONTENT_BLOCKS) {
-      break;
-    }
-  }
-  if (content.length === 0) {
-    return undefined;
-  }
-  const details = isValidMiddlewareDetails(value.details)
-    ? value.details
-    : options.sanitizeDetails === true
-      ? sanitizeMiddlewareDetailsValue(value.details)
-      : undefined;
-  if (details === undefined && !isValidMiddlewareDetails(value.details)) {
-    return undefined;
-  }
-  const result = {
-    ...value,
-    content,
-    details,
-  };
-  return isValidMiddlewareToolResult(result) ? result : undefined;
-}
-
-// Normalize incoming details to satisfy the validator's byte and shape limits.
-function sanitizeMiddlewareDetailsValue(value: unknown): unknown {
-  const serialized = serializeMiddlewareValue(value);
-  if (serialized === undefined) {
-    return null;
-  }
-  const bytes = Buffer.byteLength(serialized, "utf8");
-  if (bytes <= MAX_MIDDLEWARE_DETAILS_BYTES) {
-    const parsed = JSON.parse(serialized);
-    if (hasValidMiddlewareDetailsShape(parsed)) {
-      return parsed;
-    }
-  }
-  return { truncated: true, originalSizeBytes: bytes };
-}
-
-/**
- * Coerce an incoming tool result into a shape the validator will accept,
- * before any middleware runs. Tool emitters legitimately produce raw
- * dependency payloads on `details` (channel SDK objects with methods, exec
- * traces with cycles back to the runner, large attachment metadata). The
- * harness owes a registered middleware a JSON-safe view of that payload;
- * subsequent middleware-side mutations are still validated strictly.
- */
-function sanitizeToolResultForMiddleware(result: OpenClawAgentToolResult): OpenClawAgentToolResult {
-  const coerced = coerceMiddlewareToolResult(result, {
-    sanitizeContent: true,
-    sanitizeDetails: true,
-  });
-  if (coerced) {
-    return coerced;
-  }
-  return result.details == null || isValidMiddlewareDetails(result.details)
-    ? result
-    : { ...result, details: sanitizeMiddlewareDetailsValue(result.details) };
+  const size = boundedJsonUtf8Bytes(content, maxBytes);
+  return size.complete && size.bytes <= maxBytes ? Object.freeze(content) : undefined;
 }
 
 function buildMiddlewareFailureResult(): OpenClawAgentToolResult {
@@ -438,6 +137,12 @@ export function createAgentToolResultMiddlewareRunner(
   return {
     async applyToolResultMiddleware(
       event: AgentToolResultMiddlewareEvent,
+      project: (
+        result: OpenClawAgentToolResult,
+      ) => OpenClawAgentToolResult | Promise<OpenClawAgentToolResult> = (result) => result,
+      selectionView: (result: OpenClawAgentToolResult) => OpenClawAgentToolResult = (result) =>
+        result,
+      finalize: (result: OpenClawAgentToolResult) => OpenClawAgentToolResult = (result) => result,
     ): Promise<OpenClawAgentToolResult> {
       // Drop removed plugins' handlers before choosing a path, so a run whose
       // only middleware was removed keeps the untouched no-middleware result.
@@ -449,7 +154,7 @@ export function createAgentToolResultMiddlewareRunner(
       // dependency payloads on `details` (SDK objects with methods, cycles)
       // are not penalized for behavior the validator was added to police.
       if (handlersForRun.length === 0) {
-        return event.result;
+        return finalize(await project(event.result));
       }
       // Snapshot the confirmed side effect before legacy middleware can mutate
       // or sanitization can collapse the receipt; never expose the raw result.
@@ -457,47 +162,206 @@ export function createAgentToolResultMiddlewareRunner(
         event,
         event.result,
       );
+      const captureBytes =
+        ctx.resultVisibility === "observe"
+          ? 0
+          : Math.max(0, ...handlersForRun.map((handler) => handler.originalTextMaxBytes ?? 0));
+      const hostAssertCurrent = ctx.assertCurrent;
+      const hostSignal = ctx.signal;
+      const assertSettlementCurrent = () => {
+        hostAssertCurrent?.();
+        hostSignal?.throwIfAborted();
+      };
+      const capturedContext =
+        captureBytes > 0
+          ? Object.freeze({
+              runtime: ctx.runtime,
+              agentId: ctx.agentId,
+              sessionId: ctx.sessionId,
+              sessionKey: ctx.sessionKey,
+              runId: ctx.runId,
+              resultVisibility: ctx.resultVisibility,
+              persistence: ctx.persistence,
+              task: ctx.task,
+              toolNames: ctx.toolNames ? Object.freeze([...ctx.toolNames]) : undefined,
+              signal: hostSignal,
+              assertCurrent: hostAssertCurrent,
+            })
+          : ctx;
+      const producerCapture =
+        captureBytes > 0 ? getCodeModeOriginalTextCapture(event.result) : undefined;
+      const capturedArgs =
+        captureBytes > 0 ? snapshotMiddlewareArgs(event.args, captureBytes) : undefined;
+      const originalTextContent =
+        captureBytes > 0
+          ? producerCapture
+            ? producerCapture.originalTextContent
+            : captureOriginalText(event.result, captureBytes)
+          : undefined;
+      const originalCaptureSize =
+        originalTextContent && capturedArgs
+          ? boundedJsonUtf8Bytes(
+              {
+                content: originalTextContent,
+                members: producerCapture?.members,
+                args: capturedArgs,
+              },
+              captureBytes,
+            )
+          : undefined;
       let current = sanitizeToolResultForMiddleware(event.result);
+      // Sanitization has admitted JSON-safe details; keep a detached fallback before legacy mutation.
+      const original =
+        captureBytes > 0 ? (detachToolResultForMiddleware(current) ?? current) : current;
+      const projections: AgentToolResultMiddlewareProjection[] = [];
+      const discardProjections = async () => {
+        await Promise.allSettled(projections.map((projection) => projection.discard()));
+      };
       for (const handler of handlersForRun) {
         // An earlier handler can await while a later handler's plugin is removed.
         if (isRemovedPluginMiddleware(handler)) {
           continue;
         }
         try {
-          const next = await handler({ ...event, result: current }, ctx);
+          ctx.assertCurrent?.();
+          const handlerCaptureBytes = handler.originalTextMaxBytes ?? 0;
+          const admittedCapture =
+            originalCaptureSize?.complete === true &&
+            originalCaptureSize.bytes <= handlerCaptureBytes;
+          const isolated = handler.failureMode === "passthrough";
+          const handlerResult = isolated ? detachToolResultForMiddleware(current) : current;
+          if (!handlerResult) {
+            continue;
+          }
+          const next = await handler(
+            {
+              ...event,
+              ...(handlerCaptureBytes > 0 ? { args: capturedArgs ?? Object.freeze({}) } : {}),
+              originalTextContent: admittedCapture ? originalTextContent : undefined,
+              ...(handlerCaptureBytes > 0
+                ? {
+                    originalCaptureComplete: admittedCapture && producerCapture?.complete !== false,
+                    originalTextMembers: admittedCapture ? producerCapture?.members : undefined,
+                  }
+                : {}),
+              result: handlerResult,
+            },
+            handlerCaptureBytes > 0 ? capturedContext : ctx,
+          );
+          if (next?.projection) {
+            projections.push(next.projection);
+          }
           // Middleware may mutate event.result in place for legacy runtime parity.
           // Validate the current object after every handler so in-place writes
           // cannot bypass the same shape and size bounds as returned results.
-          const candidate = next?.result ?? current;
+          const candidate = next?.result ?? handlerResult;
           const coercedCandidate = coerceMiddlewareToolResult(candidate);
           if (coercedCandidate) {
             current = coercedCandidate;
           } else {
+            await discardProjections();
             log.warn(
               `[${ctx.runtime}] discarded invalid tool result middleware output for ${truncateUtf16Safe(
                 event.toolName,
                 120,
               )}`,
             );
-            return reconcileDeliveredMessagingFailure(
-              buildMiddlewareFailureResult(),
-              deliveredMessagingFallback,
+            return finalize(
+              await project(
+                reconcileDeliveredMessagingFailure(
+                  buildMiddlewareFailureResult(),
+                  deliveredMessagingFallback,
+                ),
+              ),
             );
           }
         } catch {
+          if (handler.failureMode === "passthrough") {
+            try {
+              assertSettlementCurrent();
+            } catch (error) {
+              await discardProjections();
+              throw error;
+            }
+            const instance = getPluginValueInstance(handler);
+            if (!instance || (!instance.disposing && instance.acceptingCalls)) {
+              continue;
+            }
+          }
+          await discardProjections();
           log.warn(
             `[${ctx.runtime}] tool result middleware failed for ${truncateUtf16Safe(
               event.toolName,
               120,
             )}`,
           );
-          return reconcileDeliveredMessagingFailure(
-            buildMiddlewareFailureResult(),
-            deliveredMessagingFallback,
+          return finalize(
+            await project(
+              reconcileDeliveredMessagingFailure(
+                buildMiddlewareFailureResult(),
+                deliveredMessagingFallback,
+              ),
+            ),
           );
         }
       }
-      return reconcileDeliveredMessagingFailure(current, deliveredMessagingFallback);
+      let selectedSuccessfully = false;
+      try {
+        if (projections.length > 0) {
+          assertSettlementCurrent();
+        } else {
+          ctx.assertCurrent?.();
+        }
+        const projected = finalize(
+          await project(reconcileDeliveredMessagingFailure(current, deliveredMessagingFallback)),
+        );
+        if (projections.length === 0) {
+          return projected;
+        }
+        const selected = snapshotToolResultForSelection(projected);
+        if (!selected) {
+          return finalize(original);
+        }
+        const view = selectionView(selected);
+        const visible = snapshotToolResultForSelection({
+          content: view.content,
+          details: view.details,
+          ...(view.terminate !== undefined ? { terminate: view.terminate } : {}),
+        });
+        if (!visible) {
+          return finalize(original);
+        }
+        for (const projection of projections) {
+          assertSettlementCurrent();
+          if (!(await projection.select(visible))) {
+            return finalize(original);
+          }
+        }
+        assertSettlementCurrent();
+        for (const projection of projections) {
+          projection.assertCurrent?.();
+        }
+        selectedSuccessfully = true;
+        // Notifications cannot revoke a selection already validated by every participant.
+        for (const projection of projections) {
+          try {
+            projection.selected?.();
+          } catch {
+            log.warn(`[${ctx.runtime}] tool result selection notification failed`);
+          }
+        }
+        return selected;
+      } catch (error) {
+        if (projections.length === 0) {
+          throw error;
+        }
+        assertSettlementCurrent();
+        return finalize(original);
+      } finally {
+        if (!selectedSuccessfully) {
+          await discardProjections();
+        }
+      }
     },
   };
 }

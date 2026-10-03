@@ -6,11 +6,13 @@ import {
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import type { InternalHookHandler } from "../hooks/internal-hook-types.js";
 import type { HookEntry } from "../hooks/types.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { withTimeout } from "../utils/with-timeout.js";
 import type { AgentToolResultMiddleware } from "./agent-tool-result-middleware-types.js";
 import {
   agentToolResultMiddlewareRegistrationCoversTool,
   appendAgentToolResultMiddlewareScope,
+  normalizeAgentToolResultMiddlewareBehavior,
   normalizeAgentToolResultMiddlewareRuntimeIds,
   normalizeAgentToolResultMiddlewareRuntimes,
 } from "./agent-tool-result-middleware.js";
@@ -180,6 +182,14 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
     const existing = registry.agentToolResultMiddlewares.find(
       (entry) => entry.pluginId === record.id && entry.rawHandler === handler,
     );
+    let behavior: ReturnType<typeof normalizeAgentToolResultMiddlewareBehavior>;
+    try {
+      behavior = normalizeAgentToolResultMiddlewareBehavior(options, existing?.handler);
+    } catch (error) {
+      reportRegistrationError(record, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    const { failureMode, originalTextMaxBytes } = behavior;
     if (existing) {
       appendAgentToolResultMiddlewareScope(existing, { runtimes, matcher });
       return;
@@ -191,14 +201,36 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       ) {
         return;
       }
+      const cancellation = failureMode === "passthrough" ? new AbortController() : undefined;
+      const handlerContext = cancellation
+        ? Object.freeze({
+            ...ctx,
+            signal: AbortSignal.any([cancellation.signal, ...(ctx.signal ? [ctx.signal] : [])]),
+          })
+        : ctx;
+      let work: Promise<Awaited<ReturnType<AgentToolResultMiddleware>>> | undefined;
       try {
-        // fs-safe bounds only this await; it cannot cancel plugin work, so late side effects remain possible.
+        work = Promise.resolve(handler(event, handlerContext));
+        if (cancellation) {
+          const tracked = work;
+          void trackAsyncWork(() => tracked).catch(() => {});
+        }
         return await withTimeout(
-          Promise.resolve(handler(event, ctx)),
+          work,
           timeoutMs ?? 0,
           `agent tool result middleware for ${record.id}`,
         );
       } catch (error) {
+        cancellation?.abort(error);
+        if (cancellation && work) {
+          // Cooperative cancellation cannot stop arbitrary trusted handler side effects.
+          const lateCleanup = work
+            .then(async (late) => {
+              await late?.projection?.discard();
+            })
+            .catch(() => {});
+          void trackAsyncWork(() => lateCleanup).catch(() => {});
+        }
         registryParams.logger.warn(
           `[plugins] agent tool result middleware failed for ${record.id}`,
         );
@@ -213,6 +245,13 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       }),
       rawHandler: handler,
     };
+    // Callable views bind the contribution's handler; stamp host facts on that published callable.
+    Object.defineProperty(registration.handler, "failureMode", { value: failureMode });
+    if (originalTextMaxBytes !== undefined) {
+      Object.defineProperty(registration.handler, "originalTextMaxBytes", {
+        value: originalTextMaxBytes,
+      });
+    }
     registry.agentToolResultMiddlewares.push(registration);
   };
 

@@ -552,7 +552,16 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
         : params.hostCapabilities.bindToolSurface([heartbeatFallbackTool], {
             cwd: effectiveCwd ?? effectiveWorkspace,
           });
+    const resultPolicy = params.hostCapabilities.toolResultPolicy?.();
     const toolBridge = createCodexDynamicToolBridge({
+      resultPolicy: resultPolicy && {
+        ...resultPolicy,
+        assertCurrent: () => {
+          resultPolicy.assertCurrent?.();
+          connection.assertCurrent();
+          runAbortController.signal.throwIfAborted();
+        },
+      },
       tools: toolsWithScopedMcp,
       registeredTools: registeredWithScopedMcp,
       registeredFallbackTools,

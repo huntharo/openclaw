@@ -4,6 +4,7 @@ import {
   boundCodeModeError,
   captureCodeModeOutput,
   captureCodeModeValue,
+  resolveCodeModeOriginalCaptureBytes,
   EMPTY_CODE_MODE_OUTPUT,
   buildUserSource,
   SOURCE_LOCATION_KEY,
@@ -301,8 +302,9 @@ function captureWorkerResult(
   result: CodeModeWorkerResult,
   config: CodeModeConfig,
   retainFinalValue = false,
+  originalTextMaxBytes = 0,
 ): CodeModeWorkerThreadResult {
-  const output = captureCodeModeOutput(result.output, config.maxOutputBytes);
+  const output = captureCodeModeOutput(result.output, config.maxOutputBytes, originalTextMaxBytes);
   if (result.status === "completed") {
     return {
       ...result,
@@ -313,6 +315,7 @@ function captureWorkerResult(
         retainFinalValue
           ? Math.min(config.memoryLimitBytes, config.maxSnapshotBytes)
           : config.maxOutputBytes,
+        originalTextMaxBytes,
       ),
     };
   }
@@ -433,6 +436,7 @@ async function runVmExecution(params: {
   setBudget: (timeoutMs: number) => void;
   pauseBudget: () => void;
   channel?: WorkerTaskChannel;
+  originalTextMaxBytes?: number;
 }): Promise<CodeModeWorkerResult> {
   let output: unknown[] = [];
   let prepare = params.prepare;
@@ -487,7 +491,11 @@ async function runVmExecution(params: {
               pendingRequests: params.bridge.pendingRequests,
               canceledRequestIds: params.bridge.canceledRequestIds,
               settlementMode,
-              output: captureCodeModeOutput(output, params.config.maxOutputBytes),
+              output: captureCodeModeOutput(
+                output,
+                params.config.maxOutputBytes,
+                params.originalTextMaxBytes,
+              ),
               memoryUsedBytes: params.vm.getMemoryUsage().memoryUsedSize,
             });
             // Output already crossed to the owner. Do not emit it again on parking/failure.
@@ -609,6 +617,7 @@ async function run(
     bridge,
     config,
     maxTimeoutMs: input.config.timeoutMs,
+    originalTextMaxBytes: resolveCodeModeOriginalCaptureBytes(input.originalTextMaxBytes, config),
     prepare: () => {
       if (input.kind === "exec") {
         const program = buildUserSource(source, input.prelude);
@@ -658,6 +667,10 @@ async function main(
   }
   // SAFETY: The private executor sends core-normalized limits through structured clone.
   const config = input.config as CodeModeConfig;
+  const originalTextMaxBytes = resolveCodeModeOriginalCaptureBytes(
+    typeof input.originalTextMaxBytes === "number" ? input.originalTextMaxBytes : undefined,
+    config,
+  );
   try {
     if (config.timeoutMs <= 0) {
       throw new CodeModeWorkerFailure("timeout", "code mode timeout exceeded");
@@ -682,11 +695,13 @@ async function main(
               ? (input.namespaces as CodeModeNamespaceDescriptor[]) // SAFETY: The host serializes these descriptors before dispatch.
               : [],
             swarmEnabled: input.swarmEnabled === true,
+            originalTextMaxBytes,
           },
           channel,
         ),
         config,
         input.retainFinalValue === true,
+        originalTextMaxBytes,
       );
     }
     // SAFETY: This process's QuickJS workers produce snapshots; the host returns them unchanged.
@@ -700,6 +715,7 @@ async function main(
             wasmExtensions: input.wasmExtensions,
             continuation: snapshot,
             config,
+            originalTextMaxBytes,
             settledRequests: Array.isArray(input.settledRequests)
               ? (input.settledRequests as SettledBridgeRequest[]) // SAFETY: The core broker constructs envelopes around guest JSON.
               : [],
@@ -711,6 +727,7 @@ async function main(
         ),
         config,
         input.retainFinalValue === true,
+        originalTextMaxBytes,
       );
     }
     return {

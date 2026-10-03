@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { buildActiveNodeContextText } from "../../infra/active-node-context.js";
 import { emitAgentRunOutputTokens } from "../../infra/agent-events.js";
 import { getActiveDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
@@ -71,6 +72,7 @@ import {
 import { bindHarnessTrajectory } from "./host-trajectory.js";
 import { formatHarnessApprovalPresentation } from "./native-hook-relay-approval-presentation.js";
 import { createSessionNodeAuthorities } from "./node-execution-authority.js";
+import { captureAgentToolResultPolicy } from "./tool-result-policy.js";
 
 type AgentHarnessHostAttempt = Partial<EmbeddedRunAttemptParams> &
   Pick<EmbeddedRunAttemptParams, "admittedRunContext" | "runId">;
@@ -101,6 +103,23 @@ export function createAgentHarnessHostCapabilities(params: {
   const githubPublicationAvailable = attempt.githubPublicationAvailable;
   const workSignal = getAsyncWorkSignal();
   const attemptSignal = attempt.abortSignal;
+  const toolResultTarget = attempt.sessionTarget ? cloneSnapshot(attempt.sessionTarget) : undefined;
+  const assertToolResultTranscript = toolResultTarget
+    ? captureOwnedTranscriptWriteAssertion(toolResultTarget)
+    : undefined;
+  const toolResultPolicy = captureAgentToolResultPolicy({
+    target: attempt.sessionTarget,
+    detached: attempt.sessionPersistence === "detached",
+    task: attempt.prompt,
+    signal: attemptSignal,
+    assertCurrent: () => {
+      assertActive();
+      assertToolResultTranscript?.();
+      if (!isDeepStrictEqual(attempt.sessionTarget, toolResultTarget)) {
+        throw new Error("Tool-result middleware lost its source transcript.");
+      }
+    },
+  });
   const installationTarget = getInstallationTarget();
   const { sessionKey, onAgentEvent } = attempt;
   // Capture the selected harness declaration before plugin code can mutate it.
@@ -411,6 +430,10 @@ export function createAgentHarnessHostCapabilities(params: {
     kind: "agent-harness-host-capability" as const,
     version: 1 as const,
     assertActive,
+    toolResultPolicy: () => {
+      assertActive();
+      return toolResultPolicy;
+    },
     get assertNativeSubagentSpawnAllowed() {
       return bindHarnessNativeSpawnAuthority(personalToolParticipants, assertActive);
     },

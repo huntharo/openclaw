@@ -22,7 +22,7 @@ import type { GatewayClient, GatewayRequestContext } from "./server-methods/type
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import { resolveSessionResourceToolPolicy } from "./session-resource-tool-policy.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
-import { authorizeOwnSessionMutation } from "./session-sharing-policy.js";
+import { authorizeOwnSessionMutation, hiddenSessionNotFound } from "./session-sharing-policy.js";
 import { prepareSessionSharing } from "./session-sharing-read.js";
 
 type RetainedGatewaySessionAccess = {
@@ -305,7 +305,13 @@ export async function prepareGatewaySessionAccessAuthority(request: {
               projection.hasMembership(row.storePath, row.storeKey, identity),
           },
         );
-        if (
+        if (params.policy.mode === "read") {
+          if (sharing.entryFilter?.(current.storeKey, current.entry) === false) {
+            throw new SessionMutationAuthorizationChangedError(
+              hiddenSessionNotFound(target.sessionKey),
+            );
+          }
+        } else if (
           (params.ownSessionOnly &&
             authorizeOwnSessionMutation({
               client: policyClient,

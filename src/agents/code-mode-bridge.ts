@@ -508,6 +508,7 @@ export async function runBridgeRequest(params: {
     }
     params.reply.settle(true, value);
   } catch (error) {
+    params.runtime.observeResultFailure();
     const classified =
       getBeforeToolCallFailureDisposition(error) !== undefined && error instanceof Error
         ? (error.cause ?? error)

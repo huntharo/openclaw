@@ -14,7 +14,7 @@ import type {
   CodeModeExecutorInlineHost,
 } from "./code-mode-executor-types.js";
 import { runCodeModeExecutor } from "./code-mode-executor.js";
-import { CodeModeOutputState } from "./code-mode-json.js";
+import { CodeModeOutputState, resolveCodeModeOriginalCaptureBytes } from "./code-mode-json.js";
 import {
   createCodeModeNamespaceRuntime,
   type CodeModeNamespaceRuntime,
@@ -27,7 +27,6 @@ import {
   createCodeModeApiFilesForRun,
   toToolSearchConfig,
   type CodeModeConfig,
-  type CodeModeSettlementMode,
   type CodeModeWorkerResult,
   type PendingBridgeRequest,
 } from "./code-mode-runtime.js";
@@ -47,12 +46,14 @@ import {
   storeSuspendedRun,
   telemetry,
   waitForPendingBridgeSettlement,
+  waitForPendingCodeModeSettlement,
   type PendingBridgeState,
   type CodeModeBridgeDispatchState,
   type CodeModeRunOwner,
 } from "./code-mode-state.js";
 import { recordCodeModeToolOutcome } from "./code-mode-tool-outcome.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
+import { copyInternalToolResultState } from "./runtime/internal-hooks.js";
 import type { ToolResultBudget } from "./tool-result-limits.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import type { ToolSearchToolContext } from "./tool-search-types.js";
@@ -69,15 +70,34 @@ export async function runCodeModeExec(params: {
   assistantTurnId?: string;
   restartSafe: boolean;
   required?: boolean;
+  originalTextMaxBytes?: number;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
   onRuntime?: (runtime: ToolSearchRuntime) => void;
 }) {
   removeExpiredRuns();
   const { config } = params;
+  const originalTextMaxBytes = resolveCodeModeOriginalCaptureBytes(
+    params.originalTextMaxBytes,
+    config,
+  );
+  const output = new CodeModeOutputState(
+    config.maxOutputBytes,
+    params.resultBudget,
+    originalTextMaxBytes,
+    params.toolCallId,
+  );
+  const capture = output.originalTextCapture;
   const runtime = new ToolSearchRuntime(params.ctx, toToolSearchConfig(config), {
     prepareInput: true,
     validateInput: true,
+    ...(capture
+      ? {
+          onToolStart: (input) => capture.beginMember(input),
+          onAcceptedResult: (input) => capture.captureMember(input),
+          onResultFailure: () => capture.invalidate(),
+        }
+      : {}),
   });
   params.onRuntime?.(runtime);
   const bridgeDispatch = { started: false };
@@ -97,9 +117,14 @@ export async function runCodeModeExec(params: {
   });
   const apiFiles = createCodeModeApiFilesForRun(namespaceRuntime, swarmEnabled);
   const owner = createCodeModeRunOwner(params.ctx, config, params.required);
+  if (capture) {
+    owner.signal.addEventListener("abort", () => capture.close(), { once: true });
+    if (owner.signal.aborted) {
+      capture.close();
+    }
+  }
   const { approvalWait } = owner;
   const signal = owner.bindCall(params.signal);
-  const output = new CodeModeOutputState(config.maxOutputBytes, params.resultBudget);
   const pending: PendingBridgeState[] = [];
   let releaseReservation: (() => void) | undefined;
   const context = {
@@ -132,6 +157,7 @@ export async function runCodeModeExec(params: {
         {
           kind: "exec",
           retainFinalValue: !params.restartSafe,
+          originalTextMaxBytes,
           source: params.code,
           config: { ...config, timeoutMs: remainingMs },
           catalog: catalogProjection.guestBindings,
@@ -192,77 +218,6 @@ function usableResumeBudgetMs(deadlineMs: number, config: CodeModeConfig): numbe
   );
   const remaining = deadlineMs - performance.now();
   return remaining >= minimum ? remaining : undefined;
-}
-
-async function waitForPending(
-  pending: readonly PendingBridgeState[],
-  settlementMode: CodeModeSettlementMode,
-  budget: CodeModeCallBudget,
-  approvalWait: AgentRunApprovalWait,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  // Abort wins even over already-settled requests: callers treat `false` as
-  // "do not resume the guest", which is what a cancelled exec/wait needs.
-  if (signal?.aborted) {
-    return false;
-  }
-  const required = pendingBridgeStatesForSettlement(pending, settlementMode);
-  if (
-    required.length === 0 ||
-    (settlementMode.kind === "awaiting" && required.some((entry) => entry.settled)) ||
-    required.every((entry) => entry.settled)
-  ) {
-    return true;
-  }
-  const pausedAtMs = approvalWait.pausedMs;
-  const timeoutMs = Math.max(1, budget.deadlineMs - performance.now());
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
-  try {
-    const bridgeReady = waitForPendingBridgeSettlement(pending, settlementMode).then(() => true);
-    return await Promise.race([
-      bridgeReady,
-      new Promise<boolean>((resolve) => {
-        let remainingMs = timeoutMs;
-        let resumedAtMs = performance.now();
-        const arm = () => {
-          resumedAtMs = performance.now();
-          timer = setTimeout(() => resolve(false), Math.max(1, remainingMs));
-        };
-        approvalWait.onChange = (approvalPending) => {
-          if (approvalPending) {
-            // Preserve the unused guest budget while its owning approval remains inline.
-            clearTimeout(timer);
-            remainingMs = Math.max(1, remainingMs - (performance.now() - resumedAtMs));
-          } else {
-            arm();
-          }
-        };
-        if (!approvalWait.pending) {
-          arm();
-        }
-      }),
-      ...(signal
-        ? [
-            new Promise<boolean>((resolve) => {
-              onAbort = () => resolve(false);
-              signal.addEventListener("abort", onAbort, { once: true });
-            }),
-          ]
-        : []),
-    ]);
-  } finally {
-    // Credit only approval time actually spent blocked here. A live sibling
-    // approval must not refund guest computation, worker restore, or parked time.
-    budget.deadlineMs += Math.max(0, approvalWait.pausedMs - pausedAtMs);
-    if (timer) {
-      clearTimeout(timer);
-    }
-    if (signal && onAbort) {
-      signal.removeEventListener("abort", onAbort);
-    }
-    approvalWait.onChange = undefined;
-  }
 }
 
 type CodeModeSettlementContext = {
@@ -354,7 +309,7 @@ function createInlineHost(
       }
       // Pressure parks the VM, never the cell-owned host operations.
       const signal = AbortSignal.any([params.signal, context.signal, context.yieldSignal]);
-      const ready = await waitForPending(
+      const ready = await waitForPendingCodeModeSettlement(
         pending,
         boundary.settlementMode,
         params.budget,
@@ -397,6 +352,7 @@ async function resumeCodeModeExecution(
         {
           kind: "resume",
           retainFinalValue: !params.replaySafe,
+          originalTextMaxBytes: params.output.originalTextCapture?.maxCaptureBytes,
           continuation,
           config: { ...params.config, timeoutMs },
           settledRequests: delivery.requests,
@@ -508,7 +464,7 @@ async function settleCodeModeResult(params: CodeModeSettlementContext) {
         params.budget.deadlineMs = performance.now() + remainingBudgetMs;
         ready = true;
       } else {
-        ready = await waitForPending(
+        ready = await waitForPendingCodeModeSettlement(
           pending,
           result.settlementMode,
           params.budget,
@@ -697,7 +653,7 @@ export async function runWait(params: {
   try {
     // Active waits own their slot and call deadline; idle expiry applies only after parking.
     releaseActiveRunSlot = reserveActiveRunSlot(state.runId);
-    const ready = await waitForPending(
+    const ready = await waitForPendingCodeModeSettlement(
       state.pending,
       state.settlementMode,
       budget,
@@ -709,7 +665,11 @@ export async function runWait(params: {
       : undefined;
     if (!ready || resumeBudgetMs === undefined) {
       if (signal.aborted) {
-        return { ...codeModeAbortedResult(state), failurePhase: "bridge" as const };
+        const aborted = codeModeAbortedResult(state);
+        return copyInternalToolResultState(aborted, {
+          ...aborted,
+          failurePhase: "bridge" as const,
+        });
       }
       return storeSuspendedRun(state);
     }

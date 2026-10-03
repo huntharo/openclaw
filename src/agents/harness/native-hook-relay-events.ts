@@ -266,6 +266,7 @@ async function runNativeHookRelayPostToolUse(
     ? rawResult
     : await createAgentToolResultMiddlewareRunner({
         runtime: "codex",
+        resultVisibility: "observe",
         ...(params.registration.agentId ? { agentId: params.registration.agentId } : {}),
         sessionId: params.registration.sessionId,
         ...(params.registration.sessionKey ? { sessionKey: params.registration.sessionKey } : {}),

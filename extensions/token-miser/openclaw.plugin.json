@@ -1,0 +1,99 @@
+{
+  "id": "token-miser",
+  "name": "Token Miser",
+  "description": "Retains oversized tool output and uses a helper model to deliver bounded summaries with exact retrieval. Helper calls can incur provider charges.",
+  "categories": [
+    "context"
+  ],
+  "enabledByDefault": false,
+  "activation": {
+    "onStartup": true
+  },
+  "uiCapabilities": [
+    "panel",
+    "accessory"
+  ],
+  "contracts": {
+    "tools": [
+      "token_miser_read",
+      "token_miser_focus"
+    ],
+    "agentToolResultMiddleware": [
+      "openclaw",
+      "codex",
+      "agentsapi"
+    ]
+  },
+  "uiHints": {
+    "helperModel": {
+      "label": "Helper model",
+      "help": "Optional provider/model. Requires the plugin LLM model-override policy. Helper calls can incur provider charges."
+    },
+    "thresholdBytes": {
+      "label": "Reduction threshold (bytes)",
+      "help": "Minimum original UTF-8 text-content JSON size considered for helper reduction."
+    },
+    "maxSummaryBytes": {
+      "label": "Summary limit (bytes)",
+      "help": "Maximum delivered summary and retrieval-reference size."
+    },
+    "timeoutMs": {
+      "label": "Helper timeout (ms)"
+    },
+    "retentionHours": {
+      "label": "Original retention (hours)",
+      "help": "Originals expire after this interval. Disabling the plugin prevents further retrieval while disabled."
+    },
+    "maxStoredBytes": {
+      "label": "Original storage limit (bytes)",
+      "help": "New retention fails open at capacity; accepted originals are not evicted early."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "helperModel": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "thresholdBytes": {
+        "type": "integer",
+        "minimum": 1024,
+        "maximum": 1048576,
+        "default": 8192
+      },
+      "maxSummaryBytes": {
+        "type": "integer",
+        "minimum": 512,
+        "maximum": 16000,
+        "default": 4000
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 55000,
+        "default": 55000
+      },
+      "retentionHours": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 168,
+        "default": 168
+      },
+      "maxStoredBytes": {
+        "type": "integer",
+        "minimum": 1048576,
+        "maximum": 268435456,
+        "default": 268435456
+      }
+    }
+  },
+  "controlUi": {
+    "entry": "dist/control-ui/4bf6895c35cdc80bdc40ec5eb396148ea22259275d59ad0b4f0b14ca14ecf4e5/index.js",
+    "styles": [
+      "dist/control-ui/4bf6895c35cdc80bdc40ec5eb396148ea22259275d59ad0b4f0b14ca14ecf4e5/index.css"
+    ]
+  }
+}

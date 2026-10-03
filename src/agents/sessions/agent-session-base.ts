@@ -10,6 +10,7 @@ import type {
   AgentTool,
   ThinkingLevel,
 } from "../runtime/index.js";
+import { copyInternalToolResultState } from "../runtime/internal-hooks.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { takeCodeModeResponseSource } from "../transcript-code-mode-source.js";
 import { persistAgentSessionMessage } from "./agent-session-transcript.js";
@@ -241,16 +242,18 @@ export abstract class AgentSessionBase {
 
       const hookResult = await this.runWithSessionWriteSettlement(
         async () =>
-          await runner.emitToolResult({
-            type: "tool_result",
-            toolName: toolCall.name,
-            toolCallId: toolCall.id,
-            input: args as Record<string, unknown>,
-            content: result.content,
-            details: result.details,
-            isError: resultIsError,
-            ...(result.terminate !== undefined ? { terminate: result.terminate } : {}),
-          }),
+          await runner.emitToolResult(
+            copyInternalToolResultState(result, {
+              type: "tool_result",
+              toolName: toolCall.name,
+              toolCallId: toolCall.id,
+              input: args as Record<string, unknown>,
+              content: result.content,
+              details: result.details,
+              isError: resultIsError,
+              ...(result.terminate !== undefined ? { terminate: result.terminate } : {}),
+            }),
+          ),
       );
 
       if (hookResult) {

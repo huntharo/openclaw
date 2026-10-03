@@ -1,5 +1,6 @@
 // Lexical ranking for the OpenClaw Tool Search runtime.
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { ToolSearchCatalogEntry } from "./tool-search-types.js";
 
 /** Collects property names and descriptions from a JSON-Schema-shaped value. */
 export function readParameterText(parameters: unknown, depth = 0): string {
@@ -29,6 +30,51 @@ function collectParameterText(parameters: unknown, depth: number, parts: string[
   if (items !== undefined) {
     collectParameterText(items, depth + 1, parts);
   }
+}
+
+/**
+ * Text indexed for one catalog entry. Parameter names and their descriptions are
+ * included because they often carry the only words a task shares with a tool:
+ * "post a message to a channel" reaches a tool whose description says only
+ * "Send a message" through its `channel` parameter. Codex and the Claude API
+ * tool-search tools index argument metadata for the same reason.
+ */
+function toolSearchEntryText(entry: ToolSearchCatalogEntry, parameterText?: string): string {
+  // Only first-party schemas are walked. MCP and client parameters are untrusted
+  // and deliberately never traversed: compactToolSearchCatalogEntry reports them
+  // as "unknown" for the same reason, and a client may hand us a lazy object that
+  // throws on property access.
+  const parameters =
+    parameterText ?? (entry.source === "openclaw" ? readParameterText(entry.parameters) : "");
+  return [entry.name, entry.id, entry.label ?? "", entry.description, parameters]
+    .filter(Boolean)
+    .join(" ");
+}
+
+// Code Mode creates runtimes per cell. Share tokens for the owner's entries snapshot;
+// replacing that array retires the cache, and text changes refresh individual entries.
+const toolSearchDocuments = new WeakMap<
+  readonly ToolSearchCatalogEntry[],
+  WeakMap<ToolSearchCatalogEntry, { text: string; terms: string[] }>
+>();
+
+export function toolSearchEntryTerms(
+  entries: readonly ToolSearchCatalogEntry[],
+  entry: ToolSearchCatalogEntry,
+  parameterText: string,
+): readonly string[] {
+  let documents = toolSearchDocuments.get(entries);
+  if (!documents) {
+    documents = new WeakMap();
+    toolSearchDocuments.set(entries, documents);
+  }
+  const text = toolSearchEntryText(entry, parameterText);
+  let document = documents.get(entry);
+  if (!document || document.text !== text) {
+    document = { text, terms: tokenizeDocument(text) };
+    documents.set(entry, document);
+  }
+  return document.terms;
 }
 
 /** BM25 term-frequency saturation. Standard Okapi default. */

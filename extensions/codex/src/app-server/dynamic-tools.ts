@@ -42,10 +42,6 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import {
-  type JsonSchemaObject,
-  validateJsonSchemaValue,
-} from "openclaw/plugin-sdk/json-schema-runtime";
 import type { ImageContent } from "openclaw/plugin-sdk/llm";
 import {
   asNonArrayRecord,
@@ -70,6 +66,7 @@ import {
   type CodexDynamicToolHookContextBase,
   projectCodexExecutableDynamicToolSurface,
 } from "./dynamic-tool-executable-projection.js";
+import { assertCodexDynamicToolInputMatchesSchema } from "./dynamic-tool-input-validation.js";
 import {
   createFailedDynamicToolResponse,
   failedToolResult,
@@ -103,41 +100,6 @@ type CodexToolResultHookContext = Pick<
   CodexDynamicToolHookContext,
   "agentId" | "sessionId" | "sessionKey" | "runId" | "channelId"
 >;
-
-const MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERRORS = 4;
-const MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERROR_CHARS = 160;
-const CODEX_DYNAMIC_TOOL_VALIDATION_TRUNCATED_SUFFIX = " [detail truncated]";
-
-function assertCodexDynamicToolInputMatchesSchema(params: {
-  toolName: string;
-  schema: JsonSchemaObject;
-  value: unknown;
-}): void {
-  const validation = validateJsonSchemaValue({
-    schema: params.schema,
-    cacheKey: `codex-dynamic-tool-input:${params.toolName}:${JSON.stringify(params.schema)}`,
-    value: params.value,
-  });
-  if (validation.ok) {
-    return;
-  }
-  const visibleErrors = validation.errors.slice(0, MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERRORS);
-  const details = visibleErrors
-    .map((error) => {
-      if (error.text.length <= MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERROR_CHARS) {
-        return error.text;
-      }
-      return `${error.text.slice(
-        0,
-        MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERROR_CHARS -
-          CODEX_DYNAMIC_TOOL_VALIDATION_TRUNCATED_SUFFIX.length,
-      )}${CODEX_DYNAMIC_TOOL_VALIDATION_TRUNCATED_SUFFIX}`;
-    })
-    .join("; ");
-  const omitted = validation.errors.length - visibleErrors.length;
-  const omittedSuffix = omitted > 0 ? `; ${omitted} more violation(s) omitted` : "";
-  throw new Error(`Invalid arguments for tool "${params.toolName}": ${details}${omittedSuffix}.`);
-}
 
 function applyCurrentMessageProvider(
   toolName: string,
@@ -211,6 +173,9 @@ function invalidateComputerFrame(contextEpoch: {
 }
 
 export function createCodexDynamicToolBridge(params: {
+  resultPolicy?: ReturnType<
+    NonNullable<EmbeddedRunAttemptParams["hostCapabilities"]["toolResultPolicy"]>
+  >;
   tools: AnyAgentTool[];
   registeredTools?: readonly CodexToolDescriptor[];
   registeredFallbackTools?: AnyAgentTool[];
@@ -318,6 +283,12 @@ export function createCodexDynamicToolBridge(params: {
   const middlewareRunner = createAgentToolResultMiddlewareRunner({
     runtime: "codex",
     ...toolResultHookContext,
+    ...params.resultPolicy,
+    signal: params.resultPolicy?.signal
+      ? AbortSignal.any([params.resultPolicy.signal, params.signal])
+      : params.signal,
+    resultVisibility: "model",
+    toolNames: availableTools.map((entry) => entry.name),
   });
   const isReplaySafeToolInstance = (tool: AnyAgentTool): boolean => {
     const pluginMeta = getPluginToolMeta(tool);
@@ -418,6 +389,7 @@ export function createCodexDynamicToolBridge(params: {
       let rawIsErrorForPresentation = false;
       let telemetryRawResultForPresentation: unknown;
       let presentationIsError = false;
+      let selectedContentItems: ReturnType<typeof convertToolContents> | undefined;
       return runAgentHarnessToolInvocation({
         tool,
         call: {
@@ -545,34 +517,53 @@ export function createCodexDynamicToolBridge(params: {
           return telemetryRawResultForPresentation;
         },
         applyMiddleware: async (event) => {
-          const middlewareResult = await middlewareRunner.applyToolResultMiddleware({
-            threadId: call.threadId,
-            turnId: call.turnId,
-            toolCallId: call.callId,
-            toolName,
-            args: event.args,
-            isError: rawIsErrorForPresentation,
-            result: event.result,
-          });
-          const extendedResult = await legacyExtensionRunner.applyToolResultExtensions({
-            threadId: call.threadId,
-            turnId: call.turnId,
-            toolCallId: call.callId,
-            toolName,
-            args: structuredClone(executedArgsForPresentation),
-            result: middlewareResult,
-          });
-          const result = enforceWholeSkillResult(toolName, extendedResult, toolResultMaxChars);
-          presentationIsError = rawIsErrorForPresentation || isToolResultError(result);
-          // A successful spawn is durable before presentation middleware can rewrite details.
-          const acceptedSessionSpawn =
-            toolName === "sessions_spawn" && !rawIsErrorForPresentation
-              ? normalizeAcceptedSessionSpawnResult(telemetryRawResultForPresentation)
-              : null;
-          if (acceptedSessionSpawn) {
-            telemetry.acceptedSessionSpawns.push(acceptedSessionSpawn);
-          }
-          return result;
+          return await middlewareRunner.applyToolResultMiddleware(
+            {
+              threadId: call.threadId,
+              turnId: call.turnId,
+              toolCallId: call.callId,
+              toolName,
+              args: event.args,
+              isError: rawIsErrorForPresentation,
+              result: event.result,
+            },
+            async (middlewareResult) => {
+              const extendedResult = await legacyExtensionRunner.applyToolResultExtensions({
+                threadId: call.threadId,
+                turnId: call.turnId,
+                toolCallId: call.callId,
+                toolName,
+                args: structuredClone(executedArgsForPresentation),
+                result: middlewareResult,
+              });
+              // A successful spawn is durable before presentation middleware can rewrite details.
+              const acceptedSessionSpawn =
+                toolName === "sessions_spawn" && !rawIsErrorForPresentation
+                  ? normalizeAcceptedSessionSpawnResult(telemetryRawResultForPresentation)
+                  : null;
+              if (acceptedSessionSpawn) {
+                telemetry.acceptedSessionSpawns.push(acceptedSessionSpawn);
+              }
+              return extendedResult;
+            },
+            (result) => {
+              selectedContentItems = convertToolContents(result.content, toolResultMaxChars);
+              return {
+                ...result,
+                content: selectedContentItems.flatMap((item) =>
+                  item.type === "inputText" && typeof item.text === "string"
+                    ? [{ type: "text" as const, text: item.text }]
+                    : [],
+                ),
+              };
+            },
+            (selected) => {
+              selectedContentItems = undefined;
+              const result = enforceWholeSkillResult(toolName, selected, toolResultMaxChars);
+              presentationIsError = rawIsErrorForPresentation || isToolResultError(result);
+              return result;
+            },
+          );
         },
         onResult: ({
           boundary: executionBoundary,
@@ -612,7 +603,8 @@ export function createCodexDynamicToolBridge(params: {
               : resultIsError || resultFailureKind
                 ? "error"
                 : "completed";
-          const contentItems = convertToolContents(result.content, toolResultMaxChars);
+          const contentItems =
+            selectedContentItems ?? convertToolContents(result.content, toolResultMaxChars);
           const deliveredFrameImages = contentItems.filter((item) => item.type === "inputImage");
           const finalFrameImageIdentity = computerFrameImageIdentity(result.content);
           if (

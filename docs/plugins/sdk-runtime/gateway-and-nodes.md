@@ -45,6 +45,24 @@ its own person/run admission. Normal row progress preserves both lifetimes;
 reset, deletion or physical-store replacement invalidates the session borrow.
 Release every borrow on failed startup, replacement and service cleanup.
 
+Read-only session resources use the same owner with `mode: "read"`:
+
+```typescript
+api.registerGatewayMethod("my-plugin.session.stats", handleStats, {
+  scope: "operator.read",
+  sessionAccess: { mode: "read", requiredTool: "my_tool" },
+});
+```
+
+Reads require `operator.read` and an authenticated profile. They reuse canonical
+session read visibility, including hidden drafts and role limits. The
+`operator.sessions.write` alternative and `allowOwnSessionScope` apply only to
+write resources. `requiredTool` still checks current session and agent-run tool
+policy. The handler receives the same immutable target and live authority; check
+it after awaited reads and before publishing results. The shared router also
+checks read-resource authority immediately before a successful response. Error
+responses remain available after authority expires.
+
 `sandboxRequired` describes the admitted session/role constraint. A consumer
 must provide a compliant backend or report that its backend is unsupported.
 This metadata does not turn a Gateway-hosted process into a sandbox.

@@ -1,6 +1,7 @@
 import { jsonUtf8Bytes } from "../infra/json-utf8-bytes.js";
 import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import { createJsonPrefixFitter } from "./code-mode-json-fit.js";
+import { CodeModeOriginalTextCapture } from "./code-mode-original-text.js";
 import {
   fitCodeModeResultReference,
   type CodeModeResultReference,
@@ -44,8 +45,17 @@ export function stringifyCodeModeJsonSafe(value: unknown): string {
 }
 
 export type CodeModeJsonSource =
-  | { kind: "complete"; json: string }
-  | { kind: "prefix"; json: string; originalBytes: number };
+  | { kind: "complete"; json: string; originalJson?: string }
+  | { kind: "prefix"; json: string; originalBytes: number; originalJson?: string };
+
+export function resolveCodeModeOriginalCaptureBytes(
+  requested: number | undefined,
+  config: { memoryLimitBytes: number; maxSnapshotBytes: number },
+): number {
+  return requested !== undefined && Number.isSafeInteger(requested) && requested > 0
+    ? Math.min(requested, 32 * 1024 * 1024, config.memoryLimitBytes, config.maxSnapshotBytes)
+    : 0;
+}
 
 export type CodeModeOutputSource = { count: number; source: CodeModeJsonSource };
 
@@ -69,23 +79,36 @@ export function captureCodeModeValue(
   value: unknown,
   maxBytes: number,
   structuredMaxBytes = maxBytes,
+  originalMaxBytes = 0,
 ): CodeModeJsonSource {
   const json = stringifyCodeModeJsonSafe(value);
   const allowance =
     json.startsWith("{") || json.startsWith("[")
       ? Math.max(maxBytes, structuredMaxBytes)
       : maxBytes;
-  return retainSource(json, Buffer.byteLength(json, "utf8"), allowance);
+  const bytes = Buffer.byteLength(json, "utf8");
+  return {
+    ...retainSource(json, bytes, allowance),
+    ...(originalMaxBytes > 0 && bytes <= originalMaxBytes ? { originalJson: json } : {}),
+  };
 }
 
-export function captureCodeModeOutput(output: unknown[], maxBytes: number): CodeModeOutputSource {
+export function captureCodeModeOutput(
+  output: unknown[],
+  maxBytes: number,
+  originalMaxBytes = 0,
+): CodeModeOutputSource {
   if (output.length === 0) {
     return EMPTY_CODE_MODE_OUTPUT;
   }
   const json = JSON.stringify(output.map(toCodeModeJsonSafe));
+  const bytes = Buffer.byteLength(json, "utf8");
   return {
     count: output.length,
-    source: retainSource(json, Buffer.byteLength(json, "utf8"), maxBytes),
+    source: {
+      ...retainSource(json, bytes, maxBytes),
+      ...(originalMaxBytes > 0 && bytes <= originalMaxBytes ? { originalJson: json } : {}),
+    },
   };
 }
 
@@ -152,30 +175,42 @@ type DeliveredChannels = { output: unknown[]; value?: unknown; error?: string };
 export class CodeModeOutputState {
   source: CodeModeOutputSource = EMPTY_CODE_MODE_OUTPUT;
   private delivered: DeliveryReceipt = { kind: "entries", count: 0 };
+  readonly originalTextCapture: CodeModeOriginalTextCapture | undefined;
 
   constructor(
     private readonly maxBytes: number,
     private readonly modelBudget?: ToolResultBudget,
-  ) {}
+    originalMaxBytes = 0,
+    groupId?: string,
+  ) {
+    this.originalTextCapture =
+      originalMaxBytes > 0 ? new CodeModeOriginalTextCapture(originalMaxBytes, groupId) : undefined;
+  }
 
   append(leg: CodeModeOutputSource): void {
-    if (leg.count === 0) {
+    this.originalTextCapture?.append(leg);
+    let publicLeg = leg;
+    if (leg.source.originalJson !== undefined) {
+      const { originalJson: _originalJson, ...source } = leg.source;
+      publicLeg = { count: leg.count, source };
+    }
+    if (publicLeg.count === 0) {
       return;
     }
     if (this.source.count === 0) {
-      this.source = leg;
+      this.source = publicLeg;
       return;
     }
     const previous = this.source.source;
-    const originalBytes = sourceBytes(previous) + sourceBytes(leg.source) - 1;
+    const originalBytes = sourceBytes(previous) + sourceBytes(publicLeg.source) - 1;
     // Nonempty array concatenation removes two brackets and adds one comma.
     // A missing earlier suffix forbids appending any later prefix after that hole.
     const json =
       previous.kind === "prefix"
         ? previous.json
-        : previous.json.slice(0, -1) + "," + leg.source.json.slice(1);
+        : previous.json.slice(0, -1) + "," + publicLeg.source.json.slice(1);
     this.source = {
-      count: this.source.count + leg.count,
+      count: this.source.count + publicLeg.count,
       source: retainSource(json, originalBytes, this.maxBytes),
     };
   }
@@ -285,7 +320,9 @@ export class CodeModeOutputState {
             prior.prefixBytes === receipt.prefixBytes
           ? []
           : channels.output;
-    return { ...metadata, ...channels, output };
+    const result = { ...metadata, ...channels, output };
+    this.originalTextCapture?.attach(result, metadata, params);
+    return result;
   }
 
   private createProjector(params: TerminalChannels) {

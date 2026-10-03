@@ -10,6 +10,8 @@ import type {
 } from "./agent-tool-result-middleware-types.js";
 import {
   agentToolResultMiddlewareRegistrationCoversTool,
+  appendAgentToolResultMiddlewareScope,
+  normalizeAgentToolResultMiddlewareBehavior,
   normalizeAgentToolResultMiddlewareRuntimes,
 } from "./agent-tool-result-middleware.js";
 import { buildPluginApi, createUnavailableRuntime } from "./api-builder.js";
@@ -231,6 +233,17 @@ export function createCapturedPluginRegistration(params?: {
             params?.contracts?.agentToolResultMiddleware,
           );
           const matcher = normalizePluginToolMatcher(options?.matcher);
+          const existing = captured.agentToolResultMiddlewares.find(
+            (entry) => entry.rawHandler === handler,
+          );
+          const { failureMode, originalTextMaxBytes } = normalizeAgentToolResultMiddlewareBehavior(
+            options,
+            existing?.handler,
+          );
+          if (existing) {
+            appendAgentToolResultMiddlewareScope(existing, { runtimes, matcher });
+            return;
+          }
           const scopedHandler: AgentToolResultMiddleware = (event, ctx) => {
             if (
               !agentToolResultMiddlewareRegistrationCoversTool(
@@ -243,6 +256,12 @@ export function createCapturedPluginRegistration(params?: {
             }
             return handler(event, ctx);
           };
+          Object.defineProperty(scopedHandler, "failureMode", { value: failureMode });
+          if (originalTextMaxBytes !== undefined) {
+            Object.defineProperty(scopedHandler, "originalTextMaxBytes", {
+              value: originalTextMaxBytes,
+            });
+          }
           const registration: PluginAgentToolResultMiddlewareRegistration = {
             pluginId,
             pluginName,

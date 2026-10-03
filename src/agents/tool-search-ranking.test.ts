@@ -222,7 +222,9 @@ describe("untrusted schemas", () => {
 describe("ToolSearchRuntime.search", () => {
   it("reuses document tokens across runtimes and visibility views until the catalog changes", async () => {
     const catalog = CATALOG.map(entry);
-    const tokenize = vi.spyOn(ranking, "tokenizeDocument");
+    const documents = vi.spyOn(ranking, "toolSearchEntryTerms");
+    const distinctDocuments = () =>
+      new Set(documents.mock.results.map((result) => result.value)).size;
     for (const [query, expected] of [
       ["repository", ["issue_create"]],
       ["scheduling", ["cron_create"]],
@@ -234,16 +236,16 @@ describe("ToolSearchRuntime.search", () => {
       });
       expect(hits.map(({ name }) => name)).toEqual(expected);
     }
-    expect(tokenize).toHaveBeenCalledTimes(catalog.length);
+    expect(distinctDocuments()).toBe(catalog.length);
 
     catalog[0]!.description = "Observe asteroids";
     expect((await runtime(catalog).search("asteroids")).map(({ name }) => name)).toEqual([
       "web_search",
     ]);
-    expect(tokenize).toHaveBeenCalledTimes(catalog.length + 1);
+    expect(distinctDocuments()).toBe(catalog.length + 1);
 
     await runtime([...catalog]).search("repository");
-    expect(tokenize).toHaveBeenCalledTimes(catalog.length * 2 + 1);
+    expect(distinctDocuments()).toBe(catalog.length * 2 + 1);
   });
 
   it.each(["listURL", "listUrl"])("prefers the exact catalog ID spelling for %s", async (name) => {
