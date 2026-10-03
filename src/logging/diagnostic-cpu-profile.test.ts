@@ -1,6 +1,7 @@
 import type { Profiler } from "node:inspector";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DiagnosticsCpuProfileParams } from "../../packages/gateway-protocol/src/schema/diagnostics.js";
 import { runNodeScript } from "../../test/helpers/run-node-script.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
@@ -79,9 +80,13 @@ function profile(): ProfileFixture {
   };
 }
 
-async function capture(signal = new AbortController().signal, hasAuthority = () => true) {
+async function capture(
+  signal = new AbortController().signal,
+  hasAuthority = () => true,
+  params: DiagnosticsCpuProfileParams = {},
+) {
   const { captureDiagnosticCpuProfile } = await import("./diagnostic-cpu-profile.js");
-  return captureDiagnosticCpuProfile({ signal, hasAuthority });
+  return captureDiagnosticCpuProfile({ ...params, signal, hasAuthority });
 }
 
 function returnProfile(value: Profiler.Profile = profile()) {
@@ -127,6 +132,237 @@ afterEach(() => {
 });
 
 describe("diagnostic CPU profile owner", () => {
+  function hotClock(cpuPercents: number[]) {
+    let now = 0;
+    let cpuMicros = 0;
+    let window = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.spyOn(process, "threadCpuUsage").mockImplementation((previous) => ({
+      user: cpuMicros - (previous?.user ?? 0),
+      system: 0,
+    }));
+    native.wait.mockImplementation(async (durationMs: number) => {
+      now += durationMs;
+      cpuMicros += durationMs * 10 * (cpuPercents[window++] ?? 0);
+    });
+    native.post.mockImplementation(async (method: string) => {
+      if (method !== "Profiler.stop") {
+        return {};
+      }
+      const value = profile();
+      value.startTime = (window - 1) * 5_000_000;
+      value.endTime = now * 1_000;
+      return { profile: value };
+    });
+    return {
+      advance: (ms: number, cpu: number) => {
+        now += ms;
+        cpuMicros += cpu;
+      },
+    };
+  }
+
+  it("retains the preceding sanitized window when the armed main thread becomes hot", async () => {
+    hotClock([10, 20, 90]);
+    const outcome = await capture(undefined, undefined, { mode: "hot", observeMs: 60_000 });
+    expect(outcome).toMatchObject({
+      status: "complete",
+      result: {
+        mainThreadCpuPercent: 90,
+        profile: { startTime: 10_000_000, endTime: 15_000_000 },
+        hot: {
+          triggered: true,
+          observedDurationMs: 15_000,
+          previousWindow: {
+            mainThreadCpuPercent: 20,
+            profile: { startTime: 5_000_000, endTime: 10_000_000 },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(outcome)).not.toMatch(/fixture|private/);
+    expect(native.disconnect).toHaveBeenCalledOnce();
+    expect(native.post.mock.calls.filter(([method]) => method === "Profiler.start")).toHaveLength(
+      3,
+    );
+    expect(native.post.mock.calls.filter(([method]) => method === "Profiler.disable")).toHaveLength(
+      1,
+    );
+  });
+
+  it("expires without a hot trigger and shortens the final window to the observation budget", async () => {
+    hotClock([0, 0, 0]);
+    expect(await capture(undefined, undefined, { mode: "hot", observeMs: 10_100 })).toMatchObject({
+      status: "complete",
+      result: {
+        requestedDurationMs: 100,
+        hot: {
+          triggered: false,
+          observedDurationMs: 10_100,
+          previousWindow: { profile: { startTime: 5_000_000 } },
+        },
+      },
+    });
+    expect(native.wait.mock.calls.map(([ms]) => ms)).toEqual([5_000, 5_000, 100]);
+  });
+
+  it("excludes synchronous profiler-start CPU and wall time from the hot trigger", async () => {
+    const clock = hotClock([0, 0]);
+    native.post.mockImplementation((method: string) => {
+      if (method === "Profiler.start") {
+        clock.advance(2_000, 2_000_000);
+      }
+      return Promise.resolve(method === "Profiler.stop" ? { profile: profile() } : {});
+    });
+    expect(await capture(undefined, undefined, { mode: "hot", observeMs: 5_000 })).toMatchObject({
+      status: "complete",
+      result: { startBlockedMs: 2_000, mainThreadCpuPercent: 0, hot: { triggered: false } },
+    });
+  });
+
+  it.each(["abort", "revoked", "tracing", "listener", "failed-rotation"])(
+    "discards armed history and cleans up on %s between windows",
+    async (boundary) => {
+      hotClock([0, 0]);
+      const controller = new AbortController();
+      let authority = true;
+      let stops = 0;
+      let starts = 0;
+      native.post.mockImplementation(async (method: string) => {
+        if (method === "Profiler.start" && ++starts === 2 && boundary === "failed-rotation") {
+          throw new Error("private native error");
+        }
+        if (method === "Profiler.stop" && ++stops === 1) {
+          if (boundary === "abort") {
+            controller.abort();
+          }
+          if (boundary === "revoked") {
+            authority = false;
+          }
+          if (boundary === "tracing") {
+            native.tracingCategories.mockReturnValue("node.perf");
+          }
+          if (boundary === "listener") {
+            native.url.mockReturnValue("ws://fixture");
+          }
+        }
+        return method === "Profiler.stop" ? { profile: profile() } : {};
+      });
+      expect(
+        await capture(controller.signal, () => authority, { mode: "hot", observeMs: 10_000 }),
+      ).toMatchObject({
+        status: "unavailable",
+        reason:
+          boundary === "failed-rotation"
+            ? "capture-failed"
+            : boundary === "tracing"
+              ? "tracing-active"
+              : boundary === "listener"
+                ? "conflict"
+                : "cancelled",
+      });
+      expect(native.disconnect).toHaveBeenCalledOnce();
+      expect(
+        native.post.mock.calls.filter(([method]) => method === "Profiler.disable"),
+      ).toHaveLength(1);
+      expect(starts).toBe(boundary === "failed-rotation" ? 2 : 1);
+    },
+  );
+
+  it("holds exclusive CPU and heap profiler ownership throughout an armed observation", async () => {
+    hotClock([0]);
+    native.wait.mockImplementationOnce(async () => {
+      expect(await capture()).toMatchObject({ status: "unavailable", reason: "busy" });
+      const { captureDiagnosticHeapProfile } = await import("./diagnostic-heap-profile.js");
+      expect(
+        await captureDiagnosticHeapProfile({
+          signal: new AbortController().signal,
+          hasAuthority: () => true,
+        }),
+      ).toMatchObject({ status: "unavailable", reason: "busy" });
+      throw new Error("end observation");
+    });
+    expect(await capture(undefined, undefined, { mode: "hot" })).toMatchObject({
+      status: "unavailable",
+      reason: "capture-failed",
+    });
+    expect(native.disconnect).toHaveBeenCalledOnce();
+    returnProfile();
+    native.wait.mockResolvedValue(undefined);
+    expect((await capture()).status).toBe("complete");
+  });
+
+  it.each(["tracing", "listener"])(
+    "refuses %s contention during the final triggering window",
+    async (boundary) => {
+      hotClock([90]);
+      const wait = native.wait.getMockImplementation()!;
+      native.wait.mockImplementation(async (durationMs) => {
+        await wait(durationMs);
+        if (boundary === "tracing") {
+          native.tracingCategories.mockReturnValue("node.perf");
+        } else {
+          native.url.mockReturnValue("ws://fixture");
+        }
+      });
+      expect(await capture(undefined, undefined, { mode: "hot", observeMs: 5_000 })).toMatchObject({
+        status: "unavailable",
+        reason: boundary === "tracing" ? "tracing-active" : "conflict",
+      });
+      expect(native.disconnect).toHaveBeenCalledOnce();
+      expect(native.post.mock.calls.filter(([method]) => method === "Profiler.stop")).toHaveLength(
+        1,
+      );
+    },
+  );
+
+  it("rejects combined lookback history above the byte bound without publishing either window", async () => {
+    hotClock([0, 90]);
+    const fixture = profile();
+    const root = fixture.nodes[0];
+    const leaf = fixture.nodes[1];
+    const value: Profiler.Profile = { ...fixture };
+    value.nodes = [
+      root,
+      ...Array.from({ length: 6_000 }, (_, index) => ({
+        ...leaf,
+        id: index + 2,
+        callFrame: { ...leaf.callFrame, functionName: "(idle)", url: "", scriptId: "0" },
+        positionTicks: undefined,
+        hitCount: undefined,
+      })),
+    ];
+    root.children = value.nodes.slice(1).map((node) => node.id);
+    native.post.mockImplementation(async (method) =>
+      method === "Profiler.stop" ? { profile: value } : {},
+    );
+    // Each window stays below the byte limit; the pair exceeds the shared response limit.
+    expect(await capture(undefined, undefined, { mode: "hot" })).toMatchObject({
+      status: "unavailable",
+      reason: "profile-too-large",
+    });
+    expect(native.post.mock.calls.filter(([method]) => method === "Profiler.start")).toHaveLength(
+      2,
+    );
+    expect(native.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("rejects combined lookback history above the sample bound", async () => {
+    hotClock([0, 90]);
+    const value = profile();
+    value.samples = Array.from({ length: 40_000 }, () => 2);
+    value.timeDeltas = Array.from({ length: 40_000 }, () => 1);
+    returnProfile(value);
+    expect(await capture(undefined, undefined, { mode: "hot" })).toMatchObject({
+      status: "unavailable",
+      reason: "profile-too-large",
+    });
+    expect(native.post.mock.calls.filter(([method]) => method === "Profiler.start")).toHaveLength(
+      2,
+    );
+    expect(native.disconnect).toHaveBeenCalledOnce();
+  });
+
   it("reports synchronous start blocking separately from awaited capture time", async () => {
     let now = 100;
     vi.spyOn(performance, "now").mockImplementation(() => now);

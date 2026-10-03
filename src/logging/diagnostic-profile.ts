@@ -122,11 +122,11 @@ export function sanitizeDiagnosticProfileFrame(
   };
 }
 
-/** Owns one ephemeral main-isolate capture; it never opens an inspector listener. */
+/** Owns ephemeral main-isolate captures; it never opens an inspector listener. */
 export async function captureDiagnosticProfile<Profile, Result>(options: {
   signal: AbortSignal;
   hasAuthority: () => boolean;
-  durationMs: number;
+  durationMs: number | (() => number);
   setup: (session: Session) => Promise<unknown>;
   start: (session: Session) => Promise<unknown>;
   stop: (session: Session) => Promise<{ profile: Profile }>;
@@ -136,6 +136,8 @@ export async function captureDiagnosticProfile<Profile, Result>(options: {
     packageRoot: string | null,
     measurement: ProfileMeasurement,
   ) => Result;
+  /** Called only with a complete sanitized window, while still holding inspector ownership. */
+  onWindow?: (result: Result) => boolean;
 }): Promise<DiagnosticProfileOutcome<Result>> {
   const unavailable = (
     reason: FailureReason,
@@ -164,6 +166,7 @@ export async function captureDiagnosticProfile<Profile, Result>(options: {
   let durationMs = 0;
   let startBlockedMs = 0;
   let packageRoot: string | null = null;
+  let result: Result | undefined;
   const assertActive = () => {
     if (options.signal.aborted || !options.hasAuthority()) {
       throw new ProfileFailure("cancelled");
@@ -199,23 +202,57 @@ export async function captureDiagnosticProfile<Profile, Result>(options: {
     session.connect();
     connected = true;
     await options.setup(session);
-    assertActive();
-    assertTracingInactive();
-    before = process.memoryUsage();
-    const startedAt = performance.now();
-    startAttempted = true;
-    // Inspector dispatch can synchronously scan V8's heap before returning a promise.
-    const starting = options.start(session);
-    startBlockedMs = performance.now() - startedAt;
-    await starting;
-    // The event loop owns this timer. Requested duration is not a hard wall-time
-    // or V8 allocation bound when the Gateway is blocked; return native actual timing.
-    await delay(options.durationMs, undefined, { signal: options.signal });
-    assertActive();
-    stopAttempted = true;
-    ({ profile } = await options.stop(session));
-    durationMs = performance.now() - startedAt;
-    after = process.memoryUsage();
+    for (;;) {
+      assertActive();
+      if (inspector.url() || hasProfilerConflict()) {
+        throw new ProfileFailure("conflict");
+      }
+      assertTracingInactive();
+      before = process.memoryUsage();
+      const startedAt = performance.now();
+      startAttempted = true;
+      stopAttempted = false;
+      // Inspector dispatch can synchronously scan V8's heap before returning a promise.
+      const starting = options.start(session);
+      startBlockedMs = performance.now() - startedAt;
+      await starting;
+      assertActive();
+      // Event-loop timers cannot impose a native allocation or hard wall-time bound.
+      await delay(
+        typeof options.durationMs === "function" ? options.durationMs() : options.durationMs,
+        undefined,
+        { signal: options.signal },
+      );
+      assertActive();
+      if (inspector.url() || hasProfilerConflict()) {
+        throw new ProfileFailure("conflict");
+      }
+      assertTracingInactive();
+      stopAttempted = true;
+      ({ profile } = await options.stop(session));
+      durationMs = performance.now() - startedAt;
+      after = process.memoryUsage();
+      assertActive();
+      if (inspector.url() || hasProfilerConflict()) {
+        throw new ProfileFailure("conflict");
+      }
+      assertTracingInactive();
+      if (!options.onWindow) {
+        break;
+      }
+      result = options.sanitize(profile, packageRoot, {
+        durationMs,
+        startBlockedMs,
+        before,
+        after,
+      });
+      // Never retain a raw completed window while the next recorder is running.
+      profile = undefined;
+      assertActive();
+      if (!options.onWindow(result)) {
+        break;
+      }
+    }
   } catch (error) {
     failure =
       error instanceof ProfileFailure
@@ -252,12 +289,14 @@ export async function captureDiagnosticProfile<Profile, Result>(options: {
     assertActive();
     return {
       status: "complete",
-      result: options.sanitize(profile!, packageRoot, {
-        durationMs,
-        startBlockedMs,
-        before: before!,
-        after: after!,
-      }),
+      result:
+        result ??
+        options.sanitize(profile!, packageRoot, {
+          durationMs,
+          startBlockedMs,
+          before: before!,
+          after: after!,
+        }),
     };
   } catch (error) {
     return unavailable(error instanceof ProfileFailure ? error.reason : "invalid-profile");

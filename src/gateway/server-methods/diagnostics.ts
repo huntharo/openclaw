@@ -1,6 +1,6 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import {
+  validateDiagnosticsCpuProfileParams,
   validateDiagnosticsHeapProfileParams,
   validateDiagnosticsHeapSnapshotParams,
 } from "../../../packages/gateway-protocol/src/schema/diagnostics.js";
@@ -53,18 +53,22 @@ async function captureProfile(
 export const diagnosticsHandlers: GatewayRequestHandlers = {
   "diagnostics.cpuProfile": async (options) => {
     const { req, respond } = options;
-    if (req.params !== undefined && (!isRecord(req.params) || Object.keys(req.params).length > 0)) {
+    const params = req.params === undefined ? {} : req.params;
+    if (!validateDiagnosticsCpuProfileParams(params)) {
       respond(
         false,
         undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "diagnostics.cpuProfile accepts only empty params"),
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "diagnostics.cpuProfile accepts empty params or mode: hot with observeMs (1–60000) and cpuThresholdPercent (greater than 0, at most 100)",
+        ),
       );
       return;
     }
     await captureProfile(options, "CPU profile", async (authority) => {
       const { captureDiagnosticCpuProfile } =
         await import("../../logging/diagnostic-cpu-profile.js");
-      return captureDiagnosticCpuProfile(authority);
+      return captureDiagnosticCpuProfile({ ...params, ...authority });
     });
   },
   "diagnostics.heapProfile": async (options) => {

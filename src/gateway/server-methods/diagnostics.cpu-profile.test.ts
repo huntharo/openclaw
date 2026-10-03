@@ -128,19 +128,34 @@ describe("diagnostics.cpuProfile dispatch", () => {
     },
   );
 
-  it.each([null, [], { durationMs: 1 }])(
-    "rejects nonempty/nonobject params %j before capture",
-    async (params) => {
-      const call = request({ params });
-      await call.pending;
-      expect(capture).not.toHaveBeenCalled();
-      expect(call.respond).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({ code: "INVALID_REQUEST" }),
-      );
-    },
-  );
+  it.each([
+    null,
+    [],
+    { durationMs: 1 },
+    { observeMs: 5_000 },
+    { mode: "hot", observeMs: 60_001 },
+    { mode: "hot", observeMs: 0 },
+    { mode: "hot", cpuThresholdPercent: 0 },
+    { mode: "hot", cpuThresholdPercent: 101 },
+    { mode: "hot", durationMs: 1 },
+  ])("rejects nonempty/nonobject params %j before capture", async (params) => {
+    const call = request({ params });
+    await call.pending;
+    expect(capture).not.toHaveBeenCalled();
+    expect(call.respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+  });
+
+  it("passes validated hot observation parameters through the existing admin boundary", async () => {
+    const params = { mode: "hot", observeMs: 10_000, cpuThresholdPercent: 50.5 };
+    const call = request({ params });
+    await call.pending;
+    expect(capture).toHaveBeenCalledWith(expect.objectContaining(params));
+    expect(call.respond).toHaveBeenCalledWith(true, result, undefined);
+  });
 
   it.each(["connection", "gateway", "request"])(
     "cancels through the existing %s lifetime and waits for cleanup",
