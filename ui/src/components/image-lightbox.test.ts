@@ -116,6 +116,58 @@ describe("openclaw-image-lightbox", () => {
     );
   });
 
+  it("requires interaction opt-in for the selected SVG and retires its document on replacement", async () => {
+    const svgSource = {
+      src: "blob:svg-preview",
+      text: '<svg xmlns="http://www.w3.org/2000/svg"><style>rect:hover { fill: red; }</style><rect width="40" height="40"/></svg>',
+    };
+    render(
+      renderChatImageLightbox({ src: svgSource.src, title: "Diagram", svgSource }, () => {}),
+      container,
+    );
+    const viewer = container.querySelector("openclaw-image-lightbox")!;
+    await viewer.updateComplete;
+    expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
+    viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-interaction")?.click();
+    await viewer.updateComplete;
+    expect(viewer.shadowRoot?.querySelector("iframe")?.getAttribute("sandbox")).toBe("");
+    expect(viewer.shadowRoot?.querySelector("img")).toBeNull();
+
+    // A stale source must not enable controls for a replaced blob, even with the same title.
+    viewer.src = "blob:replacement";
+    await viewer.updateComplete;
+    expect(viewer.shadowRoot?.querySelector("iframe, .svg-interaction")).toBeNull();
+    viewer.src = svgSource.src;
+    await viewer.updateComplete;
+    expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
+    viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-interaction")?.click();
+    await viewer.updateComplete;
+    viewer.remove();
+    container.append(viewer);
+    await viewer.updateComplete;
+    expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
+  });
+
+  it("keeps an invalid SVG in the image preview with a visible interaction error", async () => {
+    const svgSource = {
+      src: "blob:invalid",
+      text: '<svg xmlns="http://www.w3.org/2000/svg"><broken',
+    };
+    render(
+      renderChatImageLightbox({ src: svgSource.src, title: "Diagram", svgSource }, () => {}),
+      container,
+    );
+    const viewer = container.querySelector("openclaw-image-lightbox")!;
+    await viewer.updateComplete;
+    viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-interaction")?.click();
+    await viewer.updateComplete;
+    expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
+    expect(viewer.shadowRoot?.querySelector("img")).not.toBeNull();
+    expect(viewer.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain(
+      "could not be opened",
+    );
+  });
+
   it("renders video in the shared overlay without image zoom controls", async () => {
     const { modal } = await renderLightbox({
       mediaKind: "video",

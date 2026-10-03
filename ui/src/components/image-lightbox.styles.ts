@@ -136,6 +136,33 @@ export const imageLightboxStyles = css`
     touch-action: none;
   }
 
+  .stage.stage--interactive {
+    padding: calc(76px + var(--safe-area-top, 0px)) calc(64px + var(--safe-area-right, 0px))
+      calc(76px + var(--safe-area-bottom, 0px)) calc(64px + var(--safe-area-left, 0px));
+  }
+
+  .interactive-svg {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--card);
+    border-radius: var(--radius-md);
+  }
+
+  .svg-notice {
+    position: fixed;
+    bottom: max(14px, calc(10px + var(--safe-area-bottom, 0px)));
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 48px);
+    margin: 0;
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    color: var(--media-foreground);
+    background: var(--image-lightbox-control-background);
+    font-size: 12px;
+  }
+
   .stage.stage--video {
     padding: calc(76px + var(--safe-area-top, 0px)) calc(64px + var(--safe-area-right, 0px))
       calc(76px + var(--safe-area-bottom, 0px)) calc(64px + var(--safe-area-left, 0px));
@@ -291,6 +318,10 @@ export const imageLightboxStyles = css`
     .stage {
       padding: calc(68px + var(--safe-area-top, 0px)) calc(12px + var(--safe-area-right, 0px))
         calc(64px + var(--safe-area-bottom, 0px)) calc(12px + var(--safe-area-left, 0px));
+    }
+
+    .stage.stage--interactive {
+      padding-inline: calc(12px + var(--safe-area-right, 0px));
     }
 
     .open-original {

@@ -341,7 +341,14 @@ describe("attachment sidebar source ownership", () => {
     expect(onAssistantAttachmentLoaded).toHaveBeenCalledOnce();
     container.querySelector<HTMLButtonElement>(".chat-message-image-button")?.click();
     expect(onOpenImage).toHaveBeenCalledWith(
-      expect.objectContaining({ src: objectUrl, title: "vector.svg" }),
+      expect.objectContaining({
+        src: objectUrl,
+        title: "vector.svg",
+        svgSource: {
+          src: objectUrl,
+          text: '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>',
+        },
+      }),
     );
     const lightboxItem = onOpenImage.mock.calls[0]?.[0] as { release?: () => void } | undefined;
     expect(lightboxItem?.release).toBeTypeOf("function");

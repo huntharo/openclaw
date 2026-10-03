@@ -1,4 +1,5 @@
 import { html, nothing } from "lit";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { t } from "../../../i18n/index.ts";
 import { renderCompactAttachmentCard } from "./chat-attachment-card.ts";
 import "./chat-audio-player.ts";
@@ -617,8 +618,11 @@ function renderMessageAttachmentContent(
       .mimeType=${attachment.mimeType ?? "image/svg+xml"}
       .sizeBytes=${media?.sizeBytes}
       .downloadHref=${safeAttachmentHref(attachmentUrl)}
-      .onOpen=${(src: string, release: () => void) =>
-        openResolvedImage(onOpenImage, src, title, release, onRequestOpenImage?.())}
+      .onOpen=${(
+        src: string,
+        release: () => void,
+        svgSource: NonNullable<ImageLightboxItem["svgSource"]>,
+      ) => openResolvedImage(onOpenImage, src, title, release, onRequestOpenImage?.(), svgSource)}
       .onExpand=${openAttachmentSidebar}
       .onMediaLoaded=${onAssistantAttachmentLoaded}
     ></openclaw-chat-svg-attachment>`;

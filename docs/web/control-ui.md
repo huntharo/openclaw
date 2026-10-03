@@ -28,6 +28,13 @@ While the initial connection or a route loads, shimmer placeholders reserve the 
 
 The selected chat loads before automatic sidebar session lists refresh. Live events remain subscribed during startup, and explicit sidebar actions remain available. Background lists resume after the transcript loads or reports an error.
 
+SVG attachments open as inert image previews. Choose **Interact with SVG** in
+the image lightbox to use hover and keyboard-focus controls in an isolated view.
+Scripts, hyperlinks, external resources, and network requests remain disabled;
+JavaScript-driven diagrams continue to use the image preview. **Show image
+preview** leaves interaction mode. Changing the attachment or closing the
+lightbox retires the isolated document.
+
 Session details share concurrent reads across the sidebar, chat, and resource panels. Returning to an unchanged session reuses its details on the same connection. Session changes, explicit refreshes, and reconnects fetch current details; failed reads remain retryable.
 
 Sidebar pull-request indicators reuse the last known snapshot. Opening a session, its progress card, or its Git activity requests current checkout facts; sidebar rows alone do not poll Git. Active panels detect branch and staged changes from Git metadata. Tool completion refreshes working-tree stats, with a five-minute fallback for edits made outside OpenClaw.

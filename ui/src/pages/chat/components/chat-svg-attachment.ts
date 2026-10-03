@@ -1,5 +1,6 @@
 import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { t } from "../../../i18n/index.ts";
 import { OpenClawLightDomContentsElement } from "../../../lit/openclaw-element.ts";
 import { renderCompactAttachmentCard } from "./chat-attachment-card.ts";
@@ -12,6 +13,7 @@ const SVG_PREVIEW_FETCH_TIMEOUT_MS = 10_000;
 
 type SvgRenderSource = {
   url: string;
+  text: string;
   retainCount: number;
   retired: boolean;
 };
@@ -23,7 +25,13 @@ class ChatSvgAttachment extends OpenClawLightDomContentsElement {
   @property() mimeType = "image/svg+xml";
   @property({ type: Number }) sizeBytes: number | undefined;
   @property() downloadHref = "";
-  @property({ attribute: false }) onOpen: ((src: string, release: () => void) => void) | undefined;
+  @property({ attribute: false }) onOpen:
+    | ((
+        src: string,
+        release: () => void,
+        svgSource: NonNullable<ImageLightboxItem["svgSource"]>,
+      ) => void)
+    | undefined;
   @property({ attribute: false }) onExpand: (() => void) | undefined;
   @property({ attribute: false }) onMediaLoaded: (() => void) | undefined;
 
@@ -153,6 +161,7 @@ class ChatSvgAttachment extends OpenClawLightDomContentsElement {
       }
       this.renderSource = {
         url: blobUrl,
+        text: new TextDecoder().decode(bytes),
         retainCount: 0,
         retired: false,
       };
@@ -183,7 +192,7 @@ class ChatSvgAttachment extends OpenClawLightDomContentsElement {
     }
     const release = this.retainSource(source);
     try {
-      this.onOpen(source.url, release);
+      this.onOpen(source.url, release, { src: source.url, text: source.text });
     } catch (error) {
       release();
       throw error;
