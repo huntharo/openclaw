@@ -36,6 +36,8 @@ export type AgentHarnessHostCapabilities = Readonly<{
   version: 1;
   /** Fails closed unless this exact admitted run capability remains active. */
   assertActive: () => void;
+  /** Prepared transcript policy and live authority for owned tool-result projection. */
+  toolResultPolicy?: () => Readonly<import("./tool-result-policy.js").AgentToolResultPolicy>;
   /** Native delegation without person selection must remain unambiguous at admission. */
   assertNativeSubagentSpawnAllowed?: () => void;
   /** Binds the actual native model; returns undefined only for runs without an operator source. */

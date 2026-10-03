@@ -42,7 +42,7 @@ import {
   buildLexicalIndex,
   readParameterText,
   scoreLexical,
-  tokenizeDocument,
+  toolSearchEntryTerms,
   tokenizeQuery,
 } from "./tool-search-ranking.js";
 import {
@@ -77,51 +77,6 @@ function describeEntry(entry: ToolSearchCatalogEntry) {
     parameters: entry.parameters ?? {},
     ...(entry.outputSchema ? { outputSchema: entry.outputSchema } : {}),
   };
-}
-
-/**
- * Text indexed for one catalog entry. Parameter names and their descriptions are
- * included because they often carry the only words a task shares with a tool:
- * "post a message to a channel" reaches a tool whose description says only
- * "Send a message" through its `channel` parameter. Codex and the Claude API
- * tool-search tools index argument metadata for the same reason.
- */
-function toolSearchEntryText(entry: ToolSearchCatalogEntry, parameterText?: string): string {
-  // Only first-party schemas are walked. MCP and client parameters are untrusted
-  // and deliberately never traversed: compactToolSearchCatalogEntry reports them
-  // as "unknown" for the same reason, and a client may hand us a lazy object that
-  // throws on property access.
-  const parameters =
-    parameterText ?? (entry.source === "openclaw" ? readParameterText(entry.parameters) : "");
-  return [entry.name, entry.id, entry.label ?? "", entry.description, parameters]
-    .filter(Boolean)
-    .join(" ");
-}
-
-// Code Mode creates runtimes per cell. Share tokens for the owner's entries snapshot;
-// replacing that array retires the cache, and text changes refresh individual entries.
-const toolSearchDocuments = new WeakMap<
-  readonly ToolSearchCatalogEntry[],
-  WeakMap<ToolSearchCatalogEntry, { text: string; terms: string[] }>
->();
-
-function toolSearchEntryTerms(
-  entries: readonly ToolSearchCatalogEntry[],
-  entry: ToolSearchCatalogEntry,
-  parameterText: string,
-): readonly string[] {
-  let documents = toolSearchDocuments.get(entries);
-  if (!documents) {
-    documents = new WeakMap();
-    toolSearchDocuments.set(entries, documents);
-  }
-  const text = toolSearchEntryText(entry, parameterText);
-  let document = documents.get(entry);
-  if (!document || document.text !== text) {
-    document = { text, terms: tokenizeDocument(text) };
-    documents.set(entry, document);
-  }
-  return document.terms;
 }
 
 function findEntry(
@@ -327,7 +282,18 @@ export class ToolSearchRuntime {
   constructor(
     private readonly ctx: ToolSearchToolContext,
     private readonly config: ToolSearchConfig,
-    private readonly options: { prepareInput?: boolean; validateInput?: boolean } = {},
+    private readonly options: {
+      prepareInput?: boolean;
+      validateInput?: boolean;
+      onToolStart?: (input: { toolCallId: string; toolName: string; args: unknown }) => void;
+      onAcceptedResult?: (input: {
+        toolCallId: string;
+        toolName: string;
+        args: unknown;
+        result: AgentToolResult<unknown>;
+      }) => void;
+      onResultFailure?: () => void;
+    } = {},
   ) {}
 
   search = async (
@@ -465,6 +431,10 @@ export class ToolSearchRuntime {
     this.networkInvocations.set(parentToolCallId, state);
   }
 
+  observeResultFailure(): void {
+    this.options.onResultFailure?.();
+  }
+
   hasNetworkContent(parentToolCallId?: string): boolean {
     return parentToolCallId
       ? this.networkInvocations.has(parentToolCallId)
@@ -503,18 +473,24 @@ export class ToolSearchRuntime {
     return isAgentToolReplaySafe(entry.tool);
   };
 
-  private readonly callEntry = (
+  private readonly callEntry = async (
     entry: ToolSearchCatalogEntry,
     input?: unknown,
     options?: ToolSearchCallOptions,
-  ) =>
-    runScheduledToolSearchCall({
-      ctx: this.ctx,
-      entry,
-      signal: options?.signal,
-      execute: (currentEntry, signal) =>
-        this.executeEntry(resolveCatalog(this.ctx), currentEntry, input, { ...options, signal }),
-    });
+  ) => {
+    try {
+      return await runScheduledToolSearchCall({
+        ctx: this.ctx,
+        entry,
+        signal: options?.signal,
+        execute: (currentEntry, signal) =>
+          this.executeEntry(resolveCatalog(this.ctx), currentEntry, input, { ...options, signal }),
+      });
+    } catch (error) {
+      this.options.onResultFailure?.();
+      throw error;
+    }
+  };
 
   private readonly executeEntry = async (
     catalog: ToolSearchCatalogSession,
@@ -530,6 +506,7 @@ export class ToolSearchRuntime {
     const normalizedInput = input ?? {};
     const parentId = sanitizeToolCallIdPart(options?.parentToolCallId ?? "direct");
     const toolCallId = `tool_call:${parentId}:${entry.name}:${++this.callSequence}`;
+    this.options.onToolStart?.({ toolCallId, toolName: entry.name, args: normalizedInput });
     bindJoinedCollectorInvocation(entry.tool, toolCallId);
     await assertCatalogOutputSchemaIsValid(entry);
     const outputVariants =
@@ -659,6 +636,12 @@ export class ToolSearchRuntime {
           )
         : await runExecution();
       acceptedResult = await acceptResultBeforeProjection(result);
+      this.options.onAcceptedResult?.({
+        toolCallId,
+        toolName: entry.name,
+        args: normalizedInput,
+        result: acceptedResult,
+      });
       if (options?.parentToolCallId) {
         this.terminalTargetBatchByParent.set(
           options.parentToolCallId,

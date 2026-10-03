@@ -13,7 +13,12 @@ import {
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { createAgentToolResultMiddlewareRunner } from "../harness/tool-result-middleware.js";
+import {
+  captureAgentToolResultPolicy,
+  type AgentToolResultPolicy,
+} from "../harness/tool-result-policy.js";
 import type { AgentToolResult } from "../runtime/index.js";
+import { copyInternalToolResultState } from "../runtime/internal-hooks.js";
 import type { ExtensionFactory, SessionManager } from "../sessions/index.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { recordEmbeddedToolReceipt } from "./tool-send-receipts.js";
@@ -31,25 +36,28 @@ type AgentToolResultEvent = {
 
 function buildAgentToolResultMiddlewareFactory(
   sessionManager: SessionManager,
-  context: {
+  context: AgentToolResultPolicy & {
     agentId?: string;
     sessionId?: string;
     sessionKey?: string;
     runId?: string;
+    toolNames?: () => readonly string[];
   },
 ): ExtensionFactory {
-  const { agentId, sessionKey, runId } = context;
+  const { runId } = context;
   // Snapshot the prepared session once; tool results must never rediscover
   // mutable session identity after a later turn has started.
   const sessionId = context.sessionId ?? sessionManager.getSessionId?.();
-  const runner = createAgentToolResultMiddlewareRunner({
-    runtime: "openclaw",
-    ...(agentId ? { agentId } : {}),
-    ...(sessionId ? { sessionId } : {}),
-    ...(sessionKey ? { sessionKey } : {}),
-    ...(runId ? { runId } : {}),
-  });
   return (agent) => {
+    const runner = createAgentToolResultMiddlewareRunner({
+      runtime: "openclaw",
+      ...context,
+      sessionId,
+      resultVisibility: "model",
+      get toolNames() {
+        return [...new Set([...agent.getActiveTools(), ...(context.toolNames?.() ?? [])])];
+      },
+    });
     agent.on("tool_result", async (rawEvent: unknown, ctx: { cwd?: string }) => {
       const event = (asOptionalRecord(rawEvent) ?? {}) as AgentToolResultEvent;
       if (!event.toolName) {
@@ -61,10 +69,10 @@ function buildAgentToolResultMiddlewareFactory(
           : undefined;
       const toolCallId = eventToolCallId ?? `openclaw-${randomUUID()}`;
       const content = Array.isArray(event.content) ? event.content : [];
-      const current = {
+      const current = copyInternalToolResultState(event, {
         content,
         details: event.details,
-      } satisfies AgentToolResult<unknown>;
+      } satisfies AgentToolResult<unknown>);
       if (eventToolCallId) {
         // Delivery evidence stays private so middleware may fully replace result details.
         recordEmbeddedToolReceipt(
@@ -122,6 +130,11 @@ export function buildEmbeddedExtensionFactories(params: {
   sessionId?: string;
   sessionKey?: string;
   runId?: string;
+  assertCurrent?: () => void;
+  signal?: AbortSignal;
+  task?: string;
+  detached?: boolean;
+  toolNames?: () => readonly string[];
 }): ExtensionFactory[] {
   const factories: ExtensionFactory[] = [];
   if (resolveEffectiveCompactionMode(params.cfg) === "safeguard") {
@@ -152,6 +165,21 @@ export function buildEmbeddedExtensionFactories(params: {
     });
     factories.push(compactionSafeguardExtension);
   }
-  factories.push(buildAgentToolResultMiddlewareFactory(params.sessionManager, params));
+  factories.push(
+    buildAgentToolResultMiddlewareFactory(params.sessionManager, {
+      agentId: params.agentId,
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      runId: params.runId,
+      toolNames: params.toolNames,
+      ...captureAgentToolResultPolicy({
+        target: params.sessionManager.getSessionTarget?.(),
+        detached: params.detached,
+        task: params.task,
+        signal: params.signal,
+        assertCurrent: params.assertCurrent,
+      }),
+    }),
+  );
   return factories;
 }

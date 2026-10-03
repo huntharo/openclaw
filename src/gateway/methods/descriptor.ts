@@ -23,13 +23,20 @@ export type GatewayMethodOwner =
 type GatewayMethodStartupAvailability = "available" | "unavailable-until-sidecars";
 export type GatewayMethodProfileAccess = "independent" | "required";
 
-/** A plugin operation addresses one existing session through the shared participation policy. */
-export type GatewayMethodSessionAccess = {
-  mode: "write";
-  allowOwnSessionScope?: boolean;
-  /** Reuse the complete effective session tool policy for this capability. */
-  requiredTool?: string;
-};
+/** A plugin operation addresses one existing session through its canonical access policy. */
+export type GatewayMethodSessionAccess =
+  | {
+      mode: "write";
+      allowOwnSessionScope?: boolean;
+      /** Reuse the complete effective session tool policy for this capability. */
+      requiredTool?: string;
+    }
+  | {
+      mode: "read";
+      /** Read resources require broad read scope; the write alternative never grants reads. */
+      allowOwnSessionScope?: never;
+      requiredTool?: string;
+    };
 
 export type GatewayMethodHandler = (opts: never) => unknown;
 

@@ -215,40 +215,50 @@ describe("createAgentToolResultMiddlewareRunner", () => {
     expect(result).toBe(original);
   });
 
-  it("sanitizes incoming cyclic details so a no-op middleware does not fail closed", async () => {
-    // The bug class behind silent Discord delivery in 2026.5.5: any plugin
-    // that registers a tool-result middleware (e.g. bundled tokenjuice)
-    // causes the harness to validate `event.result` against shape rules,
-    // and tool emitters' raw channel-send payloads fail those rules.
-    const client: Record<string, unknown> = { type: "fake-channel-client" };
-    const payload: Record<string, unknown> = {
-      ok: true,
-      messageId: "1501757759073419394",
-      delete: () => Promise.resolve(),
-      client,
-    };
-    client.message = payload;
-    const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
-      () => undefined,
-    ]);
+  it.each([false, true])(
+    "preserves shared incoming details while sanitizing dependencies (cycle=%s)",
+    async (cyclic) => {
+      // The bug class behind silent Discord delivery in 2026.5.5: any plugin
+      // that registers a tool-result middleware (e.g. bundled tokenjuice)
+      // causes the harness to validate `event.result` against shape rules,
+      // and tool emitters' raw channel-send payloads fail those rules.
+      const client: Record<string, unknown> = { type: "fake-channel-client" };
+      const shared = { label: "shared delivery evidence" };
+      const payload: Record<string, unknown> = {
+        ok: true,
+        messageId: "1501757759073419394",
+        delete: () => Promise.resolve(),
+        client,
+        first: shared,
+        second: shared,
+      };
+      if (cyclic) {
+        client.message = payload;
+      }
+      const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
+        () => undefined,
+      ]);
 
-    const result = await runner.applyToolResultMiddleware({
-      toolCallId: "call-1",
-      toolName: "message",
-      args: {},
-      result: {
-        content: [{ type: "text", text: "delivered" }],
-        details: payload,
-      },
-    });
+      const result = await runner.applyToolResultMiddleware({
+        toolCallId: "call-1",
+        toolName: "message",
+        args: {},
+        result: {
+          content: [{ type: "text", text: "delivered" }],
+          details: payload,
+        },
+      });
 
-    expect((result.details as { middlewareError?: boolean }).middlewareError).toBeUndefined();
-    expect(result.details).toEqual({
-      ok: true,
-      messageId: "1501757759073419394",
-      client: { type: "fake-channel-client" },
-    });
-  });
+      expect((result.details as { middlewareError?: boolean }).middlewareError).toBeUndefined();
+      expect(result.details).toEqual({
+        ok: true,
+        messageId: "1501757759073419394",
+        client: { type: "fake-channel-client" },
+        first: { label: "shared delivery evidence" },
+        second: { label: "shared delivery evidence" },
+      });
+    },
+  );
 
   it("truncates oversized incoming text before a no-op middleware", async () => {
     let observedText = "";
@@ -327,6 +337,10 @@ describe("createAgentToolResultMiddlewareRunner", () => {
   });
 
   it("coerces incoming nested toolResult content before middleware validation", async () => {
+    const first = Object.freeze({ type: "text", text: "sent message id msg_123" });
+    const second = Object.freeze({ type: "text", text: "status delivered" });
+    const producerContent = [first, second];
+    const originalBytes = Buffer.from(JSON.stringify(producerContent), "utf8");
     const runner = createAgentToolResultMiddlewareRunner({ runtime: "codex" }, [() => undefined]);
 
     const result = await runner.applyToolResultMiddleware({
@@ -338,10 +352,7 @@ describe("createAgentToolResultMiddlewareRunner", () => {
           {
             type: "toolResult",
             toolUseId: "call-1",
-            content: [
-              { type: "text", text: "sent message id msg_123" },
-              { type: "text", text: "status delivered" },
-            ],
+            content: producerContent,
           } as never,
         ],
         details: { status: "sent", messageId: "msg_123" },
@@ -355,6 +366,9 @@ describe("createAgentToolResultMiddlewareRunner", () => {
       },
     ]);
     expect(result.details).toEqual({ status: "sent", messageId: "msg_123" });
+    expect(first.text).toBe("sent message id msg_123");
+    expect(second.text).toBe("status delivered");
+    expect(Buffer.from(JSON.stringify(producerContent), "utf8")).toEqual(originalBytes);
   });
 
   it("coerces nested tool_result blocks returned by middleware", async () => {
@@ -576,6 +590,36 @@ describe("createAgentToolResultMiddlewareRunner", () => {
     });
   });
 
+  it("bounds normalization work for compact shared incoming detail graphs", async () => {
+    let reads = 0;
+    let details: object = {
+      get value() {
+        reads += 1;
+        if (reads === 20_001) {
+          throw new Error("Fixture stopped unbounded shared-graph expansion.");
+        }
+        return "leaf";
+      },
+    };
+    for (let depth = 0; depth < 12; depth += 1) {
+      details = { first: details, second: details, third: details };
+    }
+    const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
+      () => undefined,
+    ]);
+
+    const result = await runner.applyToolResultMiddleware({
+      toolCallId: "call-1",
+      toolName: "exec",
+      args: {},
+      result: { content: [{ type: "text", text: "completed" }], details },
+    });
+
+    expect(result.content).toEqual([{ type: "text", text: "completed" }]);
+    expect(result.details).toBeNull();
+    expect(reads).toBeLessThan(20_001);
+  });
+
   it.each([10, 147])("preserves the wiki_lint summary with %i issues", async (count) => {
     const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
       (event) => ({ result: event.result }),
@@ -593,12 +637,7 @@ describe("createAgentToolResultMiddlewareRunner", () => {
       issuesByCategory: { quality: [...issues] },
       reportPath: "reports/lint.md",
     };
-    // The wiki shares issue objects; incoming normalization removes repeated references.
-    const normalizedDetails = {
-      ...details,
-      issuesByCategory: { quality: issues.map(() => null) },
-    };
-    const originalSizeBytes = Buffer.byteLength(JSON.stringify(normalizedDetails));
+    const originalSizeBytes = Buffer.byteLength(JSON.stringify(details));
     expect(originalSizeBytes).toBeLessThanOrEqual(100_000);
     const summary = `Issues: ${count} total (0 errors, ${count} warnings)`;
     const result = await runner.applyToolResultMiddleware({
@@ -609,9 +648,7 @@ describe("createAgentToolResultMiddlewareRunner", () => {
     });
 
     expect(result.content).toEqual([{ type: "text", text: summary }]);
-    expect(result.details).toEqual(
-      count === 10 ? normalizedDetails : { truncated: true, originalSizeBytes },
-    );
+    expect(result.details).toEqual(count === 10 ? details : { truncated: true, originalSizeBytes });
   });
 
   it("snapshots confirmed delivery before oversized details are collapsed", async () => {

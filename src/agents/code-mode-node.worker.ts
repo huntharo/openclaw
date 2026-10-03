@@ -13,6 +13,7 @@ import {
   boundCodeModeError,
   captureCodeModeOutput,
   captureCodeModeValue,
+  resolveCodeModeOriginalCaptureBytes,
   EMPTY_CODE_MODE_OUTPUT,
 } from "./code-mode-json.js";
 import { CodeModeNodeProgress } from "./code-mode-node-progress.js";
@@ -367,6 +368,10 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
   let output: unknown[] = [];
   let consumed = channel?.consumeInput;
   const config = input.config;
+  const originalTextMaxBytes = resolveCodeModeOriginalCaptureBytes(
+    input.originalTextMaxBytes,
+    config,
+  );
   const startedAt = performance.now();
   const progress = new CodeModeNodeProgress(input.progress);
   try {
@@ -419,7 +424,7 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
           pendingRequests: current.pendingRequests,
           canceledRequestIds: current.canceledRequestIds,
           settlementMode,
-          output: captureCodeModeOutput(output, config.maxOutputBytes),
+          output: captureCodeModeOutput(output, config.maxOutputBytes, originalTextMaxBytes),
           // Worker-wide V8 allocation is diagnostic, not a per-context memory bound.
           memoryUsedBytes: getHeapStatistics().used_heap_size,
           ...(current.networkContentObserved ? { networkContentObserved: true as const } : {}),
@@ -464,7 +469,7 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
         return failed(
           failure.code,
           boundCodeModeError(failure.error, config.maxOutputBytes),
-          captureCodeModeOutput(output, config.maxOutputBytes),
+          captureCodeModeOutput(output, config.maxOutputBytes, originalTextMaxBytes),
           failure.failurePhase,
         );
       }
@@ -475,19 +480,20 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
         return failed(
           failure.code,
           boundCodeModeError(failure.error, config.maxOutputBytes),
-          captureCodeModeOutput(output, config.maxOutputBytes),
+          captureCodeModeOutput(output, config.maxOutputBytes, originalTextMaxBytes),
           failure.failurePhase,
         );
       }
       return {
         status: "completed",
-        output: captureCodeModeOutput(output, config.maxOutputBytes),
+        output: captureCodeModeOutput(output, config.maxOutputBytes, originalTextMaxBytes),
         value: captureCodeModeValue(
           JSON.parse(outcome.json),
           config.maxOutputBytes,
           input.retainFinalValue
             ? Math.min(config.memoryLimitBytes, config.maxSnapshotBytes)
             : config.maxOutputBytes,
+          originalTextMaxBytes,
         ),
       };
     }
@@ -512,7 +518,9 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
               : String(error),
         config.maxOutputBytes,
       ),
-      timeout ? progress.output() : captureCodeModeOutput(output, config.maxOutputBytes),
+      timeout
+        ? progress.output()
+        : captureCodeModeOutput(output, config.maxOutputBytes, originalTextMaxBytes),
     );
   }
 }

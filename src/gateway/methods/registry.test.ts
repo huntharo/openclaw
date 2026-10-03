@@ -55,6 +55,36 @@ describe("gateway method registry", () => {
       createGatewayMethodRegistry([{ ...plugin, scope: "operator.sessions.write" }]),
     ).toThrow("operator.write");
   });
+  it("admits read resources only with read scope and a profile, rejecting malformed runtime policy", () => {
+    const descriptor = createPluginGatewayMethodDescriptor({
+      pluginId: "example",
+      name: "example.read",
+      handler,
+      scope: READ_SCOPE,
+      sessionAccess: { mode: "read", requiredTool: "example" },
+    });
+    const registry = createGatewayMethodRegistry([descriptor]);
+    expect(registry.getScope("example.read")).toBe(READ_SCOPE);
+    expect(registry.requiresAuthenticatedProfile("example.read")).toBe(true);
+    expect(() => createGatewayMethodRegistry([{ ...descriptor, scope: WRITE_SCOPE }])).toThrow(
+      "operator.read",
+    );
+    expect(() =>
+      createGatewayMethodRegistry([{ ...descriptor, profileAccess: "independent" }]),
+    ).toThrow("authenticated profile");
+    for (const policy of [
+      { mode: "read", allowOwnSessionScope: true },
+      { mode: "read", allowOwnSessionScope: false },
+      { mode: "unknown" },
+    ]) {
+      const malformed = { ...descriptor };
+      // Native plugin metadata can arrive from JavaScript outside the static contract.
+      Object.assign(malformed, { sessionAccess: policy });
+      expect(() => createGatewayMethodRegistry([malformed])).toThrow(
+        /read session resources|unknown session resource/,
+      );
+    }
+  });
   it.each(["enumerable", "non-enumerable", "inherited"])(
     "indexes handlers, scopes, startup state, and control-plane metadata from %s properties",
     (properties) => {

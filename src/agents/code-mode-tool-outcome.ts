@@ -1,4 +1,5 @@
 import { stableStringify } from "@openclaw/normalization-core";
+import { copyInternalToolResultState } from "./runtime/internal-hooks.js";
 
 // These identities never cross the guest bridge or change the delivered receipt.
 const outcomes = new WeakMap<object, string>();
@@ -14,6 +15,7 @@ export function recordCodeModeToolOutcome<T extends object>(
   payload: Record<string, unknown>,
   pending?: readonly PendingOperation[],
 ): T {
+  copyInternalToolResultState(payload, result);
   const retained = outcomes.get(payload);
   if (retained !== undefined) {
     outcomes.set(result, retained);

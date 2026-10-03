@@ -7,7 +7,10 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { PluginRuntimeCloseRetainedError } from "../plugins/runtime-close-error.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { observeAgentRunApprovalWait } from "./agent-run-approval-wait.js";
+import {
+  observeAgentRunApprovalWait,
+  type AgentRunApprovalWait,
+} from "./agent-run-approval-wait.js";
 import { raceWithAbortSignal } from "./agent-tools.abort.js";
 import { runBridgeRequest } from "./code-mode-bridge.js";
 import type { CodeModeCatalogProjection } from "./code-mode-catalog.js";
@@ -429,6 +432,77 @@ export function waitForPendingBridgeSettlement(
       ? Promise.all(outstanding.map((entry) => entry.promise))
       : Promise.race(outstanding.map((entry) => entry.promise));
   return settlement.then(() => undefined);
+}
+
+export async function waitForPendingCodeModeSettlement(
+  pending: readonly PendingBridgeState[],
+  settlementMode: CodeModeSettlementMode,
+  budget: { deadlineMs: number },
+  approvalWait: AgentRunApprovalWait,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  // Abort wins even over already-settled requests: callers treat `false` as
+  // "do not resume the guest", which is what a cancelled exec/wait needs.
+  if (signal?.aborted) {
+    return false;
+  }
+  const required = pendingBridgeStatesForSettlement(pending, settlementMode);
+  if (
+    required.length === 0 ||
+    (settlementMode.kind === "awaiting" && required.some((entry) => entry.settled)) ||
+    required.every((entry) => entry.settled)
+  ) {
+    return true;
+  }
+  const pausedAtMs = approvalWait.pausedMs;
+  const timeoutMs = Math.max(1, budget.deadlineMs - performance.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    const bridgeReady = waitForPendingBridgeSettlement(pending, settlementMode).then(() => true);
+    return await Promise.race([
+      bridgeReady,
+      new Promise<boolean>((resolve) => {
+        let remainingMs = timeoutMs;
+        let resumedAtMs = performance.now();
+        const arm = () => {
+          resumedAtMs = performance.now();
+          timer = setTimeout(() => resolve(false), Math.max(1, remainingMs));
+        };
+        approvalWait.onChange = (approvalPending) => {
+          if (approvalPending) {
+            // Preserve the unused guest budget while its owning approval remains inline.
+            clearTimeout(timer);
+            remainingMs = Math.max(1, remainingMs - (performance.now() - resumedAtMs));
+          } else {
+            arm();
+          }
+        };
+        if (!approvalWait.pending) {
+          arm();
+        }
+      }),
+      ...(signal
+        ? [
+            new Promise<boolean>((resolve) => {
+              onAbort = () => resolve(false);
+              signal.addEventListener("abort", onAbort, { once: true });
+            }),
+          ]
+        : []),
+    ]);
+  } finally {
+    // Credit only approval time actually spent blocked here. A live sibling
+    // approval must not refund guest computation, worker restore, or parked time.
+    budget.deadlineMs += Math.max(0, approvalWait.pausedMs - pausedAtMs);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (signal && onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+    approvalWait.onChange = undefined;
+  }
 }
 
 export function reserveActiveRunSlot(ownedRunId?: string): () => void {

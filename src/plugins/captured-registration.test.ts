@@ -1,5 +1,9 @@
 // Covers captured plugin registration behavior in test registries.
 import { describe, expect, it, vi } from "vitest";
+import type {
+  AgentToolResultMiddleware,
+  AgentToolResultMiddlewareOptions,
+} from "./agent-tool-result-middleware-types.js";
 import type { PluginCapabilityCatalogContext } from "./capability-catalog-context.types.js";
 import {
   capturePluginRegistration,
@@ -305,6 +309,62 @@ describe("captured plugin registration", () => {
     await registration.handler({ ...event, toolName: "exec" }, { runtime: "codex" });
 
     expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("deduplicates captured middleware without broadening conflicting behavior or paired scopes", async () => {
+    const captured = createCapturedPluginRegistration();
+    const handler = vi.fn<AgentToolResultMiddleware>();
+    const options: AgentToolResultMiddlewareOptions = {
+      runtimes: ["codex"],
+      matcher: ["exec"],
+      failureMode: "passthrough",
+      originalTextMaxBytes: 4096,
+    };
+    captured.api.registerAgentToolResultMiddleware(handler, options);
+    options.failureMode = "error";
+    options.originalTextMaxBytes = 1024;
+    options.runtimes?.push("openclaw");
+    expect(() =>
+      captured.api.registerAgentToolResultMiddleware(handler, {
+        runtimes: ["codex"],
+        matcher: ["read"],
+        failureMode: "error",
+        originalTextMaxBytes: 4096,
+      }),
+    ).toThrow("same original capture cap and failure mode");
+    expect(() =>
+      captured.api.registerAgentToolResultMiddleware(handler, {
+        runtimes: ["codex"],
+        matcher: ["read"],
+        failureMode: "passthrough",
+        originalTextMaxBytes: 8192,
+      }),
+    ).toThrow("same original capture cap and failure mode");
+    captured.api.registerAgentToolResultMiddleware(handler, {
+      runtimes: ["openclaw"],
+      matcher: ["read"],
+      failureMode: "passthrough",
+      originalTextMaxBytes: 4096,
+    });
+    expect(captured.agentToolResultMiddlewares).toHaveLength(1);
+    const registration = captured.agentToolResultMiddlewares[0];
+    if (!registration) {
+      throw new Error("Captured middleware registration missing");
+    }
+    expect(registration.rawHandler).toBe(handler);
+    expect(registration.handler.failureMode).toBe("passthrough");
+    expect(registration.handler.originalTextMaxBytes).toBe(4096);
+    const event = {
+      toolCallId: "call-1",
+      args: {},
+      result: { content: [{ type: "text" as const, text: "ok" }], details: {} },
+    };
+    await registration.handler({ ...event, toolName: "read" }, { runtime: "codex" });
+    await registration.handler({ ...event, toolName: "exec" }, { runtime: "openclaw" });
+    expect(handler).not.toHaveBeenCalled();
+    await registration.handler({ ...event, toolName: "exec" }, { runtime: "codex" });
+    await registration.handler({ ...event, toolName: "read" }, { runtime: "openclaw" });
+    expect(handler).toHaveBeenCalledTimes(2);
   });
 
   it("returns synthetic scheduled-turn ids independent of human-readable names", async () => {

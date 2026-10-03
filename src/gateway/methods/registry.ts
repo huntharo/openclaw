@@ -36,13 +36,26 @@ function normalizeDescriptor(input: GatewayMethodDescriptorInput): GatewayMethod
   const profileAccess =
     input.profileAccess ??
     (input.sessionAccess || input.owner.kind !== "core" ? "required" : "independent");
-  if (
-    input.sessionAccess &&
-    (normalizedScope !== "operator.write" || profileAccess === "independent")
-  ) {
-    throw new Error(
-      `session-scoped gateway methods require operator.write and an authenticated profile: ${name}`,
-    );
+  if (input.sessionAccess) {
+    let requiredScope: OperatorScope;
+    switch (input.sessionAccess.mode) {
+      case "write":
+        requiredScope = "operator.write";
+        break;
+      case "read":
+        requiredScope = "operator.read";
+        if (input.sessionAccess.allowOwnSessionScope !== undefined) {
+          throw new Error(`read session resources cannot allow own-session write scope: ${name}`);
+        }
+        break;
+      default:
+        throw new Error(`unknown session resource access mode: ${name}`);
+    }
+    if (normalizedScope !== requiredScope || profileAccess === "independent") {
+      throw new Error(
+        `session-scoped gateway methods require ${requiredScope} and an authenticated profile: ${name}`,
+      );
+    }
   }
   return {
     ...input,
