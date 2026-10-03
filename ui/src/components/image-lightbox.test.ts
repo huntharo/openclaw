@@ -130,7 +130,9 @@ describe("openclaw-image-lightbox", () => {
     expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
     viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-interaction")?.click();
     await viewer.updateComplete;
-    expect(viewer.shadowRoot?.querySelector("iframe")?.getAttribute("sandbox")).toBe("");
+    expect(viewer.shadowRoot?.querySelector("iframe")?.getAttribute("sandbox")).toBe(
+      "allow-scripts",
+    );
     expect(viewer.shadowRoot?.querySelector("img")).toBeNull();
 
     // A stale source must not enable controls for a replaced blob, even with the same title.

@@ -1,5 +1,10 @@
 import { html, type TemplateResult } from "lit";
+import { INTERACTIVE_SVG_VIEWER_PATH } from "../../../src/shared/interactive-svg-viewer.js";
+import { resolveControlUiPaths } from "../app/browser.ts";
 import { t } from "../i18n/index.ts";
+import { registerInteractiveSvgEnglish } from "../i18n/locales/en-interactive-svg.ts";
+
+registerInteractiveSvgEnglish();
 
 export function renderLightboxAction(
   className: string,
@@ -19,25 +24,23 @@ export function renderLightboxAction(
   </button>`;
 }
 
-export function renderSvgAction(active: boolean, toggle: () => void) {
-  return html`<button
-    class="action svg-interaction"
-    type="button"
-    aria-pressed=${active}
-    title=${t("chat.imageLightbox.svgInteractionHelp")}
-    @click=${toggle}
-  >
-    ${t(active ? "chat.imageLightbox.svgPreview" : "chat.imageLightbox.svgInteract")}
-  </button>`;
-}
-
-export function renderSvgFrame(document: string, title: string) {
+export function renderSvgFrame(
+  title: string,
+  scheme: "light" | "dark",
+  loaded: (frame: HTMLIFrameElement) => void,
+) {
+  const [, resourceBasePath] = resolveControlUiPaths(window.location.pathname);
   return html`<iframe
     class="interactive-svg"
     title=${t("chat.imageLightbox.svgLabel", { title })}
-    sandbox=""
+    sandbox="allow-scripts"
     referrerpolicy="no-referrer"
-    .srcdoc=${document}
+    style=${`color-scheme: ${scheme}`}
+    src=${`${resourceBasePath}${INTERACTIVE_SVG_VIEWER_PATH}`}
+    @load=${(event: Event) => {
+      // SAFETY: Lit attaches this listener only to the iframe rendered here.
+      loaded(event.currentTarget as HTMLIFrameElement);
+    }}
   ></iframe>`;
 }
 

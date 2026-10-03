@@ -11,12 +11,58 @@ import { readResponseBytesWithinLimit } from "./chat-response-bytes.ts";
 const SVG_PREVIEW_MAX_BYTES = 256 * 1024;
 const SVG_PREVIEW_FETCH_TIMEOUT_MS = 10_000;
 
-type SvgRenderSource = {
+type SvgText = { text: string } | { decodeError: true };
+type SvgRenderSource = SvgText & {
   url: string;
-  text: string;
   retainCount: number;
   retired: boolean;
 };
+
+function decodeSvgSource(
+  buffer: ArrayBuffer,
+  contentType: string | null,
+): SvgText & { mediaType: string } {
+  const bytes = new Uint8Array(buffer);
+  const bom =
+    bytes[0] === 0xff && bytes[1] === 0xfe
+      ? bytes[2] === 0 && bytes[3] === 0
+        ? "utf-32le"
+        : "utf-16le"
+      : bytes[0] === 0xfe && bytes[1] === 0xff
+        ? "utf-16be"
+        : bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 0xfe && bytes[3] === 0xff
+          ? "utf-32be"
+          : bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+            ? "utf-8"
+            : undefined;
+  const inferred =
+    bytes[0] === 0 && bytes[1] === 0x3c
+      ? "utf-16be"
+      : bytes[0] === 0x3c && bytes[1] === 0
+        ? "utf-16le"
+        : "utf-8";
+  const charset =
+    contentType && /^(?:image\/svg\+xml|application\/xml|text\/xml)\s*(?:;|$)/i.test(contentType)
+      ? /;\s*charset\s*=\s*(?:"([^"]+)"|'([^']+)'|([^;\s]+))/i.exec(contentType)
+      : null;
+  const mediaEncoding = charset?.[1] ?? charset?.[2] ?? charset?.[3];
+  try {
+    const probe = new TextDecoder(bom ?? inferred);
+    const prefix = probe.decode(bytes);
+    const declared = /^<\?xml\s[^?]*?\bencoding\s*=\s*["']([^"']+)["']/i.exec(prefix)?.[1];
+    // A BOM takes precedence over MIME charset, then the XML declaration.
+    const decoder = new TextDecoder(bom ?? mediaEncoding ?? declared ?? inferred, { fatal: true });
+    return {
+      text: decoder.decode(bytes),
+      mediaType: mediaEncoding ? `image/svg+xml;charset=${decoder.encoding}` : "image/svg+xml",
+    };
+  } catch (error) {
+    if (!(error instanceof RangeError) && !(error instanceof TypeError)) {
+      throw error;
+    }
+    return { decodeError: true, mediaType: "image/svg+xml" };
+  }
+}
 
 class ChatSvgAttachment extends OpenClawLightDomContentsElement {
   @property() src = "";
@@ -154,14 +200,18 @@ class ChatSvgAttachment extends OpenClawLightDomContentsElement {
       if (!bytes) {
         throw new Error("SVG attachment exceeds the preview budget");
       }
-      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "image/svg+xml" }));
+      const { mediaType, ...document } = decodeSvgSource(
+        bytes,
+        response.headers.get("Content-Type"),
+      );
+      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mediaType }));
       if (version !== this.loadVersion || !this.isConnected) {
         URL.revokeObjectURL(blobUrl);
         return;
       }
       this.renderSource = {
         url: blobUrl,
-        text: new TextDecoder().decode(bytes),
+        ...document,
         retainCount: 0,
         retired: false,
       };
@@ -192,7 +242,8 @@ class ChatSvgAttachment extends OpenClawLightDomContentsElement {
     }
     const release = this.retainSource(source);
     try {
-      this.onOpen(source.url, release, { src: source.url, text: source.text });
+      const document = "text" in source ? { text: source.text } : { decodeError: true as const };
+      this.onOpen(source.url, release, { src: source.url, ...document });
     } catch (error) {
       release();
       throw error;

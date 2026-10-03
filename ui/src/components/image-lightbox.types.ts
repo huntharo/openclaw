@@ -6,7 +6,7 @@ export type ImageLightboxItem = {
   width?: number;
   height?: number;
   /** Bounded bytes admitted by the SVG attachment owner, paired with its leased preview blob. */
-  svgSource?: { src: string; text: string };
+  svgSource?: { src: string } & ({ text: string } | { decodeError: true });
   release?: () => void;
   loadFullResolution?: () => Promise<ImageLightboxItem | null>;
   gallery?: ImageLightboxGallery;

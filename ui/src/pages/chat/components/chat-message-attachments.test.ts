@@ -280,83 +280,130 @@ describe("attachment sidebar source ownership", () => {
     container.remove();
   });
 
-  it("loads SVG attachments through an image object URL", async () => {
-    const intersectAttachment = stubAttachmentIntersection();
-    const source = `${window.location.origin}/vector.svg`;
-    const objectUrl = "blob:svg-attachment";
-    let objectBlob: Blob | undefined;
-    const revokeObjectURL = vi.fn();
-    const NativeUrl = URL;
-    vi.stubGlobal(
-      "URL",
-      class extends NativeUrl {
-        static override createObjectURL = vi.fn((object: Blob | MediaSource) => {
-          if (object instanceof Blob) {
-            objectBlob = object;
-          }
-          return objectUrl;
-        });
-        static override revokeObjectURL = revokeObjectURL;
-      },
-    );
-    const fetchMock = vi.fn<typeof fetch>(
-      async () =>
-        new Response('<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>', {
-          headers: { "Content-Type": "image/svg+xml" },
-        }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const container = document.body.appendChild(document.createElement("div"));
-    const onOpenImage = vi.fn();
-    const onAssistantAttachmentLoaded = vi.fn();
-    render(
-      renderAssistantAttachments(
-        [svgAttachment(source)],
-        { onOpenImage },
-        undefined,
-        onAssistantAttachmentLoaded,
-      ),
-      container,
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    await intersectAttachment();
-
-    await vi.waitFor(() =>
-      expect(container.querySelector("img.chat-message-image")?.getAttribute("src")).toBe(
-        objectUrl,
-      ),
-    );
-    expect(fetchMock).toHaveBeenCalledWith(
-      source,
-      expect.objectContaining({
-        credentials: "same-origin",
-        headers: { Accept: "image/svg+xml" },
-        method: "GET",
-      }),
-    );
-    expect(objectBlob?.type).toBe("image/svg+xml");
-    expect(container.querySelector("iframe")).toBeNull();
-    container.querySelector("img.chat-message-image")?.dispatchEvent(new Event("load"));
-    expect(onAssistantAttachmentLoaded).toHaveBeenCalledOnce();
-    container.querySelector<HTMLButtonElement>(".chat-message-image-button")?.click();
-    expect(onOpenImage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        src: objectUrl,
-        title: "vector.svg",
-        svgSource: {
-          src: objectUrl,
-          text: '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>',
+  const svgText = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/><text>café</text></svg>';
+  const utf16Text = '<?xml version="1.0" encoding="UTF-16"?>' + svgText;
+  const latinText = '<?xml version="1.0" encoding="ISO-8859-1"?>' + svgText;
+  it.each([
+    ["UTF-8", svgText, new TextEncoder().encode(svgText)],
+    [
+      "UTF-16 LE BOM",
+      utf16Text,
+      Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(utf16Text, "utf16le")]),
+    ],
+    [
+      "UTF-16 BE BOM",
+      utf16Text,
+      Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(utf16Text, "utf16le").swap16()]),
+    ],
+    ["declared ISO-8859-1", latinText, Buffer.from(latinText, "latin1")],
+    [
+      "MIME charset",
+      svgText,
+      Buffer.from(svgText, "latin1"),
+      "image/svg+xml; charset=ISO-8859-1",
+      "image/svg+xml;charset=windows-1252",
+    ],
+    [
+      "BOM before MIME charset",
+      svgText,
+      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(svgText)]),
+      "image/svg+xml; charset=ISO-8859-1",
+      "image/svg+xml;charset=utf-8",
+    ],
+    [
+      "unsupported MIME charset",
+      undefined,
+      new TextEncoder().encode(svgText),
+      "image/svg+xml; charset=unsupported-svg-encoding",
+    ],
+    [
+      "malformed UTF-8",
+      undefined,
+      Buffer.concat([
+        Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><text>'),
+        Buffer.from([0xff]),
+        Buffer.from("</text></svg>"),
+      ]),
+    ],
+  ] as const)(
+    "loads %s SVG bytes through the same leased preview and interaction source",
+    async (_encoding, text, bytes, contentType?: string, expectedMediaType?: string) => {
+      const intersectAttachment = stubAttachmentIntersection();
+      const source = `${window.location.origin}/vector.svg`;
+      const objectUrl = "blob:svg-attachment";
+      let objectBlob: Blob | undefined;
+      const revokeObjectURL = vi.fn();
+      const NativeUrl = URL;
+      vi.stubGlobal(
+        "URL",
+        class extends NativeUrl {
+          static override createObjectURL = vi.fn((object: Blob | MediaSource) => {
+            if (object instanceof Blob) {
+              objectBlob = object;
+            }
+            return objectUrl;
+          });
+          static override revokeObjectURL = revokeObjectURL;
         },
-      }),
-    );
-    const lightboxItem = onOpenImage.mock.calls[0]?.[0] as { release?: () => void } | undefined;
-    expect(lightboxItem?.release).toBeTypeOf("function");
-    container.remove();
-    expect(revokeObjectURL).not.toHaveBeenCalledWith(objectUrl);
-    lightboxItem?.release?.();
-    expect(revokeObjectURL).toHaveBeenCalledWith(objectUrl);
-  });
+      );
+      const fetchMock = vi.fn<typeof fetch>(
+        async () =>
+          new Response(bytes, {
+            headers: { "Content-Type": contentType ?? "image/svg+xml" },
+          }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const container = document.body.appendChild(document.createElement("div"));
+      const onOpenImage = vi.fn();
+      const onAssistantAttachmentLoaded = vi.fn();
+      render(
+        renderAssistantAttachments(
+          [svgAttachment(source)],
+          { onOpenImage },
+          undefined,
+          onAssistantAttachmentLoaded,
+        ),
+        container,
+      );
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      await intersectAttachment();
+
+      await vi.waitFor(() =>
+        expect(container.querySelector("img.chat-message-image")?.getAttribute("src")).toBe(
+          objectUrl,
+        ),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        source,
+        expect.objectContaining({
+          credentials: "same-origin",
+          headers: { Accept: "image/svg+xml" },
+          method: "GET",
+        }),
+      );
+      expect(objectBlob?.type).toBe(expectedMediaType ?? "image/svg+xml");
+      expect(objectBlob?.size).toBe(bytes.byteLength);
+      expect(container.querySelector("iframe")).toBeNull();
+      container.querySelector("img.chat-message-image")?.dispatchEvent(new Event("load"));
+      expect(onAssistantAttachmentLoaded).toHaveBeenCalledOnce();
+      container.querySelector<HTMLButtonElement>(".chat-message-image-button")?.click();
+      expect(onOpenImage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          src: objectUrl,
+          title: "vector.svg",
+          svgSource:
+            text === undefined ? { src: objectUrl, decodeError: true } : { src: objectUrl, text },
+        }),
+      );
+      const lightboxItem = onOpenImage.mock.calls[0]?.[0] as { release?: () => void } | undefined;
+      expect(lightboxItem?.release).toBeTypeOf("function");
+      container.remove();
+      expect(revokeObjectURL).not.toHaveBeenCalledWith(objectUrl);
+      lightboxItem?.release?.();
+      expect(revokeObjectURL).toHaveBeenCalledWith(objectUrl);
+    },
+  );
 
   it("keeps a cross-origin SVG with an extensionless label compact under the image CSP", async () => {
     const source = "https://cdn.example/vector.svg";

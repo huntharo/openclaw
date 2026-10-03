@@ -22,6 +22,7 @@ import { registerDevicesEnglish } from "../../ui/src/i18n/locales/en-devices.ts"
 import { registerDreamingEnglish } from "../../ui/src/i18n/locales/en-dreaming.ts";
 import { registerFilePreviewEnglish } from "../../ui/src/i18n/locales/en-file-preview.ts";
 import { registerGitHubEnglish } from "../../ui/src/i18n/locales/en-github.ts";
+import { registerInteractiveSvgEnglish } from "../../ui/src/i18n/locales/en-interactive-svg.ts";
 import { registerLabsEnglish } from "../../ui/src/i18n/locales/en-labs.ts";
 import { registerLinkReaderEnglish } from "../../ui/src/i18n/locales/en-link-reader.ts";
 import { registerLoginEnglish } from "../../ui/src/i18n/locales/en-login.ts";
@@ -84,6 +85,7 @@ const sourceFiles = [
   "en-devices.ts",
   "en-dreaming.ts",
   "en-file-preview.ts",
+  "en-interactive-svg.ts",
   "en-labs.ts",
   "en-login.ts",
   "en-link-reader.ts",
@@ -159,6 +161,10 @@ export function loadControlUiSourceCatalog(): TranslationMap {
         commands: registerCommandPaletteEnglish.catalog.chat.commands,
         welcome: registerCommandPaletteEnglish.catalog.chat.welcome,
         messages: registerChatMessageMetadataEnglish.catalog.chat.messages,
+        imageLightbox: {
+          ...en.chat.imageLightbox,
+          ...registerInteractiveSvgEnglish.catalog.chat.imageLightbox,
+        },
       },
       agentTools: {
         ...registerGitHubEnglish.catalog.agentTools,

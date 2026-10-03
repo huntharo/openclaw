@@ -29,11 +29,25 @@ While the initial connection or a route loads, shimmer placeholders reserve the 
 The selected chat loads before automatic sidebar session lists refresh. Live events remain subscribed during startup, and explicit sidebar actions remain available. Background lists resume after the transcript loads or reports an error.
 
 SVG attachments open as inert image previews. Choose **Interact with SVG** in
-the image lightbox to use hover and keyboard-focus controls in an isolated view.
-Scripts, hyperlinks, external resources, and network requests remain disabled;
-JavaScript-driven diagrams continue to use the image preview. **Show image
+the image lightbox to run the SVG's scripts, event handlers, and CSS controls in
+an isolated frame. This opt-in preserves JavaScript-driven hover, zoom, and
+search behavior without granting access to OpenClaw's page or storage. The
+frame blocks external scripts, resource loads, network APIs, forms, popups, and
+navigation of the parent page; an SVG can still navigate its own frame.
+Choosing **Interact with SVG** admits arbitrary attachment scripts. Navigation
+within the frame can load attacker-controlled resources despite its initial
+network policy. This boundary does not prevent every form of data exfiltration
+or provide complete CPU or memory isolation.
+For SVGs with a search function, the SVG's search button, **Ctrl/Cmd+F**, or
+**F3** opens a local search field. A failed search keeps the field visible with
+an error. **Escape** closes search first, then the lightbox. **Show image
 preview** leaves interaction mode. Changing the attachment or closing the
-lightbox retires the isolated document.
+lightbox retires the isolated document and its message bridge. Navigating the
+SVG frame also retires interaction; choose **Interact with SVG** again to load
+the original attachment.
+The attachment honors its XML byte-order mark, media charset, and encoding
+declaration. If the browser cannot decode that encoding for interaction, the
+lightbox shows an error and keeps the image preview available.
 
 Session details share concurrent reads across the sidebar, chat, and resource panels. Returning to an unchanged session reuses its details on the same connection. Session changes, explicit refreshes, and reconnects fetch current details; failed reads remain retryable.
 

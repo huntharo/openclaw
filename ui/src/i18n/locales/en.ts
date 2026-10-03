@@ -16,6 +16,7 @@ export const en: TranslationMap & {
     detailPanel: TranslationMap;
     welcome: TranslationMap & { suggestions: TranslationMap & { whatCanYouDo: string } };
     goals: TranslationMap;
+    imageLightbox: TranslationMap;
     messages: TranslationMap &
       Record<
         | "copySelection"
@@ -3784,13 +3785,6 @@ export const en: TranslationMap & {
       resetZoom: "Reset zoom",
       close: "Close image preview",
       untitled: "Image",
-      svgInteract: "Interact with SVG",
-      svgPreview: "Show image preview",
-      svgLabel: "Isolated SVG: {title}",
-      svgInteractionHelp:
-        "Hover and focus controls are available. Scripts, links, and network access are disabled.",
-      svgInvalid:
-        "This SVG could not be opened for interaction. Use the image preview or download the file.",
     },
     externalImage: { notLoaded: "External image not loaded", open: "Open image" },
     messages: {

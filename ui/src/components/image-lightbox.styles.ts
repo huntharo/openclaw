@@ -163,6 +163,45 @@ export const imageLightboxStyles = css`
     font-size: 12px;
   }
 
+  .svg-search {
+    position: fixed;
+    z-index: 2;
+    bottom: max(14px, calc(10px + var(--safe-area-bottom, 0px)));
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: min(420px, calc(100vw - 48px));
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    background: var(--card);
+  }
+
+  .svg-search input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    background: var(--input);
+    font: inherit;
+  }
+
+  .svg-search .action {
+    color: var(--accent-foreground);
+    background: var(--accent);
+    text-shadow: none;
+  }
+
+  .svg-search [role="alert"] {
+    flex-basis: 100%;
+    font-size: 12px;
+  }
+
   .stage.stage--video {
     padding: calc(76px + var(--safe-area-top, 0px)) calc(64px + var(--safe-area-right, 0px))
       calc(76px + var(--safe-area-bottom, 0px)) calc(64px + var(--safe-area-left, 0px));
