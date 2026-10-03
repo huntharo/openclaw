@@ -7,6 +7,7 @@ import {
 import { ComposerEmojiMenu } from "./chat-composer-emoji.ts";
 import { clearGoalElapsedTimers } from "./chat-composer-goal.ts";
 import { HumanMentionMenu } from "./chat-composer-mention-menu.ts";
+import { ComposerReferenceMenu } from "./chat-composer-reference-menu.ts";
 import { createSkillMenuState } from "./chat-composer-skill-menu.ts";
 import { createSlashMenuState } from "./chat-composer-slash-menu.ts";
 import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
@@ -18,6 +19,7 @@ function createChatComposerState(): ChatComposerState {
     composerComposing: false,
     editRevision: 0,
     mentionMenu: new HumanMentionMenu(),
+    referenceMenu: new ComposerReferenceMenu(),
     emojiMenu: new ComposerEmojiMenu(),
     composingDraft: null,
     composerInputIntentKey: null,
@@ -168,6 +170,7 @@ export function suppressStaleSubmittedDraftReplay(
 function disposeChatComposerState(state: ChatComposerState) {
   state.emojiMenu.close();
   state.mentionMenu.dispose();
+  state.referenceMenu.syncSources(undefined);
   state.composerDraftScopeKey = null;
   state.dictation?.dispose();
   state.microphonePicker?.dispose();

@@ -61,6 +61,9 @@ export function createComposerKeyDownHandler({
     if (state.mentionMenu.handleKeydown(event, mentionMenuHost, requestUpdate)) {
       return;
     }
+    if (state.referenceMenu.handleKeydown(event, mentionMenuHost, requestUpdate)) {
+      return;
+    }
 
     if (goalComposer.active) {
       if (event.key === "Escape") {
@@ -127,6 +130,7 @@ export function createComposerKeyDownHandler({
       !state.skillMenuOpen &&
       !state.slashMenuOpen &&
       !state.mentionMenu.open &&
+      !state.referenceMenu.open &&
       !props.replyTarget &&
       !state.dictation?.active &&
       showAbortableUi &&

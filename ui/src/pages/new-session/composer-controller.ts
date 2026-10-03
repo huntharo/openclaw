@@ -9,6 +9,7 @@ import {
 import { ComposerEmojiMenu } from "../chat/components/chat-composer-emoji.ts";
 import { HumanMentionMenu } from "../chat/components/chat-composer-mention-menu.ts";
 import type { ChatComposerPlusMenuView } from "../chat/components/chat-composer-plus-menu.ts";
+import { ComposerReferenceMenu } from "../chat/components/chat-composer-reference-menu.ts";
 import {
   createSkillMenuState,
   resetSkillMenuState,
@@ -35,6 +36,7 @@ export class NewSessionComposerTextareaController {
   readonly skillMenuState = createSkillMenuState();
   readonly slashMenuState = createSlashMenuState();
   readonly mentionMenu = new HumanMentionMenu();
+  readonly referenceMenu = new ComposerReferenceMenu();
   readonly emojiMenu = new ComposerEmojiMenu();
   composing = false;
   mentionInput?: HumanMentionInput;
@@ -212,6 +214,7 @@ export class NewSessionComposerTextareaController {
     this.skillCommandDraftOwnerKey = draftOwnerKey;
     this.emojiMenu.close();
     resetSkillMenuState(this.skillMenuState);
+    this.referenceMenu.close();
   }
 
   ownsSkillCommands(client: GatewayBrowserClient, agentId: string, draftOwnerKey: string): boolean {
@@ -226,6 +229,7 @@ export class NewSessionComposerTextareaController {
     this.emojiMenu.close();
     this.composing = false;
     this.mentionMenu.dispose();
+    this.referenceMenu.syncSources(undefined);
     this.resetPlaceholder();
     this.skillCommandClient = null;
     this.skillCommandAgentId = "";

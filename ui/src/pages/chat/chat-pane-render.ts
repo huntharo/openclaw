@@ -26,6 +26,7 @@ import { GitHubPublicationController } from "../../lib/sessions/github-publicati
 import { scopedAgentParamsForSession } from "../../lib/sessions/index.ts";
 import { resolveUiConfiguredMainKey } from "../../lib/sessions/session-key.ts";
 import { navigateToModelProvider } from "../model-providers/navigation.ts";
+import { ChatComposerReferenceProjection } from "./chat-composer-references.ts";
 import { chatGoalRecovery, mutateChatGoal, submitChatGoalDraft } from "./chat-goals.ts";
 import { isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
 import { resolveChatModelSetup } from "./chat-model-setup.ts";
@@ -33,6 +34,8 @@ import { ChatPaneLayoutRender } from "./chat-pane-layout-render.ts";
 import { createChatPaneRails } from "./chat-pane-rails.ts";
 import {
   createChatPaneQueuedEditProps,
+  createChatPanePlacementRetry,
+  createChatPaneReplyCallbacks,
   createChatPaneSessionActionCallbacks,
   readChatPaneComposerAccess,
   readChatPaneMutationAccess,
@@ -76,12 +79,11 @@ export class ChatPane extends ChatPaneLayoutRender {
   private presentationUserId: string | null = null;
   // Stable absent inputs let catalog renders reuse the transcript cache.
   private readonly emptyTranscriptItems: [] = [];
-  private readonly retrySessionPlacementStartup = () => {
-    const sessionKey = this.state?.sessionKey;
-    if (sessionKey) {
-      this.context.placementStartup.retry(sessionKey);
-    }
-  };
+  private readonly composerReferences = new ChatComposerReferenceProjection();
+  private readonly retrySessionPlacementStartup = createChatPanePlacementRetry(
+    () => this.state?.sessionKey,
+    (key) => this.context.placementStartup.retry(key),
+  );
 
   override render() {
     const state = this.state;
@@ -244,11 +246,6 @@ export class ChatPane extends ChatPaneLayoutRender {
       onRewind: (entryId) => this.rewindToMessage(entryId),
       onFork: (entryId) => this.forkFromMessage(entryId),
     });
-    const setReply = (target: ChatProps["replyTarget"]) => {
-      state.chatReplyTarget = target;
-      state.handleChatDraftChange(state.chatMessage);
-      state.requestUpdate?.();
-    };
     const replyMessageAccess = this.currentReplyMessageAccess(state.sessionKey);
     const composerControls = catalogKey
       ? undefined
@@ -530,6 +527,12 @@ export class ChatPane extends ChatPaneLayoutRender {
             }
           : undefined,
       sessions: state.sessionsResult,
+      referenceSources: this.composerReferences.resolve(
+        state,
+        this.context.gateway,
+        this.sessionPullRequests,
+        this.dismissedSessionPullRequestIds,
+      ),
       selectedSession: catalogKey ? undefined : selectedSession,
       toolOverrides: selectedSession?.toolOverrides,
       capabilityMenu: catalogKey
@@ -651,8 +654,7 @@ export class ChatPane extends ChatPaneLayoutRender {
         resolveChatAgentId(state) === currentAgentId &&
         this.stageSessionCompanionAttachment(attachment, sessionKey),
       replyTarget: state.chatReplyTarget ?? null,
-      onClearReply: () => setReply(null),
-      onSetReply: sessionDisabledBanner ? undefined : setReply,
+      ...createChatPaneReplyCallbacks(state, Boolean(sessionDisabledBanner)),
       replyMessageAccess: catalogKey || selectedSessionArchived ? undefined : replyMessageAccess,
       onRewindMessage: selectedSessionArchived ? undefined : sessionActionCallbacks.onRewindMessage,
       onForkMessage: sessionActionCallbacks.onForkMessage,

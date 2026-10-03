@@ -87,6 +87,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     sendingForCurrentSession || runWorking ? { phase: "in-progress" as const } : props.runStatus;
   const draftKey = composerDraftKey(props);
   if (state.composerDraftScopeKey !== null && state.composerDraftScopeKey !== draftKey) {
+    state.referenceMenu.close();
     state.emojiMenu.close();
     state.dictation?.dispose();
     state.dictation = null;
@@ -144,6 +145,9 @@ export function renderChatComposer(props: ChatComposerProps) {
   const mentionsUnsupported = props.mentionsUnsupported || goalComposer.active;
   state.mentionMenu.syncDirectory(
     props.connected && canCompose && !mentionsUnsupported ? props.mentionDirectory : undefined,
+  );
+  state.referenceMenu.syncSources(
+    props.connected && canCompose && !goalComposer.active ? props.referenceSources : undefined,
   );
   const getMentions = () => props.getMentions?.() ?? props.mentions ?? [];
   const mentionError =
@@ -237,6 +241,7 @@ export function renderChatComposer(props: ChatComposerProps) {
   const syncComposerDraftAfterSend = (target: HTMLTextAreaElement | null) => {
     state.emojiMenu.close();
     state.mentionMenu.close();
+    state.referenceMenu.close();
     const submittedDraft = target?.value ?? props.getDraft?.() ?? props.draft;
     const hostDraft = props.getDraft?.() ?? props.draft;
     const clearedSubmittedDraft =
@@ -271,7 +276,11 @@ export function renderChatComposer(props: ChatComposerProps) {
     goalComposer,
   });
 
-  const syncComposerValue = (target: HTMLTextAreaElement, typedAtSign = false) => {
+  const syncComposerValue = (
+    target: HTMLTextAreaElement,
+    typedAtSign = false,
+    typedReferenceTrigger = false,
+  ) => {
     adjustTextareaHeight(target, { nativeInput: true });
     target.dir = detectTextDirection(target.value);
     const mentions = getMentions();
@@ -294,6 +303,11 @@ export function renderChatComposer(props: ChatComposerProps) {
       updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
       const mentionIntent = typedAtSign ? "trigger" : "input";
       state.mentionMenu.update(target, requestUpdate, mentionIntent);
+      state.referenceMenu.update(
+        target,
+        requestUpdate,
+        typedReferenceTrigger ? "trigger" : "input",
+      );
     }
     state.emojiMenu.update(
       target,
@@ -301,7 +315,8 @@ export function renderChatComposer(props: ChatComposerProps) {
       !state.composerComposing &&
         !state.skillMenuOpen &&
         !state.slashMenuOpen &&
-        !state.mentionMenu.open,
+        !state.mentionMenu.open &&
+        !state.referenceMenu.open,
     );
     // The textarea owns ordinary edits; only redraw the pane when surrounding
     // controls change. Slash and skill menus invalidate their own presentation.
@@ -351,10 +366,14 @@ export function renderChatComposer(props: ChatComposerProps) {
       return;
     }
     const typedAtSign = event.inputType === "insertText" && event.data?.includes("@") === true;
+    const typedReferenceTrigger =
+      event.inputType === "insertText" &&
+      /(?:#|@\/|@:)$/u.test(target.value.slice(0, target.selectionStart));
     if (event.inputType === "insertFromPaste" || event.inputType === "insertFromDrop") {
       state.mentionMenu.close();
+      state.referenceMenu.close();
     }
-    syncComposerValue(target, typedAtSign);
+    syncComposerValue(target, typedAtSign, typedReferenceTrigger);
     props.onTypingChange?.(Boolean(target.value.trim()), target.value);
   };
   const handleSelect = (event: Event) => {
@@ -365,12 +384,14 @@ export function renderChatComposer(props: ChatComposerProps) {
       !state.composerComposing &&
         !state.skillMenuOpen &&
         !state.slashMenuOpen &&
-        !state.mentionMenu.open,
+        !state.mentionMenu.open &&
+        !state.referenceMenu.open,
     );
     if (goalComposer.active) {
       return;
     }
     state.mentionMenu.update(target, requestUpdate);
+    state.referenceMenu.update(target, requestUpdate);
     if (event.type === "keyup") {
       return;
     }
@@ -644,6 +665,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     state,
     state.mentionMenu,
     state.emojiMenu,
+    state.referenceMenu,
   );
 
   return renderChatComposerView({

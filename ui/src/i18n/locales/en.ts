@@ -3940,6 +3940,16 @@ export const en: TranslationMap & {
       reason: "Run /pair qr again to generate a fresh setup code.",
       badge: "Expired",
     },
+    references: {
+      hash: "Sessions and pull requests",
+      project: "Projects and directories",
+      environment: "Environments",
+      session: "Session",
+      empty: "No matching references in the available catalogs.",
+      hashHint: "# references",
+      projectHint: "@/ projects",
+      environmentHint: "@: environments",
+    },
     composer: {
       composerInput: "Chat composer",
       emojiSuggestions: "Emoji suggestions",

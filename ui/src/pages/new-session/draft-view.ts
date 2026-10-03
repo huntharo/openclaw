@@ -81,6 +81,35 @@ export function renderNewSessionDraftView(options: {
         context,
         isCatalogTarget,
         draftOwnerKey,
+        referenceSources:
+          gateway.connected && context?.gateway.snapshot.phase === "connected" && !isCatalogTarget
+            ? {
+                ownerKey: JSON.stringify([
+                  gateway.connectionEpoch,
+                  gateway.sessionCreateScope,
+                  context.gateway.snapshot.selfUser?.id,
+                  context.gateway.snapshot.hello?.auth?.role,
+                  context.gateway.snapshot.hello?.auth?.scopes,
+                  draftOwnerKey,
+                  place.agentId,
+                ]),
+                projects: place.browser.projectsReady
+                  ? place.browser.projects.map((project) => ({
+                      id: project.id,
+                      label: project.displayName,
+                      path: project.repoRoot,
+                    }))
+                  : undefined,
+                environments:
+                  place.canWrite() && gateway.environments
+                    ? gateway.environments.map((environment) => ({
+                        id: environment.id,
+                        label: environment.label ?? environment.id,
+                        status: environment.status,
+                      }))
+                    : undefined,
+              }
+            : undefined,
         get message() {
           return submission.message;
         },
