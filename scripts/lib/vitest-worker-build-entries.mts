@@ -26,6 +26,7 @@ import {
 import { cliCompactionBackendEntrypoints } from "../../src/agents/command/cli-compaction-runtime.test-support.ts";
 import { agentProcessTestEntrypoints } from "../../src/agents/process-runtime.test-support.ts";
 import { bashOutputSpillEntrypoints } from "../../src/agents/sessions/bash-output-spill-entrypoints.test-support.ts";
+import { transcriptWriteBudgetEntrypoint } from "../../src/agents/sessions/fixtures/transcript-write-budget-entrypoint.test-support.ts";
 import { managedWorktreeGcEntrypoint } from "../../src/agents/worktrees/service-gc-runtime.test-support.ts";
 import { clawProjectBuildEntrypoint } from "../../src/claws/project-runtime.test-support.ts";
 import {
@@ -324,6 +325,7 @@ export const vitestWorkerBuildEntries = {
     codeModeDescriptionRetentionEntrypoint,
     ...cliCompactionBackendEntrypoints,
     ...Object.values(bashOutputSpillEntrypoints),
+    transcriptWriteBudgetEntrypoint,
     managedWorktreeGcEntrypoint,
     ...publishedSdkBridgeEntrypoints,
     mcpProviderCatalogEntrypoint,
