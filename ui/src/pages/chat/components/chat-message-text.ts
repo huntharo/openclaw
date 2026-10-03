@@ -1,7 +1,13 @@
-import { html, nothing, render, type RootPart } from "lit";
+import { html, noChange, nothing, render, type ChildPart, type RootPart } from "lit";
 import { AsyncDirective, directive } from "lit/async-directive.js";
+import {
+  clearPart,
+  insertPart,
+  removePart,
+  setChildPartValue,
+  setCommittedValue,
+} from "lit/directive-helpers.js";
 import { guard } from "lit/directives/guard.js";
-import { keyed } from "lit/directives/keyed.js";
 import { ref } from "lit/directives/ref.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { icons } from "../../../components/icons.ts";
@@ -332,15 +338,16 @@ export type AssistantMessageDisclosure = {
   onRetryFullMessage?: () => void;
 };
 
-type MarkdownFragment = { html: string; incremental: boolean };
+type MarkdownFragment = { html: string; incremental: boolean; part: ChildPart };
 
 class MarkdownPartsDirective extends AsyncDirective {
   private messageKey: string | undefined;
   private source = "";
   private stableHtml = "";
   private fragments: MarkdownFragment[] = [];
+  private parts: ChildPart[] = [];
   private tail: MarkdownFragment | undefined;
-  private generation = {};
+  private hadMedia = false;
   private mediaSlots = new Map<number, { element: HTMLElement; part?: RootPart }>();
   private mediaRender = {};
 
@@ -357,11 +364,31 @@ class MarkdownPartsDirective extends AsyncDirective {
   }
 
   render(
-    messageKey: string,
-    source: string,
-    [stableHtml, tailHtml]: readonly [string, string],
-    media?: MarkdownMedia,
+    _messageKey: string,
+    _source: string,
+    _html: readonly [string, string],
+    _media?: MarkdownMedia,
   ) {
+    return noChange;
+  }
+
+  override update(
+    part: ChildPart,
+    [messageKey, source, [stableHtml, tailHtml], media]: [
+      string,
+      string,
+      readonly [string, string],
+      MarkdownMedia?,
+    ],
+  ) {
+    const changed: MarkdownFragment[] = [];
+    const appendFragment = (value: string, incremental: boolean) => {
+      const fragment = { html: value, incremental, part: insertPart(part) };
+      this.parts.push(fragment.part);
+      this.fragments.push(fragment);
+      changed.push(fragment);
+      return fragment;
+    };
     if (this.messageKey !== messageKey) {
       for (const slot of this.mediaSlots.values()) {
         render(nothing, slot.element);
@@ -374,30 +401,41 @@ class MarkdownPartsDirective extends AsyncDirective {
       !stableHtml.startsWith(this.stableHtml)
     ) {
       this.fragments = [];
+      clearPart(part);
+      this.parts = [];
       this.tail = undefined;
       this.stableHtml = "";
-      this.generation = {};
     }
+    // Lit owns disconnection/clearing of these inserted ranges. Ordinary tail
+    // updates commit only changed ranges instead of an iterable of the prefix.
+    setCommittedValue(part, this.parts);
     if (stableHtml.length > this.stableHtml.length) {
       const completed = stableHtml.slice(this.stableHtml.length);
       if (this.tail) {
         // Promotion keeps this fragment's Lit part and renderer. Switching to
         // static HTML would discard its live controls and reader enhancements.
-        this.tail.html = completed;
+        if (this.tail.html !== completed) {
+          this.tail.html = completed;
+          changed.push(this.tail);
+        }
         this.tail = undefined;
       } else {
-        this.fragments.push({ html: completed, incremental: false });
+        appendFragment(completed, false);
       }
     }
     if (tailHtml) {
       if (this.tail) {
-        this.tail.html = tailHtml;
+        if (this.tail.html !== tailHtml) {
+          this.tail.html = tailHtml;
+          changed.push(this.tail);
+        }
       } else {
-        this.tail = { html: tailHtml, incremental: true };
-        this.fragments.push(this.tail);
+        this.tail = appendFragment(tailHtml, true);
       }
     } else if (this.tail) {
       this.fragments.pop();
+      this.parts.pop();
+      removePart(this.tail.part);
       this.tail = undefined;
     }
     this.messageKey = messageKey;
@@ -436,14 +474,16 @@ class MarkdownPartsDirective extends AsyncDirective {
     });
     // Canonical HTML proves continuity; live DOM also contains the reader's
     // control choices and Markdown enhancements, which must stay on its nodes.
-    return keyed(
-      this.generation,
-      html`${this.fragments.map((fragment) =>
-        guard([fragment.html, positionedMedia], () =>
-          renderMarkdownMedia(fragment.html, positionedMedia, fragment.incremental),
-        ),
-      )}`,
-    );
+    // Media policy and callbacks can change independently of HTML. Rebind its
+    // retained slots when present, including the transition back to plain text.
+    for (const fragment of media || this.hadMedia ? this.fragments : changed) {
+      setChildPartValue(
+        fragment.part,
+        renderMarkdownMedia(fragment.html, positionedMedia, fragment.incremental),
+      );
+    }
+    this.hadMedia = Boolean(media);
+    return noChange;
   }
 }
 
