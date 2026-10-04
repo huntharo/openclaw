@@ -452,7 +452,7 @@ function resolveOwnerCurrentConversationMatch(
       const current =
         registration.captureReadAuthority && !authority?.()
           ? undefined
-          : resolveChannelPluginRegistration(channel, { loadedOnly: true });
+          : resolveChannelPluginRegistration(channel);
       return current?.plugin === registration.plugin && current.origin === "bundled";
     };
     if (!isRegistrationCurrent()) {

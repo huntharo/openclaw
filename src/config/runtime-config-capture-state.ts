@@ -3,7 +3,11 @@ import { cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
 import { cloneConfigWithResolutionFacts } from "./resolution-facts.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
-type RuntimeConfigCapture = Readonly<{ source: OpenClawConfig; origin: OpenClawConfig }>;
+type RuntimeConfigCapture = Readonly<{
+  source: OpenClawConfig;
+  origin: OpenClawConfig;
+  publicationCurrent?: () => boolean;
+}>;
 
 const captures = new WeakMap<OpenClawConfig, RuntimeConfigCapture>();
 
@@ -17,6 +21,7 @@ export function getRuntimeConfigCapture(
 export function captureRuntimeConfigWithSource(
   config: OpenClawConfig,
   source: OpenClawConfig,
+  publicationCurrent?: () => boolean,
 ): OpenClawConfig {
   const clone = (value: OpenClawConfig) => {
     const captured = cloneConfigWithResolutionFacts(value);
@@ -24,9 +29,19 @@ export function captureRuntimeConfigWithSource(
   };
   const captured = clone(config);
   const capturedSource = source === config ? captured : clone(source);
-  captures.set(captured, { source: capturedSource, origin: config });
+  const previous = getRuntimeConfigCapture(config);
+  const current = previous?.publicationCurrent ?? publicationCurrent;
+  captures.set(captured, {
+    source: capturedSource,
+    origin: previous?.origin ?? config,
+    publicationCurrent: current,
+  });
   if (capturedSource !== captured) {
-    captures.set(capturedSource, { source: capturedSource, origin: source });
+    captures.set(capturedSource, {
+      source: capturedSource,
+      origin: getRuntimeConfigCapture(source)?.origin ?? source,
+      publicationCurrent: current,
+    });
   }
   return captured;
 }
@@ -37,9 +52,10 @@ export type CapturedRuntimeConfigRead = { config: OpenClawConfig; env: NodeJS.Pr
 export function captureRuntimeConfigRead(
   config: OpenClawConfig,
   source: OpenClawConfig,
+  publicationCurrent?: () => boolean,
 ): CapturedRuntimeConfigRead {
   return {
-    config: captureRuntimeConfigWithSource(config, source),
+    config: captureRuntimeConfigWithSource(config, source, publicationCurrent),
     env: cloneEnvWithPlatformSemantics(process.env),
   };
 }

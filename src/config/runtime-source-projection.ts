@@ -3,7 +3,11 @@ import {
   captureRuntimeConfigWithSource,
   getRuntimeConfigCapture,
 } from "./runtime-config-capture-state.js";
-import { getRuntimeConfigSnapshot, getRuntimeConfigSourceSnapshot } from "./runtime-snapshot.js";
+import {
+  captureRuntimeConfigPublicationCurrent,
+  getRuntimeConfigSnapshot,
+  getRuntimeConfigSourceSnapshot,
+} from "./runtime-snapshot.js";
 import { projectRuntimeChangesOntoSource } from "./source-value-projection.js";
 import type { OpenClawConfig } from "./types.js";
 
@@ -12,7 +16,11 @@ export function captureRuntimeConfig(config: OpenClawConfig): OpenClawConfig {
   if (getRuntimeConfigCapture(config)) {
     return config;
   }
-  return captureRuntimeConfigWithSource(config, projectConfigOntoRuntimeSourceSnapshot(config));
+  return captureRuntimeConfigWithSource(
+    config,
+    projectConfigOntoRuntimeSourceSnapshot(config),
+    captureRuntimeConfigPublicationCurrent(config),
+  );
 }
 
 /** Projects a runtime-derived config back onto the active authored source snapshot. */

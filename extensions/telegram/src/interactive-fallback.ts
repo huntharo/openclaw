@@ -24,41 +24,11 @@ import {
 } from "./button-types.js";
 import { escapeTelegramHtml } from "./format-html.js";
 import { buildInlineKeyboard } from "./inline-keyboard.js";
+import { resolveTelegramPresentationCapabilities } from "./presentation-capabilities.js";
+
+export { resolveTelegramPresentationCapabilities } from "./presentation-capabilities.js";
 
 const TELEGRAM_CONTROL_ONLY_FALLBACK = "Choose an option.";
-
-const TELEGRAM_PRESENTATION_CAPABILITIES = {
-  supported: true,
-  buttons: true,
-  selects: true,
-  context: true,
-  divider: false,
-  // Native table blocks require the account's Bot API 10.3 rich-message path;
-  // per-account capability resolution flips this on when richMessages is enabled.
-  tables: false,
-  limits: {
-    actions: {
-      maxActions: 100,
-      maxActionsPerRow: 3,
-      supportsStyles: false,
-      supportsDisabled: false,
-    },
-    selects: {
-      maxOptions: 100,
-    },
-    text: {
-      markdownDialect: "markdown" as const,
-    },
-  },
-};
-
-export function resolveTelegramPresentationCapabilities(params: {
-  richMessages: boolean;
-}): typeof TELEGRAM_PRESENTATION_CAPABILITIES {
-  return params.richMessages
-    ? { ...TELEGRAM_PRESENTATION_CAPABILITIES, tables: true }
-    : TELEGRAM_PRESENTATION_CAPABILITIES;
-}
 
 function escapeTelegramTableCellText(value: string | number): string {
   return escapeTelegramHtml(String(value)).replace(/\s+/g, " ").trim();
@@ -261,6 +231,7 @@ export function canonicalizeTelegramPresentationPayload(
     adaptMessagePresentationForChannel({
       presentation: { blocks: nativeControlBlocks },
       capabilities: {
+        ...resolveTelegramPresentationCapabilities({ richMessages: richTables }),
         limits: {
           actions: { maxLabelLength: 64 },
           selects: { maxLabelLength: 64 },

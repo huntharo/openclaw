@@ -6,7 +6,6 @@ import {
   buildProviderKeyboard,
   calculateTotalPages,
   parseModelCallbackData,
-  resolveModelListCallback,
   resolveModelSelection,
 } from "./model-buttons.js";
 
@@ -39,25 +38,13 @@ describe("buildModelSelectionCallbackData", () => {
 });
 
 describe("opaque provider list callbacks", () => {
-  it("keeps arbitrary provider identifiers selectable without exceeding Telegram's limit", () => {
+  it("encodes arbitrary provider identifiers within Telegram's callback limit", () => {
     for (const provider of ["~", "team/provider", "研究所", "x".repeat(80)]) {
       const callback = buildProviderKeyboard([{ id: provider, count: 1 }])[0]?.[0]?.callback_data;
       expect(callback, provider).toMatch(/^mdl1~p:[A-Za-z0-9_-]{43}:1$/);
       expect(Buffer.byteLength(callback ?? "", "utf8"), provider).toBeLessThanOrEqual(64);
       const parsed = parseModelCallbackData(callback ?? "");
       expect(parsed?.type).toBe("list-ref");
-      if (parsed?.type === "list-ref") {
-        expect(resolveModelListCallback({ callback: parsed, providers: [provider] })).toEqual({
-          provider,
-          page: 1,
-        });
-        expect(
-          resolveModelListCallback({ callback: parsed, providers: ["other"] }),
-        ).toBeUndefined();
-        expect(
-          resolveModelListCallback({ callback: parsed, providers: [provider, provider] }),
-        ).toBeUndefined();
-      }
     }
   });
 });

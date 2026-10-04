@@ -137,7 +137,7 @@ function defineBuiltinCommand(
     argsParsing: options.argsParsing ?? (options.args?.length ? "positional" : "none"),
     formatArgs: options.formatArgs,
     argsMenu: options.argsMenu,
-    textAliases: (options.textAliases ?? [`/${key}`]).map((alias) => alias.trim()).filter(Boolean),
+    textAliases: normalizeStringEntries(options.textAliases ?? [`/${key}`]),
     scope: nativeName === false ? "text" : "both",
     category,
     tier,
@@ -163,7 +163,8 @@ export function buildBuiltinChatCommands(
     }),
     defineBuiltinCommand("commands", "List all slash commands.", "status", "power", {
       activeRunSafe: true,
-      modelIndependent: "no-args",
+      args: [defineCommandArgument("page", "Page number", { type: "number" })],
+      modelIndependent: (args) => /^([1-9]\d{0,5})?$/u.test(args),
     }),
     defineBuiltinCommand("tools", "List available runtime tools.", "status", "standard", {
       activeRunSafe: true,

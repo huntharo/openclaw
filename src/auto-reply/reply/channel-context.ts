@@ -3,6 +3,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import type { ChannelPresentationCapabilities } from "../../channels/plugins/outbound.types.js";
 import { getLoadedChannelPluginById } from "../../channels/plugins/registry-loaded.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
@@ -42,4 +43,24 @@ export function resolveChannelAccountId(params: ChannelAccountParams): string {
   const plugin = getLoadedChannelPluginById(channel);
   const configuredDefault = normalizeOptionalString(plugin?.config.defaultAccountId?.(params.cfg));
   return configuredDefault || "default";
+}
+
+/** Producers consume the outbound owner's effective account capabilities, not a second declaration. */
+export function resolveCommandPresentationCapabilities(params: {
+  cfg: OpenClawConfig;
+  surface?: string;
+  accountId?: string;
+}): ChannelPresentationCapabilities | undefined {
+  const plugin = params.surface ? getLoadedChannelPluginById(params.surface) : undefined;
+  const outbound = plugin?.outbound;
+  return outbound?.resolvePresentationCapabilities
+    ? outbound.resolvePresentationCapabilities({
+        cfg: params.cfg,
+        accountId: resolveChannelAccountId({
+          cfg: params.cfg,
+          ctx: { Surface: params.surface, AccountId: params.accountId },
+          command: {},
+        }),
+      })
+    : outbound?.presentationCapabilities;
 }

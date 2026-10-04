@@ -7,6 +7,8 @@ import {
 import { getChannelPlugin } from "../channels/plugins/index.js";
 import { isCommandFlagEnabled } from "../config/commands.flags.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { MessagePresentation } from "../interactive/payload.js";
+import { createModelPickerCapabilityProfile } from "../model-picker/menu.js";
 import { listPluginCommands } from "../plugins/commands.js";
 import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import type { SkillCommandSpec } from "../skills/types.js";
@@ -96,6 +98,7 @@ export type CommandsMessageOptions = {
 /** Rendered `/commands` text plus pagination metadata for channel-native lists. */
 export type CommandsMessageResult = {
   text: string;
+  presentation?: MessagePresentation;
   totalPages: number;
   currentPage: number;
   hasNext: boolean;
@@ -187,10 +190,12 @@ export function buildCommandsMessagePaginated(
 ): CommandsMessageResult {
   const page = Math.max(1, options?.page ?? 1);
   const surface = normalizeOptionalLowercaseString(options?.surface);
+  const plugin = surface ? getChannelPlugin(surface) : undefined;
+  const portable = createModelPickerCapabilityProfile(plugin?.outbound?.presentationCapabilities);
   // Surfaces with native command-list UI need page metadata; plain text surfaces get one full list.
   const prefersPaginatedList =
     options?.forcePaginatedList === true ||
-    Boolean(surface && getChannelPlugin(surface)?.commands?.buildCommandsListChannelData);
+    Boolean(portable || plugin?.commands?.buildCommandsListChannelData);
 
   const commands = cfg
     ? listChatCommandsForConfig(cfg, { skillCommands })
@@ -227,5 +232,40 @@ export function buildCommandsMessagePaginated(
     currentPage,
     hasNext: currentPage < totalPages,
     hasPrev: currentPage > 1,
+    ...(portable && totalPages > 1
+      ? {
+          presentation: {
+            blocks: [
+              {
+                type: "buttons" as const,
+                buttons: [
+                  ...(currentPage > 1
+                    ? [
+                        {
+                          label: "Previous",
+                          action: {
+                            type: "command" as const,
+                            command: "/commands " + (currentPage - 1),
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(currentPage < totalPages
+                    ? [
+                        {
+                          label: "Next",
+                          action: {
+                            type: "command" as const,
+                            command: "/commands " + (currentPage + 1),
+                          },
+                        },
+                      ]
+                    : []),
+                ],
+              },
+            ],
+          },
+        }
+      : {}),
   };
 }

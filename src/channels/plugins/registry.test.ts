@@ -16,16 +16,6 @@ import {
   resolveChannelPluginRegistration,
 } from "./registry.js";
 
-vi.mock("./bundled.js", () => ({
-  getBundledChannelPlugin: (id: string) =>
-    id === "fallback"
-      ? {
-          id: "fallback",
-          meta: { label: "fallback" },
-        }
-      : undefined,
-}));
-
 function withMalformedChannels(registry: PluginRegistry): PluginRegistry {
   const malformed = { ...registry } as PluginRegistry;
   (malformed as { channels?: unknown }).channels = undefined;
@@ -121,18 +111,6 @@ describe("listChannelPlugins", () => {
     expect(listChannelPlugins()).toStrictEqual([]);
   });
 
-  it("falls back to bundled channel plugins for direct lookups before registry bootstrap", () => {
-    setActivePluginRegistry(createEmptyPluginRegistry());
-
-    expect(getChannelPlugin("fallback")?.meta.label).toBe("fallback");
-    expect(resolveChannelPluginRegistration("fallback")).toMatchObject({
-      origin: "bundled",
-      plugin: {
-        id: "fallback",
-      },
-    });
-  });
-
   it("does not let a loaded external override inherit bundled fallback provenance", () => {
     const registry = createEmptyPluginRegistry();
     registry.channels = [
@@ -187,7 +165,7 @@ describe("listChannelPlugins", () => {
     expect(getChannelPlugin("fallback")).toBe(root);
   });
 
-  it("preserves unrelated root and bundled addressability inside an empty CLI handle", () => {
+  it("preserves unrelated registered root channels inside an empty CLI handle", () => {
     const root = createChannelTestPluginBase({ id: "root-only" });
     setActivePluginRegistry(
       createTestRegistry([{ pluginId: "root-only", plugin: root, source: "root" }]),
@@ -195,7 +173,7 @@ describe("listChannelPlugins", () => {
 
     withPluginRuntimeRegistryScope(createEmptyPluginRegistry(), () => {
       expect(getChannelPlugin("root-only")).toBe(root);
-      expect(resolveChannelPluginRegistration("fallback")?.origin).toBe("bundled");
+      expect(resolveChannelPluginRegistration("fallback")).toBeUndefined();
     });
   });
 

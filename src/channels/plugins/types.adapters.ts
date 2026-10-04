@@ -357,18 +357,23 @@ export type ChannelCommandAdapter = {
     commandKey: string;
     defaultName: string;
   }) => string | undefined;
+  /** @deprecated Opt in via outbound.presentationCapabilities.modelPicker. Retained throughout 2026; removal requires an approved breaking SDK release in 2027 or later. */
   buildCommandsListChannelData?: (params: {
     currentPage: number;
     totalPages: number;
     agentId?: string;
   }) => ReplyPayload["channelData"] | null;
+  /** @deprecated Use portable presentation. Retained throughout 2026; removal requires an approved breaking SDK release in 2027 or later. */
   buildModelsMenuChannelData?: (params: {
     providers: Array<{ id: string; count: number }>;
   }) => ReplyPayload["channelData"] | null;
+  /** @deprecated Use portable presentation. Retained throughout 2026; removal requires an approved breaking SDK release in 2027 or later. */
   buildModelsProviderChannelData?: NonNullable<ChannelCommandAdapter["buildModelsMenuChannelData"]>;
+  /** @deprecated Use portable presentation. Retained throughout 2026; removal requires an approved breaking SDK release in 2027 or later. */
   buildModelsAddProviderChannelData?: (params: {
     providers: Array<{ id: string }>;
   }) => ReplyPayload["channelData"] | null;
+  /** @deprecated Use portable presentation. Retained throughout 2026; removal requires an approved breaking SDK release in 2027 or later. */
   buildModelsListChannelData?: (params: {
     provider: string;
     models: readonly string[];
@@ -378,6 +383,7 @@ export type ChannelCommandAdapter = {
     pageSize?: number;
     modelNames?: ReadonlyMap<string, string>;
   }) => ReplyPayload["channelData"] | null;
+  /** @deprecated Use portable presentation. Retained throughout 2026; removal requires an approved breaking SDK release in 2027 or later. */
   buildModelBrowseChannelData?: () => ReplyPayload["channelData"] | null;
 };
 

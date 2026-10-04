@@ -11,6 +11,7 @@ import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
+import { captureRuntimeConfigPublicationCurrent } from "../../config/runtime-snapshot.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -48,7 +49,7 @@ import { applyInlineDirectiveOverrides } from "./get-reply-directives-apply.js";
 import { resolveReplyDirectiveRouting } from "./get-reply-directives-routing.js";
 import { resolveReplyExecOverrides } from "./get-reply-exec-overrides.js";
 import { shouldUseReplyFastTestRuntime } from "./get-reply-fast-path.js";
-import type { InternalGetReplyOptions } from "./get-reply.types.js";
+import type { CommandSelectionCurrent, InternalGetReplyOptions } from "./get-reply.types.js";
 import { defaultGroupActivation, resolveGroupRequireMention } from "./groups.js";
 import { createModelSelectionState, resolveContextTokens } from "./model-selection.js";
 import type { PreparedReplyConversation } from "./prompt-session-context.js";
@@ -59,6 +60,7 @@ import {
   resolveReplyOperationRunState,
 } from "./reply-operation-run-state.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
+import { capturePreparedPureAdapterRouteAssertion } from "./session-conversation-binding.js";
 import type { TypingController } from "./typing.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
@@ -73,6 +75,7 @@ const skillCommandsLoader = createLazyImportLoader(
 export async function resolveReplyDirectives(params: {
   ctx: FinalizedRuntimeMsgContext;
   cfg: OpenClawConfig;
+  commandSelectionCurrent?: CommandSelectionCurrent;
   agentId: string;
   agentDir: string;
   workspaceDir: string;
@@ -134,6 +137,10 @@ export async function resolveReplyDirectives(params: {
     opts,
     skillFilter,
   } = params;
+  const commandSelectionCurrent = params.commandSelectionCurrent ?? {
+    publicationCurrent: captureRuntimeConfigPublicationCurrent(cfg),
+    assertRouteCurrent: capturePreparedPureAdapterRouteAssertion(ctx),
+  };
   const agentEntry = listAgentEntries(cfg).find(
     (entry) => normalizeAgentId(entry.id) === normalizeAgentId(agentId),
   );
@@ -445,6 +452,7 @@ export async function resolveReplyDirectives(params: {
   const inlineStatusRequested = hasInlineStatus && canInterpretMessageDirectives;
 
   const applyResult = await applyInlineDirectiveOverrides({
+    commandSelectionCurrent,
     abortSignal: opts?.abortSignal,
     ctx,
     cfg,

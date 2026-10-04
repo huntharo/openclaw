@@ -1,6 +1,9 @@
 import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
+import { buildModelPickerMenu, type ModelPickerMenuParams } from "../../model-picker/menu.js";
 import { resolveModelRuntimeRoute } from "../../shared/model-runtime-route.js";
 import { formatProviderLoginCommand } from "../../shared/provider-login-command.js";
+import type { ReplyPayload } from "../types.js";
+import type { ModelsProviderData, PreparedModelsProviderData } from "./commands-models-catalog.js";
 
 const CUSTOM_MODEL_SETUP_GUIDANCE =
   "Set up this connection with the custom-provider guide: https://docs.openclaw.ai/concepts/model-providers/custom-providers";
@@ -22,6 +25,68 @@ export type ModelsMenu = {
   modelNames: ReadonlyMap<string, string>;
   byProvider: ReadonlyMap<string, ModelsProviderMenu>;
 };
+
+export function buildModelsMenuText(params: {
+  providers: string[];
+  byProvider: ReadonlyMap<string, ReadonlySet<string>>;
+}): string {
+  return [
+    "Providers:",
+    ...params.providers.map(
+      (provider) => `- ${provider} (${params.byProvider.get(provider)?.size ?? 0})`,
+    ),
+    "",
+    "Use: /models <provider>",
+    "Switch: /model <provider/model>",
+  ].join("\n");
+}
+
+export function buildModelsAvailabilityText(data: PreparedModelsProviderData, provider?: string) {
+  const availability = provider ? data.modelMenu?.byProvider.get(provider) : undefined;
+  const notice = provider
+    ? availability?.notice
+    : [...(data.modelMenu?.byProvider.values() ?? [])]
+        .map((entry) => entry.notice)
+        .filter(Boolean)
+        .join("\n");
+  const checking = data.pendingProviders
+    ?.filter((entry) => !provider || provider === entry)
+    .map((entry) => `${entry}: checking models…`)
+    .join("\n");
+  return { availability, notice, checking };
+}
+
+/** Provider rows and their readiness text consume the exact page held by the control builder. */
+export function buildModelsProviderMenuReply(
+  data: Pick<ModelsProviderData, "providers" | "byProvider" | "modelMenu" | "pendingProviders">,
+  params: Pick<ModelPickerMenuParams, "catalog" | "capabilityProfile" | "page">,
+): ReplyPayload & { text: string } {
+  const menu = buildModelPickerMenu(params, data.providers);
+  const providers = menu.providerPage;
+  const notice = providers
+    .map((provider) => data.modelMenu?.byProvider.get(provider)?.notice)
+    .filter(Boolean)
+    .join("\n");
+  const checking = providers.length
+    ? providers
+        .filter((provider) => data.pendingProviders?.includes(provider))
+        .map((provider) => `${provider}: checking models…`)
+        .join("\n")
+    : data.pendingProviders?.length
+      ? `Checking models for ${data.pendingProviders.length} providers. Retry /models when discovery finishes.`
+      : undefined;
+  return {
+    text: [
+      buildModelsMenuText({ providers: [...providers], byProvider: data.byProvider }),
+      notice,
+      checking,
+      menu.navigation.map(({ label, command }) => `${label}: ${command}`).join("\n"),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    presentation: menu.presentation,
+  };
+}
 
 export function buildModelsMenu(data: {
   byProvider: ReadonlyMap<string, ReadonlySet<string>>;

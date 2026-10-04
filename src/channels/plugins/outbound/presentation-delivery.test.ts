@@ -16,6 +16,48 @@ const tablePresentation: MessagePresentation = {
 };
 
 describe("renderPresentationForDelivery button adaptation", () => {
+  it.each([true, false])(
+    "renders picker buttons and selects only with outbound opt-in (%s)",
+    async (modelPicker) => {
+      const action: presentationPayload.ModelPickerAction = {
+        type: "model-picker",
+        version: 1,
+        intent: "show-providers",
+        snapshotToken: "snapshot",
+      };
+      const renderPresentation = vi.fn((payload) => payload);
+      await renderPresentationForDelivery(
+        {
+          presentationCapabilities: { supported: true, buttons: true, selects: true, modelPicker },
+          renderPresentation,
+        },
+        {
+          text: "Models",
+          presentation: {
+            blocks: [
+              { type: "buttons", buttons: [{ label: "Browse", action }] },
+              { type: "select", options: [{ label: "Browse", action }] },
+            ],
+          },
+        },
+      );
+      const rendered = renderPresentation.mock.calls[0]?.[0]?.presentation as MessagePresentation;
+      const controls = rendered.blocks.filter(
+        (block) => block.type === "buttons" || block.type === "select",
+      );
+      expect(controls).toHaveLength(modelPicker ? 2 : 0);
+      if (modelPicker) {
+        expect(controls[0]).toMatchObject({ buttons: [{ action }] });
+        expect(controls[1]).toMatchObject({ options: [{ action }] });
+      } else {
+        expect(rendered.blocks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ text: expect.stringContaining("Browse") }),
+          ]),
+        );
+      }
+    },
+  );
   it.each([
     { name: "one button", count: 1, maxActions: 25, perRow: 5, maxRows: 5, styles: true },
     {

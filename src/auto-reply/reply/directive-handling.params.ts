@@ -51,6 +51,8 @@ export type HandleDirectiveOnlyParams = {
   gatewayClientScopes?: string[];
   commandAuthorized?: boolean;
   senderIsOwner?: boolean;
+  /** Internal ingress fence retained through model preparation and queued persistence. */
+  validateCommandSelection?: () => string | undefined;
   /** Mixed messages consume the transaction outcome without repeating persistence. */
   persistenceState?: {
     outcome:

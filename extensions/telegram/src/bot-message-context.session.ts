@@ -61,7 +61,7 @@ import {
   telegramPromptContextHistory,
 } from "./group-history-window.js";
 import type { TelegramReplyChainEntry } from "./message-cache-codec.js";
-import { TELEGRAM_REPLY_CHAIN_MAX_DEPTH } from "./message-cache.js";
+import { TELEGRAM_REPLY_CHAIN_MAX_DEPTH } from "./message-cache-context.js";
 import { resolveTelegramPromptMediaPath } from "./prompt-media-path.js";
 import { buildTelegramConversationId } from "./topic-conversation.js";
 

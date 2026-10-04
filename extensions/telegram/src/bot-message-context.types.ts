@@ -1,5 +1,6 @@
 import type { Bot } from "grammy";
 import type { Message } from "grammy/types";
+import type { ChannelInboundTurnPlan } from "openclaw/plugin-sdk/channel-inbound";
 import type {
   ChannelIngressContextBinding,
   ResolvedChannelMessageIngress,
@@ -33,6 +34,15 @@ export type TelegramChannelIngressResolver = (
 ) => Promise<ResolvedChannelMessageIngress>;
 
 export type TelegramMessageContextOptions = {
+  /** A menu callback keeps normal command admission and edits only its admitted source. */
+  callbackReply?: {
+    messageId: number;
+    businessConnectionId?: string;
+    commandSelectionCurrent: NonNullable<ChannelInboundTurnPlan["commandSelectionCurrent"]>;
+    abortSignal: AbortSignal;
+    revalidate: () => Promise<void>;
+    assertCurrent: () => void;
+  };
   threadSpec?: TelegramThreadSpec;
   commandSource?: "text" | "native";
   forceWasMentioned?: boolean;

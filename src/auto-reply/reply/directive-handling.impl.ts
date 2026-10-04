@@ -138,6 +138,7 @@ export async function handleDirectiveOnly(
     resetModelOverride,
     workspaceDir: params.workspaceDir,
     surface: params.surface,
+    accountId: params.ctx?.AccountId,
     sessionEntry,
   });
   if (modelInfo) {
@@ -186,7 +187,9 @@ export async function handleDirectiveOnly(
   thinkingCatalog = preparedModel?.catalog ?? thinkingCatalog;
   const modelRuntimeResolution = preparedModel?.runtime ?? { kind: "unchanged" as const };
   const validateSelection = () =>
-    modelResolution.validateModelSelection?.() ?? preparedModel?.validateRuntimeSelection?.();
+    params.validateCommandSelection?.() ??
+    modelResolution.validateModelSelection?.() ??
+    preparedModel?.validateRuntimeSelection?.();
   const prospectiveSessionEntry = { ...sessionEntry };
   applyModelRuntimeDirective(prospectiveSessionEntry, modelRuntimeResolution);
   const selectedCatalogEntry = findSelectedCatalogEntry({

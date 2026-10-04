@@ -285,6 +285,19 @@ async function initializeThreadBindingManager(
 
   const projectSessionBinding = (record: TelegramThreadBindingRecord) =>
     toSessionBindingRecord(record, { idleTimeoutMs, maxAgeMs });
+  const inspectByConversation: NonNullable<SessionBindingAdapter["inspectByConversation"]> = (
+    ref,
+  ) => {
+    if (ref.channel !== "telegram") {
+      return null;
+    }
+    const conversationId = normalizeOptionalString(ref.conversationId);
+    if (!conversationId) {
+      return null;
+    }
+    const record = manager.getByConversationId(conversationId);
+    return record ? projectSessionBinding(record) : null;
+  };
   const sessionBindingAdapter: SessionBindingAdapter = {
     channel: "telegram",
     accountId,
@@ -405,17 +418,8 @@ async function initializeThreadBindingManager(
     },
     listBySession: (targetSessionKey) =>
       manager.listBySessionKey(targetSessionKey).map(projectSessionBinding),
-    resolveByConversation: (ref) => {
-      if (ref.channel !== "telegram") {
-        return null;
-      }
-      const conversationId = normalizeOptionalString(ref.conversationId);
-      if (!conversationId) {
-        return null;
-      }
-      const record = manager.getByConversationId(conversationId);
-      return record ? projectSessionBinding(record) : null;
-    },
+    inspectByConversation,
+    resolveByConversation: inspectByConversation,
     touch: (bindingId, at) => {
       const conversationId = resolveThreadBindingConversationIdFromBindingId({
         accountId,

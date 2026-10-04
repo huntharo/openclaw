@@ -1,10 +1,17 @@
+import {
+  buildModelPickerPresentation,
+  createModelPickerCapabilityProfile,
+  resolveModelPickerAction,
+} from "openclaw/plugin-sdk/interactive-runtime";
 import { describe, expect, it } from "vitest";
 import { parseTelegramApprovalCallbackData } from "./approval-callback-data.js";
 import { buildTelegramPresentationButtons, resolveTelegramInlineButtons } from "./button-types.js";
+import { parseTelegramModelPickerCallbackData } from "./model-picker-callback-data.js";
 import {
   parseTelegramNativeCommandCallbackData,
   parseTelegramOpaqueCallbackData,
 } from "./native-command-callback-data.js";
+import { TELEGRAM_PRESENTATION_CAPABILITIES } from "./presentation-capabilities.js";
 import { parseTelegramQuestionCallbackData } from "./question-callback-data.js";
 
 describe("resolveTelegramInlineButtons precedence", () => {
@@ -67,6 +74,33 @@ describe("resolveTelegramInlineButtons precedence", () => {
 });
 
 describe("buildTelegramPresentationButtons action domains", () => {
+  it("delivers a long model reference through bounded typed controls and a fresh catalog", () => {
+    const id = `family/${"long-model-".repeat(25)}:latest`;
+    const catalog = [{ provider: "ollama", id }];
+    const capabilityProfile = createModelPickerCapabilityProfile(
+      TELEGRAM_PRESENTATION_CAPABILITIES,
+    )!;
+    const rows = buildTelegramPresentationButtons(
+      buildModelPickerPresentation({
+        catalog,
+        capabilityProfile,
+        provider: "ollama",
+      }),
+    );
+    const data = rows?.[0]?.[0]?.callback_data;
+    expect(data).toMatch(/^mp1:s:/u);
+    expect(Buffer.byteLength(data!, "utf8")).toBeLessThanOrEqual(64);
+    const action = parseTelegramModelPickerCallbackData(data!);
+    expect(action?.intent).toBe("choose-model");
+    expect(resolveModelPickerAction({ action: action!, catalog, capabilityProfile })).toEqual({
+      kind: "command",
+      action: { type: "command", command: `/model ollama/${id} -s` },
+    });
+    expect(parseTelegramNativeCommandCallbackData(data)).toBeNull();
+    expect(parseTelegramApprovalCallbackData(data)).toBeNull();
+    expect(parseTelegramQuestionCallbackData(data)).toBeNull();
+    expect(parseTelegramModelPickerCallbackData(`${data}:unexpected`)).toBeNull();
+  });
   it("keeps raw slash callbacks distinct from typed commands and drops oversized commands", () => {
     const rows = buildTelegramPresentationButtons({
       blocks: [
@@ -126,6 +160,7 @@ describe("buildTelegramPresentationButtons action domains", () => {
       " tga1:e:o:plugin:123 ",
       "tgq1:ask_0123456789abcdef0123456789abcdef:0",
       " tgq1:ask_0123456789abcdef0123456789abcdef:0 ",
+      "mp1:s:opaque-plugin-value",
     ];
     const rows = buildTelegramPresentationButtons({
       blocks: [{ type: "buttons", buttons: values.map((value) => ({ label: "Plugin", value })) }],
@@ -136,6 +171,7 @@ describe("buildTelegramPresentationButtons action domains", () => {
       " tga1:e:o:plugin:123 ",
       "tgq1:ask_0123456789abcdef0123456789abcdef:0",
       " tgq1:ask_0123456789abcdef0123456789abcdef:0 ",
+      "mp1:s:opaque-plugin-value",
     ]);
     for (const callback of callbacks ?? []) {
       expect(parseTelegramApprovalCallbackData(callback)).toBeNull();

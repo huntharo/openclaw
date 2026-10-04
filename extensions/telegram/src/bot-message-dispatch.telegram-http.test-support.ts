@@ -163,6 +163,7 @@ export function createTelegramDispatchHttpFixture() {
           method === "sendMessage" ||
           method === "sendRichMessage" ||
           method === "editMessageText" ||
+          method === "editMessageCaption" ||
           method === "sendDocument" ||
           method === "sendPhoto" ||
           method === "sendAudio" ||
@@ -192,8 +193,13 @@ export function createTelegramDispatchHttpFixture() {
                 message_id: messageId,
                 date: 1_700_000_000,
                 chat,
+                from: { id: 123456, is_bot: true, first_name: "Fixture bot" },
                 text,
                 ...(caption === undefined ? {} : { caption }),
+                ...(fields.reply_markup !== undefined ? { reply_markup: fields.reply_markup } : {}),
+                ...(fields.business_connection_id
+                  ? { business_connection_id: fields.business_connection_id }
+                  : {}),
                 ...(fields.message_thread_id
                   ? { message_thread_id: Number(fields.message_thread_id) }
                   : {}),
@@ -437,6 +443,7 @@ export function createTelegramDispatchHttpFixture() {
       cfg?: OpenClawConfig;
       onDispatch?: (cfg: OpenClawConfig) => void;
       context?: TelegramMessageContext;
+      callbackReply?: Parameters<typeof dispatchTelegramMessage>[0]["callbackReply"];
       textLimit?: number;
       allowErrors?: boolean;
       outcome?: "completed" | "failed-retryable";
@@ -525,6 +532,7 @@ export function createTelegramDispatchHttpFixture() {
       }
 
       const result = await dispatchTelegramMessage({
+        callbackReply: scenario?.callbackReply,
         context,
         bot,
         cfg,

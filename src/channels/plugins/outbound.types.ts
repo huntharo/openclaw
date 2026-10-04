@@ -35,6 +35,8 @@ export type ChannelPresentationCapabilities = {
   supported?: boolean;
   /** Whether the channel can render button action blocks natively. */
   buttons?: boolean;
+  /** Opt in to rendering core-owned ModelPickerAction controls in private channel envelopes. */
+  modelPicker?: boolean;
   /** Whether the channel can render select/menu blocks natively. */
   selects?: boolean;
   /** Whether the channel can render low-emphasis context blocks natively. */

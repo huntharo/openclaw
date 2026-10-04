@@ -24,6 +24,7 @@ type TelegramHistoryScope = {
   cfg: OpenClawConfig;
   accountId: string;
   chatId: string | number;
+  businessConnectionId?: string;
   threadId?: number;
   botUserId?: number;
   assertCurrent?: () => void;
@@ -56,6 +57,7 @@ export async function isTelegramHistoryNodeAllowed(
     node.threadBinding?.threadSpec.scope === "dm" ||
     node.threadBinding?.threadSpec.scope === "direct-messages" ||
     String(msg.chat.id) !== String(params.chatId) ||
+    msg.business_connection_id !== params.businessConnectionId ||
     node.threadId !== (params.threadId === undefined ? undefined : String(params.threadId))
   ) {
     return false;
@@ -185,6 +187,7 @@ export async function readTelegramHistoryWindow(
   const candidates = await params.cache.readHistoryWindow({
     accountId: params.accountId,
     chatId: params.chatId,
+    businessConnectionId: params.businessConnectionId,
     threadId: params.threadId,
     before: params.before,
     limit: Math.max(256, params.limit),
@@ -226,6 +229,7 @@ export async function readTelegramHistory(
     const page = await params.cache.readHistory({
       accountId: params.accountId,
       chatId: params.chatId,
+      businessConnectionId: params.businessConnectionId,
       threadId: params.threadId,
       before,
       after,

@@ -225,6 +225,33 @@ function assertAdapterSelectionCurrent(
   }
 }
 
+/** Capture only an adapter's admitted pure projection; generic storage keeps its async owner. */
+export function capturePureSessionBindingAdapterSelection(
+  refs: readonly ConversationRef[],
+): (() => ReadonlyArray<SessionBindingRecord | null>) | undefined {
+  const conversations = refs.map(captureConversationRef);
+  const first = conversations[0];
+  const adapter = first ? resolveAdapterForChannelAccount(first) : null;
+  const inspect = adapter?.inspectByConversation;
+  if (!adapter || !inspect) {
+    return undefined;
+  }
+  const assertCurrent = () => {
+    for (const conversation of conversations) {
+      assertAdapterSelectionCurrent(conversation, adapter);
+    }
+  };
+  assertCurrent();
+  return () => {
+    assertCurrent();
+    const records = conversations.map((conversation) =>
+      routableBinding(inspect.call(adapter, { ...conversation })),
+    );
+    assertCurrent();
+    return records;
+  };
+}
+
 /**
  * Workers spawned before child-only placement could bind the conversation a user was
  * talking in. Those persisted bindings stay invisible, so the conversation routes to its
