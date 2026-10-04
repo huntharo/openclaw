@@ -426,8 +426,10 @@ and JavaScript, keep their existing contract.
       plugin reload. The channel must reject a changed admitted sender and return
       a config that pins the verified credential for all parts of that delivery.
       Core requires the exact retained channel registration and unchanged channel,
-      shared-default, and owning-plugin settings; channels without this callback
-      cannot transfer a final reply to a successor registry. The callback must not
+      shared-default, and owning-plugin settings for every successor handoff.
+      Channels without this callback deliver with the successor's unchanged
+      config; add the callback when the sender credential can change outside
+      config (environment, token files, SecretRef values). The callback must not
       persist credentials or change unrelated settings.
       Existing raw callbacks remain supported. An older adapter receives the
       payload through its original callback; it must adopt the prepared operation
@@ -755,6 +757,18 @@ The transport contract is mandatory for opt-in adapters:
   asynchronous DNS or dispatcher preparation.
 - An absent callback means this invocation has no additional read-authority
   fence. A thrown error stops the request; do not retry with a new callback.
+
+Migrated transports capture `captureEffectAuthority()` from
+`openclaw/plugin-sdk/fetch-runtime` before handing requests to shared queues.
+Use its `run` method to restore that captured scope in a queued continuation.
+After asynchronous preparation, call `effect.initiate(() => provider.send(...))`
+and run the existing synchronous assertion inside that callback. The owner
+releases the interval when the provider call is issued, before its response.
+Every retry or chunk calls `initiate` again to prepare a fresh use. Library work
+after the SDK handoff belongs to the already initiated operation.
+
+Shared HTTP, Discord, Slack, and Telegram currently use this preparation contract.
+Other bundled transports retain their existing synchronous guards during migration.
 
 The host binds the callback to the selected registration and its active lifecycle.
 Local message tools and Gateway agent requests retain the originating run and
