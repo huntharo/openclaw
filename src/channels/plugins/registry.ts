@@ -1,7 +1,6 @@
-/** Active channel plugin registry with bundled fallback. */
+/** Active channel plugin registry. Provider activation belongs to the loader. */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
-import { getBundledChannelPlugin } from "./bundled.js";
 import {
   getLoadedChannelPluginById,
   getLoadedChannelPluginEntryById,
@@ -24,10 +23,7 @@ export function getLoadedChannelPlugin(id: ChannelId): ChannelPlugin | undefined
 /**
  * Resolves the active channel implementation together with host-owned provenance.
  */
-export function resolveChannelPluginRegistration(
-  id: ChannelId,
-  options: { loadedOnly?: boolean } = {},
-):
+export function resolveChannelPluginRegistration(id: ChannelId):
   | {
       plugin: ChannelPlugin;
       origin?: string;
@@ -62,15 +58,11 @@ export function resolveChannelPluginRegistration(
         : {}),
     };
   }
-  if (options.loadedOnly) {
-    return undefined;
-  }
-  const plugin = getBundledChannelPlugin(resolvedId);
-  return plugin ? { plugin, origin: "bundled" } : undefined;
+  return undefined;
 }
 
 /**
- * Returns the active channel plugin, with bundled fallback for built-in channels.
+ * Returns an admitted channel implementation without loading an unregistered provider.
  */
 export function getChannelPlugin(id: ChannelId): ChannelPlugin | undefined {
   return resolveChannelPluginRegistration(id)?.plugin;

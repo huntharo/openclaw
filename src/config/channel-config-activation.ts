@@ -32,3 +32,13 @@ export function resolveChannelConfigActivationFacts(config: OpenClawConfig): str
     })
     .toSorted();
 }
+
+/** Returns true when a channel config entry contains settings beyond enabled/disabled state. */
+export function hasMeaningfulChannelConfig(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  // `enabled` alone is operator intent, not configuration material; setup/status code uses this
+  // distinction to avoid treating explicit disables as configured channels.
+  return Object.keys(value).some((key) => key !== "enabled");
+}

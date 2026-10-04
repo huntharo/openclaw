@@ -155,7 +155,7 @@ function resolveChannelPackageStateMetadata(
   };
 }
 
-function listChannelPackageStateCatalog(
+export function listChannelPackageStateCatalog(
   metadataKey: ChannelPackageStateMetadataKey,
   discovery?: PluginDiscoveryResult,
 ): PluginChannelCatalogEntry[] {

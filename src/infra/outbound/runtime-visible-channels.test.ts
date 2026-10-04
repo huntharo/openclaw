@@ -10,13 +10,11 @@ import {
 
 const mocks = vi.hoisted(() => ({
   getChannelPlugin: vi.fn(),
-  getLoadedChannelPlugin: vi.fn(),
   listChannelPlugins: vi.fn(),
 }));
 
 vi.mock("../../channels/plugins/index.js", () => ({
   getChannelPlugin: (...args: unknown[]) => mocks.getChannelPlugin(...args),
-  getLoadedChannelPlugin: (...args: unknown[]) => mocks.getLoadedChannelPlugin(...args),
   listChannelPlugins: (...args: unknown[]) => mocks.listChannelPlugins(...args),
 }));
 
@@ -27,8 +25,6 @@ function scopedRegistryWith(plugins: Array<Record<string, unknown>>): PluginRegi
 beforeEach(() => {
   mocks.getChannelPlugin.mockReset();
   mocks.getChannelPlugin.mockReturnValue(undefined);
-  mocks.getLoadedChannelPlugin.mockReset();
-  mocks.getLoadedChannelPlugin.mockReturnValue(undefined);
   mocks.listChannelPlugins.mockReset();
   mocks.listChannelPlugins.mockReturnValue([]);
 });
@@ -88,15 +84,11 @@ describe("getRuntimeVisibleChannelPlugin", () => {
     expect(getRuntimeVisibleChannelPlugin("zephyrchat")).toBeUndefined();
   });
 
-  it("prefers the scoped plugin and keeps the bundled fallback last", () => {
-    const loadedPlugin = { id: "alpha", meta: { label: "Loaded" } };
+  it("prefers the scoped plugin while preserving unrelated registered root channels", () => {
     const scopedPlugin = { id: "alpha", meta: { label: "Scoped" } };
-    const bundledPlugin = { id: "beta", meta: { label: "Bundled" } };
-    mocks.getLoadedChannelPlugin.mockImplementation((id: string) =>
-      id === "alpha" ? loadedPlugin : undefined,
-    );
+    const rootPlugin = { id: "beta", meta: { label: "Root" } };
     mocks.getChannelPlugin.mockImplementation((id: string) =>
-      id === "beta" ? bundledPlugin : undefined,
+      id === "beta" ? rootPlugin : undefined,
     );
 
     const resolved = withPluginRuntimeRegistryScope(scopedRegistryWith([scopedPlugin]), () => ({
@@ -104,6 +96,6 @@ describe("getRuntimeVisibleChannelPlugin", () => {
       beta: getRuntimeVisibleChannelPlugin("beta"),
     }));
     expect(resolved.alpha).toBe(scopedPlugin);
-    expect(resolved.beta).toBe(bundledPlugin);
+    expect(resolved.beta).toBe(rootPlugin);
   });
 });

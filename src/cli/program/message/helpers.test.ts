@@ -9,15 +9,15 @@ import {
 } from "../../json-output-mode.js";
 import { registerMessageSendCommand } from "./register.send.js";
 
-const messageCommandMock = vi.fn(async (): Promise<unknown> => undefined);
+const messageCommandMock = vi.hoisted(() => vi.fn(async (): Promise<unknown> => undefined));
 vi.mock("../../../commands/message.js", () => ({
   messageCommand: messageCommandMock,
 }));
 
-const ensureConfigReadyMock = vi.fn(async () => {});
+const ensureConfigReadyMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("../config-guard.js", () => ({ ensureConfigReady: ensureConfigReadyMock }));
 
-const getChannelPluginMock = vi.fn();
+const getChannelPluginMock = vi.hoisted(() => vi.fn());
 vi.mock("../../../channels/plugins/index.js", () => ({
   getChannelPlugin: getChannelPluginMock,
 }));
@@ -28,15 +28,14 @@ vi.mock("../../../globals.js", () => ({
 }));
 
 const pluginRegistry = createMockPluginRegistry([]);
-const loadPluginRegistryHandleMock = vi.fn(() => pluginRegistry);
-vi.mock("../../../config/config.js", () => ({ getRuntimeConfig: () => ({}) }));
-vi.mock("../../../plugins/channel-plugin-ids.js", () => ({
-  resolveConfiguredChannelPluginIds: () => ["configured-channel"],
-  resolveDiscoverableScopedChannelPluginIds: (params: { channelIds: string[] }) =>
-    params.channelIds,
+const releaseInspectionMock = vi.fn(async () => {});
+const acquireMessagePluginRegistryMock = vi.fn(async () => ({
+  registry: pluginRegistry,
+  release: releaseInspectionMock,
+  assertCurrent: () => {},
 }));
-vi.mock("../../../plugins/loader.js", () => ({
-  loadPluginRegistryHandle: loadPluginRegistryHandleMock,
+vi.mock("./plugin-admission.js", () => ({
+  acquireMessagePluginRegistry: acquireMessagePluginRegistryMock,
 }));
 
 const runGatewayStopMock = vi.fn(
@@ -60,11 +59,13 @@ function registerStopHook() {
   });
 }
 
-const exitMock = vi.fn((_code: number): never => {
-  throw new Error("exit");
+const { exitMock, errorMock, runtimeMock } = vi.hoisted(() => {
+  const exit = vi.fn((_code: number): never => {
+    throw new Error("exit");
+  });
+  const error = vi.fn();
+  return { exitMock: exit, errorMock: error, runtimeMock: { log: vi.fn(), error, exit } };
 });
-const errorMock = vi.fn();
-const runtimeMock = { log: vi.fn(), error: errorMock, exit: exitMock };
 vi.mock("../../../runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../runtime.js")>()),
   defaultRuntime: runtimeMock,
@@ -143,15 +144,13 @@ function expectMessageCommandOptions(expected: Record<string, unknown>, callInde
   }
 }
 
-function expectRegistryLoad(pluginIds: string[]): void {
-  expect(loadPluginRegistryHandleMock).toHaveBeenCalledWith(
-    expect.objectContaining({ onlyPluginIds: pluginIds, throwOnLoadError: true }),
-  );
-  expect(ensureConfigReadyMock).toHaveBeenCalledBefore(loadPluginRegistryHandleMock);
+function expectRegistryLoad(pluginIds?: string[]): void {
+  expect(acquireMessagePluginRegistryMock).toHaveBeenCalledWith(pluginIds);
+  expect(ensureConfigReadyMock).toHaveBeenCalledBefore(acquireMessagePluginRegistryMock);
 }
 
 function expectConfigReady(action: string, validateConfigOnly: boolean): void {
-  expect(ensureConfigReadyMock).toHaveBeenCalledExactlyOnceWith({
+  expect(ensureConfigReadyMock).toHaveBeenLastCalledWith({
     runtime: runtimeMock,
     commandPath: ["message", action],
     measure: expect.any(Function),
@@ -168,6 +167,12 @@ describe("runMessageAction", () => {
     mockChannelExecutionModes({ telegram: "gateway" });
     ensureConfigReadyMock.mockReset().mockResolvedValue(undefined);
     messageCommandMock.mockClear().mockResolvedValue(undefined);
+    acquireMessagePluginRegistryMock.mockReset().mockResolvedValue({
+      registry: pluginRegistry,
+      release: releaseInspectionMock,
+      assertCurrent: () => {},
+    });
+    releaseInspectionMock.mockClear();
     pluginRegistry.typedHooks.length = 0;
     resetGlobalHookRunner();
     runGatewayStopMock.mockClear().mockResolvedValue(undefined);
@@ -259,7 +264,7 @@ describe("runMessageAction", () => {
         ),
       ).rejects.toThrow("--channel must not be blank");
 
-      expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+      expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
       expect(messageCommandMock).not.toHaveBeenCalled();
     },
   );
@@ -324,7 +329,7 @@ describe("runMessageAction", () => {
   it("loads configured channel plugins when no target channel is known yet", async () => {
     await runSendAction({ channel: undefined });
 
-    expectRegistryLoad(["configured-channel"]);
+    expectRegistryLoad(undefined);
   });
 
   it("narrows plugin loading from a channel-prefixed target", async () => {
@@ -339,7 +344,7 @@ describe("runMessageAction", () => {
     await runSendAction({ target: "channel:12345" });
 
     expectConfigReady("send", true);
-    expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+    expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
     expectMessageCommandOptions({
       action: "send",
       channel: "discord",
@@ -384,7 +389,7 @@ describe("runMessageAction", () => {
   });
 
   it("preloads when the scoped channel plugin is not cheaply available", async () => {
-    getChannelPluginMock.mockReturnValue(undefined);
+    getChannelPluginMock.mockReturnValueOnce(undefined);
 
     await runSendAction({ target: "channel:12345" });
 
@@ -394,7 +399,7 @@ describe("runMessageAction", () => {
   it("keeps target-prefixed Telegram sends from local plugin preload", async () => {
     await runSendAction({ channel: undefined, target: "telegram:12345" });
 
-    expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+    expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
     expectMessageCommandOptions({
       action: "send",
       target: "telegram:12345",
@@ -414,7 +419,7 @@ describe("runMessageAction", () => {
       forceDocument: true,
     });
 
-    expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+    expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
     expectMessageCommandOptions({
       action: "send",
       channel: "telegram",
@@ -452,11 +457,11 @@ describe("runMessageAction", () => {
       }),
     ).rejects.toThrow("exit");
 
-    expectRegistryLoad(["configured-channel"]);
+    expectRegistryLoad(undefined);
   });
 
   it("exits with failure when plugin registry loading fails before dispatch", async () => {
-    loadPluginRegistryHandleMock.mockImplementationOnce(() => {
+    acquireMessagePluginRegistryMock.mockImplementationOnce(() => {
       throw new Error("plugin load failed");
     });
 
@@ -489,9 +494,9 @@ describe("runMessageAction", () => {
       commandPath: ["message", "send"],
       measure: expect.any(Function),
       suppressDoctorStdout: true,
-      validateConfigOnly: false,
+      validateConfigOnly: true,
     });
-    expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+    expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
     expect(messageCommandMock).not.toHaveBeenCalled();
     expect(errorMock).not.toHaveBeenCalled();
     expect(exitMock).not.toHaveBeenCalled();
@@ -514,7 +519,7 @@ describe("runMessageAction", () => {
     expect(errorMock).toHaveBeenCalledWith(
       "--poll-anonymous and --poll-public are mutually exclusive.",
     );
-    expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+    expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
     expect(messageCommandMock).not.toHaveBeenCalled();
     expect(exitMock).toHaveBeenCalledWith(1);
     expect(exitMock).not.toHaveBeenCalledWith(0);
@@ -580,7 +585,7 @@ describe("runMessageAction", () => {
 
     const kind = NON_NEGATIVE_INTEGER_FLAGS.has(flag) ? "non-negative" : "positive";
     expect(errorMock).toHaveBeenCalledWith(`${flag} must be a ${kind} integer.`);
-    expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+    expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
     expect(messageCommandMock).not.toHaveBeenCalled();
     expect(exitMock).toHaveBeenCalledWith(1);
     expect(exitMock).not.toHaveBeenCalledWith(0);
@@ -677,7 +682,7 @@ describe("runMessageAction", () => {
 
     await runSendAction();
 
-    expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+    expect(acquireMessagePluginRegistryMock).not.toHaveBeenCalled();
     expect(rootStop).not.toHaveBeenCalled();
   });
 

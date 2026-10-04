@@ -15,7 +15,6 @@ import {
   createChannelTestPluginBase,
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
-import * as bundled from "./bundled.js";
 import {
   dispatchChannelMessageAction,
   prepareExternalMessageActionTargetForResolution,
@@ -400,37 +399,26 @@ describe("official plugin read-only authority", () => {
     expect(retained).toThrow("read authority is no longer active");
   });
 
-  it.each(["artifact", "scope"] as const)(
-    "does not execute an opted-in bundled read through an unowned %s fallback",
-    async (fallback) => {
-      const fixture = registerReader({ origin: "bundled", trusted: false });
-      if (fallback === "artifact") {
-        setActivePluginRegistry(createTestRegistry([]));
-        vi.spyOn(bundled, "getBundledChannelPlugin").mockReturnValue(fixture.plugin);
-      }
-      const assertDenied = async () => {
-        expect(shouldDeferExternalMessageActionTargetResolution(fixture.context)).toBe(true);
-        await expect(
-          prepareExternalMessageActionTargetForResolution(fixture.context),
-        ).rejects.toThrow("read authority is no longer active");
-        await expect(dispatchChannelMessageAction(fixture.context)).rejects.toThrow(
-          "read authority is no longer active",
-        );
-        expect(fixture.handleAction).not.toHaveBeenCalled();
-        expect(
-          await dispatchChannelMessageAction({
-            ...fixture.context,
-            conversationReadOrigin: "direct-operator",
-          }),
-        ).toBe(receipt);
-      };
-      if (fallback === "scope") {
-        await withPluginRuntimeRegistryScope(createTestRegistry([]), assertDenied);
-      } else {
-        await assertDenied();
-      }
-    },
-  );
+  it("does not borrow root read authority through an empty scope", async () => {
+    const fixture = registerReader({ origin: "bundled", trusted: false });
+    const assertDenied = async () => {
+      expect(shouldDeferExternalMessageActionTargetResolution(fixture.context)).toBe(true);
+      await expect(
+        prepareExternalMessageActionTargetForResolution(fixture.context),
+      ).rejects.toThrow("read authority is no longer active");
+      await expect(dispatchChannelMessageAction(fixture.context)).rejects.toThrow(
+        "read authority is no longer active",
+      );
+      expect(fixture.handleAction).not.toHaveBeenCalled();
+      expect(
+        await dispatchChannelMessageAction({
+          ...fixture.context,
+          conversationReadOrigin: "direct-operator",
+        }),
+      ).toBe(receipt);
+    };
+    await withPluginRuntimeRegistryScope(createTestRegistry([]), assertDenied);
+  });
 
   it.each(["replace", "disable", "remove", "revoke", "reregister", "trust-downgrade"] as const)(
     "fences subsequent I/O and results after %s",

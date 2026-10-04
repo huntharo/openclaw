@@ -1,11 +1,11 @@
-import { getBootstrapChannelPlugin } from "../channels/plugins/bootstrap-registry.js";
+import { getChannelPlugin } from "../channels/plugins/index.js";
 import {
   deriveSessionChatTypeFromKey,
   type SessionKeyChatType,
 } from "./session-chat-type-shared.js";
 
 // Session chat-type derivation first uses generic key parsing, then falls back
-// to bootstrap channel plugins for legacy platform-specific session keys.
+// to admitted channel plugins for custom legacy session keys.
 function collectLegacyChatTypeCandidatePluginIds(scopedSessionKey: string): string[] {
   const ids = new Set<string>();
   const firstToken = scopedSessionKey.split(":").find(Boolean);
@@ -24,7 +24,7 @@ export function deriveSessionChatType(sessionKey: string | undefined | null): Se
     (scopedSessionKey) => {
       for (const pluginId of collectLegacyChatTypeCandidatePluginIds(scopedSessionKey)) {
         const deriveLegacySessionChatType =
-          getBootstrapChannelPlugin(pluginId)?.messaging?.deriveLegacySessionChatType;
+          getChannelPlugin(pluginId)?.messaging?.deriveLegacySessionChatType;
         const derived = deriveLegacySessionChatType?.(scopedSessionKey);
         if (derived) {
           return derived;

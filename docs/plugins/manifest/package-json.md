@@ -116,7 +116,10 @@ Use `env.allOf` when every listed variable is required and `env.anyOf` when any 
 Declared `configuredState` metadata owns both positive and negative bootstrap
 results. A negative result does not fall through to runtime hooks or stored
 credentials. Channels without that declaration retain the legacy
-`config.hasConfiguredState` fallback. Operational checks that require current
+`config.hasConfiguredState` fallback on an already admitted channel in the scoped
+or process registry, including a channel admitted by an explicit setup flow.
+Presence checks do not load runtime or setup implementations to find that hook.
+Operational checks that require current
 stored credentials use `config.hasConfiguredStateAsync`; keep them separate
 from activation based on config and environment variables.
 

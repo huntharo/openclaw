@@ -1,7 +1,7 @@
 // Channel resolution exposes read-only outbound runtime facades and performs
 // optional bootstrap for deliverable channels that are not loaded yet.
 import type { ChannelMessageAdapterShape } from "../../channels/message/types.js";
-import { getChannelPlugin, getLoadedChannelPlugin } from "../../channels/plugins/index.js";
+import { getLoadedChannelPlugin } from "../../channels/plugins/index.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
@@ -113,7 +113,6 @@ function resolveRuntimeOutboundPluginCandidate(params: {
   loaded?: ChannelPlugin;
   runtime?: ChannelPlugin;
   setupFallback?: ChannelPlugin;
-  bundled?: ChannelPlugin;
   allowSetupShell?: boolean;
   requireActivatedRuntime?: boolean;
 }): ChannelPlugin | undefined {
@@ -121,8 +120,8 @@ function resolveRuntimeOutboundPluginCandidate(params: {
     ? channelPluginHasActivatedOutboundSurface
     : channelPluginHasRuntimeOutboundSurface;
   return (
-    [params.loaded, params.runtime, params.bundled].find(hasRuntimeSurface) ??
-    (params.allowSetupShell ? (params.loaded ?? params.setupFallback ?? params.bundled) : undefined)
+    [params.loaded, params.runtime].find(hasRuntimeSurface) ??
+    (params.allowSetupShell ? (params.loaded ?? params.setupFallback) : undefined)
   );
 }
 
@@ -171,7 +170,6 @@ function* resolveOutboundChannelPluginSteps(
   }
 
   const resolveLoaded = () => getLoadedChannelPlugin(normalized);
-  const resolve = () => getChannelPlugin(normalized);
   const current = resolveLoaded();
   const requireActivatedRuntime = params.allowBootstrap === true;
   const runtimeCurrent = resolveOutboundPluginFromRuntimeRegistry(
@@ -183,12 +181,10 @@ function* resolveOutboundChannelPluginSteps(
     bootstrapRegistry ?? getOutboundRuntimeRegistry(),
     normalized,
   );
-  const bundledCurrent = resolve();
   const candidate = resolveRuntimeOutboundPluginCandidate({
     loaded: current,
     runtime: runtimeCurrent,
     setupFallback,
-    bundled: bundledCurrent,
     allowSetupShell: params.allowBootstrap !== true,
     requireActivatedRuntime,
   });
@@ -208,7 +204,6 @@ function* resolveOutboundChannelPluginSteps(
   return resolveRuntimeOutboundPluginCandidate({
     loaded: resolveLoaded(),
     runtime: resolveOutboundPluginFromRuntimeRegistry(normalized, registry, true),
-    bundled: resolve(),
     requireActivatedRuntime: true,
   });
 }

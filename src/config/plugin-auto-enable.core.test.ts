@@ -22,40 +22,6 @@ import {
 import type { OpenClawConfig } from "./types.openclaw.js";
 import { validateConfigObject } from "./validation.js";
 
-vi.mock("../channels/plugins/package-state-probes.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../channels/plugins/package-state-probes.js")>();
-  return {
-    ...actual,
-    listBundledChannelIdsForPackageState: (
-      ...args: Parameters<typeof actual.listBundledChannelIdsForPackageState>
-    ) => {
-      const channelIds = actual.listBundledChannelIdsForPackageState(...args);
-      // Declare the synthetic checker; discovery still controls its candidacy.
-      return args[0] === "configuredState" ? [...channelIds, "cache-channel"] : channelIds;
-    },
-    hasBundledChannelPackageState: (
-      params: Parameters<typeof actual.hasBundledChannelPackageState>[0],
-    ) => {
-      if (params.metadataKey !== "configuredState") {
-        return actual.hasBundledChannelPackageState(params);
-      }
-      if (params.channelId === "cache-channel") {
-        return Boolean(params.env?.CACHE_CHANNEL_TOKEN?.trim());
-      }
-      if (params.channelId === "irc") {
-        return Boolean(params.env?.IRC_HOST?.trim() && params.env?.IRC_NICK?.trim());
-      }
-      if (params.channelId === "slack") {
-        return ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "SLACK_USER_TOKEN"].some((key) =>
-          Boolean(params.env?.[key]?.trim()),
-        );
-      }
-      return actual.hasBundledChannelPackageState(params);
-    },
-  };
-});
-
 const setupRegistryMock = vi.hoisted(() => ({
   resolvePluginSetupAutoEnableReasons: vi.fn(
     (params: { config?: OpenClawConfig; pluginIds?: readonly string[] }) => {
@@ -691,12 +657,18 @@ describe("applyPluginAutoEnable core", () => {
       env: configuredEnv,
       manifestRegistry,
     });
-    mutableDiscovery.candidates.push(
-      makeBundledChannelCandidate({
-        pluginId: "cache-channel-plugin",
-        channelId: "cache-channel",
-      }),
-    );
+    const candidate = makeBundledChannelCandidate({
+      pluginId: "cache-channel-plugin",
+      channelId: "cache-channel",
+    });
+    candidate.packageManifest = {
+      ...candidate.packageManifest,
+      channel: {
+        id: "cache-channel",
+        configuredState: { env: { anyOf: ["CACHE_CHANNEL_TOKEN"] } },
+      },
+    };
+    mutableDiscovery.candidates.push(candidate);
     clearPluginMetadataLifecycleCaches();
     const second = applyPluginAutoEnable({
       config,

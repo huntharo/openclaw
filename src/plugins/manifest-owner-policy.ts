@@ -1,4 +1,6 @@
 /** Applies manifest owner policy for plugin availability and activation decisions. */
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { hasMeaningfulChannelConfig } from "../config/channel-config-activation.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   resolveEffectivePluginActivationState,
@@ -92,4 +94,60 @@ export function isActivatedManifestOwner(params: {
     rootConfig: params.rootConfig,
     enabledByDefault: isPluginEnabledByDefaultForPlatform(params.plugin),
   }).activated;
+}
+
+/** True when config contains meaningful enabled channel settings. */
+export function hasExplicitChannelConfig(params: {
+  config: OpenClawConfig;
+  channelId: string;
+}): boolean {
+  const channels = asOptionalRecord(params.config.channels);
+  const entry = asOptionalRecord(channels?.[params.channelId]);
+  if (!entry) {
+    return false;
+  }
+  const enabled = entry.enabled;
+  if (enabled === false) {
+    return false;
+  }
+  return enabled === true || hasMeaningfulChannelConfig(entry);
+}
+
+export function hasChannelPluginOwnerTrust(params: {
+  plugin: OwnerPlugin;
+  normalizedConfig: NormalizedPluginsConfig;
+  rootConfig?: OpenClawConfig;
+}): boolean {
+  return params.plugin.origin === "global" || params.plugin.origin === "config"
+    ? hasExplicitManifestOwnerTrust(params)
+    : isActivatedManifestOwner(params);
+}
+
+export function isChannelPluginEligibleForScopedOwnership(params: {
+  plugin: OwnerPlugin;
+  normalizedConfig: NormalizedPluginsConfig;
+  rootConfig: OpenClawConfig;
+  channelId?: string;
+}): boolean {
+  // Explicit config can activate bundled channel owners even under restrictive allowlists.
+  const allowRestrictiveAllowlistBypass =
+    params.channelId !== undefined &&
+    isBundledManifestOwner(params.plugin) &&
+    hasExplicitChannelConfig({
+      config: params.rootConfig,
+      channelId: params.channelId,
+    });
+  if (
+    !passesManifestOwnerBasePolicy({
+      plugin: params.plugin,
+      normalizedConfig: params.normalizedConfig,
+      allowRestrictiveAllowlistBypass,
+    })
+  ) {
+    return false;
+  }
+  if (isBundledManifestOwner(params.plugin)) {
+    return true;
+  }
+  return hasChannelPluginOwnerTrust(params);
 }

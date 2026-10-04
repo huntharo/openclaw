@@ -423,7 +423,7 @@ function prepareMessageActionReadContext(
       const current =
         registration.captureReadAuthority && !authority?.()
           ? undefined
-          : resolveChannelPluginRegistration(ctx.channel, { loadedOnly: true });
+          : resolveChannelPluginRegistration(ctx.channel);
       if (current?.plugin !== registration.plugin || current.origin !== registration.origin) {
         throw new Error(`Plugin ${ctx.channel} alias authority is no longer active.`);
       }
