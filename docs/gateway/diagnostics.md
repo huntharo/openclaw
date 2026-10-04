@@ -137,6 +137,15 @@ and does not change admission, ordering, or warning thresholds.
 The Gateway records a bounded, payload-free stability stream by default when
 diagnostics are enabled. It captures operational facts, not content.
 
+Gateway RPC diagnostics retain exact core and registered plugin method names,
+including `node.invoke.result` and `workboard.cards.list`; unregistered request
+names fold into `other` (dedicated worker ingress uses `unknown`). The method
+label set is bounded by the registered catalog plus these fallback labels, not
+by caller-supplied names. The Prometheus exporter retains its shared 2,048-sample
+cap across counters, gauges, and histograms; a fully observed method uses up to
+five samples. Watch `openclaw_prometheus_series_dropped_total` for incomplete
+coverage. See [Prometheus metrics](/gateway/prometheus) for timing semantics.
+
 The existing diagnostic heartbeat debug log includes `nextWakeAtMs`, the earliest
 pending wake time in the Gateway scheduler as a Unix timestamp in milliseconds
 (or `none` when no wake is pending). Overdue diagnostic heartbeats run once after sleep;
@@ -384,8 +393,10 @@ openclaw gateway call diagnostics.heapProfile --params '{"includeObjectsCollecte
 ```
 
 The Node-only RPC defaults to five seconds and an average sampling interval of
-32 KiB. `durationMs` and `samplingIntervalBytes` must be positive integers. Durations above 30 seconds are
-clamped to 30 seconds; intervals below 4 KiB are clamped to 4 KiB. Smaller intervals
+32 KiB. `durationMs` and `samplingIntervalBytes` must be positive integers. With
+both collection flags false, durations are capped at 15 minutes (900,000 ms).
+Enabling either collection flag keeps the duration cap at 30 seconds;
+intervals below 4 KiB are clamped to 4 KiB. Smaller intervals
 collect more samples at greater CPU and memory cost. Choose a CLI timeout longer
 than the requested capture. The critical-memory warning points to this RPC;
 pressure never starts a capture automatically.
@@ -395,6 +406,20 @@ The optional booleans `includeObjectsCollectedByMajorGC` and
 samples of objects collected during the window and attribute transient allocation
 churn. Retaining collected samples can increase profiler memory use.
 
+For retention attribution, keep both collection flags false (the default) and
+use a longer window with a coarser sampling interval:
+
+```bash
+openclaw gateway call diagnostics.heapProfile --json --timeout 930000 --params '{"durationMs":900000,"samplingIntervalBytes":262144}'
+```
+
+Read each node's `selfSize` in `profile.head` as estimated bytes **allocated
+during the window and still alive at stop**. These are allocation sites, not
+retaining paths or objects allocated before capture. The 930,000 ms CLI timeout
+allows 30 seconds beyond the requested window for setup and cleanup; event-loop
+stalls can require more time. Disconnection, authority revocation, or Gateway
+shutdown cancels sampling and discards the partial profile after cleanup.
+
 The result includes actual elapsed `durationMs`, `samplingIntervalBytes`,
 `includeObjectsCollectedByMajorGC`, `includeObjectsCollectedByMinorGC`,
 `heapUsedBefore`, `heapUsedAfter`, `rssBefore`, `rssAfter` (all memory values in
@@ -403,6 +428,27 @@ and `truncated`. When present, `profile` contains the sanitized V8 sampling tree
 and samples. Each node's `selfSize` is the estimated allocation bytes at that call
 site; sum its descendants for inclusive
 bytes. Samples link to nodes by `nodeId`.
+
+`heapSpacesBefore` and `heapSpacesAfter` contain the main isolate's V8 heap-space
+statistics at the same boundaries as the memory readings: `space_name`,
+`space_used_size`, `space_size`, `space_available_size`, and `physical_space_size`
+(sizes in bytes). Compare entries by name to locate growth in old, large-object,
+code, or other spaces. On Node, the [Prometheus exporter](/gateway/prometheus)
+also exposes `openclaw_heap_space_bytes{space="<space_name>",stat="used|size|available|physical"}`
+from the existing 30-second diagnostic memory heartbeat, with the same idle
+sample suppression, never per scrape. Names come from V8's finite space set,
+including spaces added by future V8 versions; each space contributes four gauges
+under the exporter's existing series cap.
+
+Heap and CPU profiles label dependency frames as `[dep:<pkg>]` with URL
+`node_modules/<pkg>`, including scoped packages and pnpm layouts; symbols,
+versions, filenames, and absolute paths stay hidden. URLs with query or fragment
+markers remain redacted. Frames with script ID `0`,
+an empty URL, and a negative line number use `[native]`, except for known V8
+engine labels such as `(root)`. This bucket identifies missing JavaScript source
+attribution, not a specific native allocator or external Buffer bytes. Other
+unrecognized frames remain `[redacted]`; `redactedNodeCount` excludes dependency
+and native labels (CPU nodes with hidden deoptimization reasons still count).
 
 V8 can sample allocations made while constructing its own profile, after a call
 site has been translated into the returned tree. Samples without a matching tree
@@ -473,8 +519,10 @@ Memory pressure events record RSS, heap, threshold, and growth facts
 (`rss_threshold`, `heap_threshold`, `rss_growth`) without performing a
 file-system scan or writing a pre-OOM snapshot.
 
-On Node, persistent database workers collect garbage after a completed operation
-when their used heap has grown by 32 MiB since the last idle collection. SQLite,
+Persistent database workers collect garbage after a completed operation when their
+used heap has grown by 32 MiB since the last idle collection. This uses the runtime's
+local inspector collection support; runtimes that report the method as unavailable
+skip idle collection. On Node, SQLite,
 history, transcript, and reclamation workers request a 512 MiB V8 old-generation
 limit; an explicit process-wide `--max-old-space-size` overrides Node's worker
 resource limit. These limits do not cover native allocations or transferred buffers.
@@ -508,6 +556,44 @@ Worker for five minutes, reusing it only when its runtime entry and heap limit
 match. Warm task workers still collect released payloads in place; critical
 pressure, cancellation, rotation, and shutdown retain their existing cleanup
 paths. No configuration setting is needed.
+
+## RPC response size and heap changes
+
+The [Prometheus exporter](/gateway/prometheus) records
+`openclaw_gateway_rpc_response_bytes` for each encoded JSON response frame accepted
+by the WebSocket sender (UTF-8 bytes, excluding transport framing/compression),
+with power-of-two buckets from 1 KiB to 64 MiB. Slow-response journal lines include
+`bytes=` for the same frame; it always means encoded response bytes, never heap
+allocation or an exclusive-window sample.
+
+For `sessions.list`, response journal lines and `slow session list` records also
+include `source`, `rowMode` (`compact` or `full`), `limit`, `offset`, and
+`filterKind`. The caller source is a bounded Control UI tag or `unspecified`;
+filter kinds contain parameter names, never search text, identities, or paths.
+The optimized WebSocket journal also records fast `sessions.list` responses of
+at least 200 KiB. Metric labels remain unchanged.
+
+`openclaw_gateway_rpc_handler_heap_delta_bytes` samples main-thread
+`process.memoryUsage().heapUsed` immediately around handler execution. A sample
+is emitted only if that handler was the sole active RPC handler for its entire
+lifetime, including awaits. Any overlap discards the whole sample, even if the
+other handler finishes first. Normal, dedicated worker-connection, and in-process
+RPC handlers share this boundary. Admission, queueing, rejected requests, and
+worker-thread heaps are excluded.
+
+`openclaw_gateway_rpc_handler_heap_delta_exclusive_total{method}` counts sampled
+handlers. Compare its increase with `openclaw_gateway_rpc_handler_seconds_count`
+for the same method to see coverage. Overlapping handlers contribute no heap
+sample, not a zero; sustained concurrency can leave a method with no samples.
+The sampled subset favors short handlers and quiet periods.
+
+These are signed heap changes, not per-handler allocation totals. Background
+work, response encoding, and GC still affect exclusive windows. GC notifications
+are asynchronous, so samples are not GC-filtered and can be negative. Use bucket
+counts or quantiles; the signed `_sum` can decrease, so `rate()` on that sum is not
+valid. Do not sum across methods to estimate allocation throughput. Both
+histograms use registered method labels and the existing exporter cap, without
+new configuration; disabled or uninterested diagnostics skip heap sampling.
 
 ## Related
 
