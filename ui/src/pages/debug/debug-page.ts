@@ -22,6 +22,7 @@ import { PollController } from "../../lit/poll-controller.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import "../../styles/debug-data.css";
 import { requestDebugOverlayToggle } from "./debug-overlay-contract.ts";
+import { TrafficWindow, type TrafficSnapshot } from "./traffic-window.ts";
 import { renderDebug } from "./view.ts";
 
 const DEBUG_POLL_INTERVAL_MS = 3000;
@@ -43,11 +44,17 @@ class DebugPage extends OpenClawLightDomElement {
   @state() private debugDiagnosticsError: string | null = null;
   @state() private debugLiveError: string | null = null;
   @state() private eventLog: readonly EventLogEntry[] = [];
+  @state() private trafficSnapshot: TrafficSnapshot | null = null;
+  private trafficWindow: TrafficWindow | null = null;
+  private unsubscribeTraffic: (() => void) | null = null;
 
   private readonly polling = new PollController(
     this,
     DEBUG_POLL_INTERVAL_MS,
     () => {
+      if (this.trafficWindow) {
+        this.trafficSnapshot = this.trafficWindow.snapshot();
+      }
       void this.loadLiveDiagnostics();
     },
     false,
@@ -107,6 +114,7 @@ class DebugPage extends OpenClawLightDomElement {
   private readonly gateway = new GatewayPageController(this, {
     getGateway: () => this.context?.gateway,
     onIdentityChange: () => {
+      this.stopTraffic();
       this.debugStatus = null;
       this.debugHealth = null;
       this.debugModels = [];
@@ -119,6 +127,7 @@ class DebugPage extends OpenClawLightDomElement {
       this.debugLiveError = null;
     },
     invalidateRequests: () => {
+      this.stopTraffic();
       this.invalidateDiagnostics();
       void this.liveTask.run([null]);
       this.callEpoch += 1;
@@ -127,6 +136,11 @@ class DebugPage extends OpenClawLightDomElement {
       this.syncPolling();
       if (this.diagnosticsNeedsRefresh) {
         void this.loadDiagnostics();
+      }
+    },
+    onPageActivation: () => {
+      if (document.visibilityState === "hidden") {
+        this.stopTraffic();
       }
     },
   });
@@ -153,6 +167,7 @@ class DebugPage extends OpenClawLightDomElement {
     );
 
   override disconnectedCallback() {
+    this.stopTraffic();
     this.subscriptions.clear();
     this.invalidateDiagnostics();
     void this.liveTask.run([null]);
@@ -167,6 +182,32 @@ class DebugPage extends OpenClawLightDomElement {
       return;
     }
     this.polling.start();
+  }
+
+  private readonly toggleTraffic = () => {
+    if (this.trafficWindow) {
+      this.stopTraffic();
+      return;
+    }
+    const scope = this.gateway.capture();
+    if (!scope || document.visibilityState === "hidden") {
+      return;
+    }
+    const window = new TrafficWindow();
+    this.trafficWindow = window;
+    this.trafficSnapshot = window.snapshot();
+    this.unsubscribeTraffic = scope.client.observeTraffic((direction, bytes) => {
+      if (this.trafficWindow === window && this.gateway.isCurrent(scope)) {
+        window.record(direction, bytes);
+      }
+    });
+  };
+
+  private stopTraffic() {
+    this.unsubscribeTraffic?.();
+    this.unsubscribeTraffic = null;
+    this.trafficWindow = null;
+    this.trafficSnapshot = null;
   }
 
   private invalidateDiagnostics() {
@@ -252,6 +293,8 @@ class DebugPage extends OpenClawLightDomElement {
       onRefresh: () => void this.loadDiagnostics(),
       onOpenOverlay: requestDebugOverlayToggle,
       onCall: () => void this.callDebugMethod(),
+      traffic: this.trafficSnapshot,
+      onToggleTraffic: this.toggleTraffic,
     });
     return html`
       <section class="content-header" ${shellLayoutTraits({ toolbarHeader: true })}>

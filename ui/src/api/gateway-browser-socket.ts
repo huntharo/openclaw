@@ -10,6 +10,21 @@ import { formatUiError } from "../lib/format-error.ts";
 const BROWSER_WEBSOCKET_CONSTRUCTOR_ERROR_CODE = "BROWSER_WEBSOCKET_CONSTRUCTOR_ERROR";
 export const BROWSER_WEBSOCKET_SECURITY_ERROR_CODE = "BROWSER_WEBSOCKET_SECURITY_ERROR";
 
+export type GatewayTrafficObserver = (direction: "sent" | "received", bytes: number) => void;
+export type GatewayTrafficObserverCell = { observer?: GatewayTrafficObserver };
+
+function notifyTraffic(
+  observer: GatewayTrafficObserver,
+  direction: "sent" | "received",
+  bytes: number,
+) {
+  try {
+    observer(direction, bytes);
+  } catch {
+    // Local diagnostics must never change transport delivery or send success.
+  }
+}
+
 function getErrorName(err: unknown): string | undefined {
   const name = err && typeof err === "object" && "name" in err ? err.name : undefined;
   return typeof name === "string" && name.trim() ? name : undefined;
@@ -93,8 +108,10 @@ export function createBrowserGatewaySocket(
   url: string,
   handlers: GatewayProtocolSocketHandlers,
   maxPayloadBytes?: () => number | undefined,
+  traffic?: GatewayTrafficObserverCell,
 ): GatewayProtocolSocket {
   const socket = new WebSocket(gatewayWebSocketTransportUrl(url));
+  let retired = false;
   let opening = true;
   let openingTimeoutReason: string | undefined;
   let openingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -110,8 +127,22 @@ export function createBrowserGatewaySocket(
     finishOpening();
     handlers.open();
   });
-  socket.addEventListener("message", (event) => handlers.message(String(event.data ?? "")));
+  socket.addEventListener("message", (event) => {
+    const observer = !retired ? traffic?.observer : undefined;
+    if (observer) {
+      const data: unknown = event.data;
+      if (typeof data === "string") {
+        notifyTraffic(observer, "received", new TextEncoder().encode(data).byteLength);
+      } else if (data instanceof Blob) {
+        notifyTraffic(observer, "received", data.size);
+      } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+        notifyTraffic(observer, "received", data.byteLength);
+      }
+    }
+    handlers.message(String(event.data ?? ""));
+  });
   socket.addEventListener("close", (event) => {
+    retired = true;
     finishOpening();
     // Browsers erase locally initiated close reasons before the handshake finishes.
     handlers.close(event.code, event.reason || openingTimeoutReason || "");
@@ -135,6 +166,7 @@ export function createBrowserGatewaySocket(
     try {
       handlers.error(new Error(openingTimeoutReason));
     } finally {
+      retired = true;
       socket.close();
     }
   }, DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS);
@@ -143,15 +175,21 @@ export function createBrowserGatewaySocket(
     isOpen: () => socket.readyState === WebSocket.OPEN,
     send: (data) => {
       const limit = maxPayloadBytes?.();
-      if (limit !== undefined && new TextEncoder().encode(data).byteLength > limit) {
+      const observer = !retired ? traffic?.observer : undefined;
+      const bytes = limit !== undefined || observer ? new TextEncoder().encode(data).byteLength : 0;
+      if (limit !== undefined && bytes > limit) {
         throw new GatewayPayloadLimitError();
       }
       socket.send(data);
+      if (observer && !retired && traffic?.observer === observer) {
+        notifyTraffic(observer, "sent", bytes);
+      }
     },
     close: (code, reason) => {
       finishOpening();
       // Browser-initiated closes reject the shared protocol's 1008 policy code.
       socket.close(code === 1008 ? 4008 : code, reason);
+      retired = true;
     },
   };
 }

@@ -1,7 +1,10 @@
 /** @vitest-environment node */
 import { DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS } from "@openclaw/gateway-client/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createBrowserGatewaySocket } from "./gateway-browser-socket.ts";
+import {
+  createBrowserGatewaySocket,
+  type GatewayTrafficObserverCell,
+} from "./gateway-browser-socket.ts";
 
 type MockSocketEvent = { code?: number; data?: unknown; reason?: string };
 type MockSocketHandler = (event: MockSocketEvent) => void;
@@ -28,7 +31,7 @@ class MockWebSocket {
     this.handlers.set(type, handlers);
   }
 
-  send(_data: string) {}
+  readonly send = vi.fn<(data: string) => void>();
 
   emit(type: string, event: MockSocketEvent = {}) {
     for (const handler of this.handlers.get(type) ?? []) {
@@ -50,12 +53,19 @@ describe("createBrowserGatewaySocket", () => {
   let socket: MockWebSocket;
   let handlers: ReturnType<typeof createHandlers>;
   let socketAdapter: ReturnType<typeof createBrowserGatewaySocket>;
+  let traffic: GatewayTrafficObserverCell;
   beforeEach(() => {
     vi.useFakeTimers();
     sockets.length = 0;
     vi.stubGlobal("WebSocket", MockWebSocket);
     handlers = createHandlers();
-    socketAdapter = createBrowserGatewaySocket("wss://gateway.example", handlers);
+    traffic = {};
+    socketAdapter = createBrowserGatewaySocket(
+      "wss://gateway.example",
+      handlers,
+      undefined,
+      traffic,
+    );
     const created = sockets[0];
     if (!created) {
       throw new Error("expected a websocket instance");
@@ -64,9 +74,77 @@ describe("createBrowserGatewaySocket", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
+
+  it.each([
+    ["é🙂", 6, "é🙂"],
+    [new Blob(["é🙂"]), 6, "[object Blob]"],
+    [new ArrayBuffer(9), 9, "[object ArrayBuffer]"],
+    [new Uint8Array(new ArrayBuffer(10), 2, 4), 4, "0,0,0,0"],
+  ])("counts native incoming data before conversion (%s)", (data, bytes, converted) => {
+    traffic.observer = vi.fn();
+    socket.emit("message", { data });
+    expect(traffic.observer).toHaveBeenCalledWith("received", bytes);
+    expect(handlers.message).toHaveBeenCalledWith(converted);
+  });
+
+  it("isolates a throwing observer from message delivery and successful sends", () => {
+    traffic.observer = () => {
+      throw new Error("diagnostic callback failed");
+    };
+    expect(() => socket.emit("message", { data: "é🙂" })).not.toThrow();
+    expect(handlers.message).toHaveBeenCalledWith("é🙂");
+    expect(() => socketAdapter.send("é🙂")).not.toThrow();
+    expect(socket.send).toHaveBeenCalledWith("é🙂");
+  });
+
+  it("does no diagnostic encoding when disabled and reuses payload-limit sizing", () => {
+    const encode = vi.spyOn(TextEncoder.prototype, "encode");
+    socket.emit("message", { data: "é🙂" });
+    socketAdapter.send("é🙂");
+    expect(encode).not.toHaveBeenCalled();
+    const observer = vi.fn();
+    const limited = createBrowserGatewaySocket("wss://gateway.example", handlers, () => 6, {
+      observer,
+    });
+    const native = sockets[1]!;
+    limited.send("é🙂");
+    expect(encode).toHaveBeenCalledOnce();
+    expect(observer).toHaveBeenCalledWith("sent", 6);
+    observer.mockClear();
+    expect(() => limited.send("é🙂x")).toThrow("payload limit");
+    expect(native.send).toHaveBeenCalledOnce();
+    expect(observer).not.toHaveBeenCalled();
+    native.send.mockImplementationOnce(() => {
+      throw new Error("socket send rejected");
+    });
+    expect(() => limited.send("é🙂")).toThrow("socket send rejected");
+    expect(observer).not.toHaveBeenCalled();
+  });
+
+  it.each(["local", "remote"])(
+    "retires queued observations after %s close even when the observer is replaced",
+    (close) => {
+      const previous = vi.fn();
+      traffic.observer = previous;
+      if (close === "local") {
+        socketAdapter.close(1000, "stopped");
+      } else {
+        socket.emit("close", { code: 1000 });
+      }
+      const replacement = vi.fn();
+      traffic.observer = replacement;
+      socket.emit("message", { data: "old socket" });
+      expect(previous).not.toHaveBeenCalled();
+      expect(replacement).not.toHaveBeenCalled();
+      createBrowserGatewaySocket("wss://gateway.example", handlers, undefined, traffic);
+      sockets[1]!.emit("message", { data: "new socket" });
+      expect(replacement).toHaveBeenCalledWith("received", 10);
+    },
+  );
 
   it("closes a websocket that never finishes opening", async () => {
     await vi.advanceTimersByTimeAsync(DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS);

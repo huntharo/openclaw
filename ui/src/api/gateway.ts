@@ -37,6 +37,8 @@ import {
   createBrowserGatewaySocket,
   formatBrowserWebSocketConstructorError,
   probeGatewayReachability,
+  type GatewayTrafficObserver,
+  type GatewayTrafficObserverCell,
 } from "./gateway-browser-socket.ts";
 import { GatewayChatEvents } from "./gateway-chat-events.ts";
 import {
@@ -137,6 +139,7 @@ export class GatewayBrowserClient {
   private readonly client: GatewayProtocolClient<ConnectPlan>;
   private readonly chatEvents = new GatewayChatEvents((reason) => this.forceReconnect(reason));
   private maxPayloadBytes: number | undefined;
+  private readonly traffic: GatewayTrafficObserverCell = {};
   private scopeUpgradeRuntime: Promise<GatewayScopeUpgrade> | null = null;
   inboundActivitySeq = 0;
   private lastInboundActivityAtMs: number | null = null;
@@ -156,13 +159,19 @@ export class GatewayBrowserClient {
   constructor(private opts: GatewayBrowserClientOptions) {
     this.client = new GatewayProtocolClient<ConnectPlan>({
       createSocket: (handlers) => {
+        this.traffic.observer = undefined;
         this.pendingPairing = null;
         this.pairingFailure = null;
         this.reachabilityProbe?.abort();
         this.reachabilityProbe = null;
         this.chatEvents.clear();
         this.maxPayloadBytes = undefined;
-        return createBrowserGatewaySocket(this.opts.url, handlers, () => this.maxPayloadBytes);
+        return createBrowserGatewaySocket(
+          this.opts.url,
+          handlers,
+          () => this.maxPayloadBytes,
+          this.traffic,
+        );
       },
       createRequestId: generateUUID,
       createRequestError: (error) =>
@@ -199,6 +208,7 @@ export class GatewayBrowserClient {
       onConnectFailure: (error, context) => this.handleConnectFailure(error, context.plan),
       resolveClose: (context) => this.resolveClose(context),
       onClose: (context, decision) => {
+        this.traffic.observer = undefined;
         this.nativeAuthAbort?.abort();
         this.chatEvents.clear();
         this.recovery = { ...this.recovery, generation: context.generation + 1, resolved: false };
@@ -280,6 +290,7 @@ export class GatewayBrowserClient {
   }
 
   stop() {
+    this.traffic.observer = undefined;
     this.nativeAuthAbort?.abort();
     this.reachabilityProbe?.abort();
     this.reachabilityProbe = null;
@@ -295,6 +306,15 @@ export class GatewayBrowserClient {
 
   get connected() {
     return this.client.connected;
+  }
+
+  observeTraffic(observer: GatewayTrafficObserver): () => void {
+    this.traffic.observer = observer;
+    return () => {
+      if (this.traffic.observer === observer) {
+        this.traffic.observer = undefined;
+      }
+    };
   }
 
   get needsWakeReconnect() {

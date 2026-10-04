@@ -458,7 +458,9 @@ describe("DebugPage", () => {
       expect(page.debugLanes).toEqual([expect.objectContaining({ lane: "live" })]);
       expect(normalizedText(page.querySelector(".command-lane-row"))).toContain("live");
       marker = "manual";
-      const refresh = page.querySelector<HTMLButtonElement>(".settings-section button")!;
+      const refresh = [
+        ...page.querySelectorAll<HTMLButtonElement>(".settings-section button"),
+      ].find((button) => normalizedText(button) === "Refresh")!;
       refresh.click();
       await page.updateComplete;
       expect(refresh.disabled).toBe(true);
@@ -487,8 +489,11 @@ describe("DebugPage", () => {
       page.context = createDebugApplicationContext(request, phase);
       document.body.append(page);
       await page.updateComplete;
-      expect(page.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
-      const text = normalizedText(page.querySelector(".settings-section"));
+      const snapshots = [...page.querySelectorAll<HTMLElement>(".settings-section")].find(
+        (section) => normalizedText(section.querySelector("h2")) === "Snapshots",
+      )!;
+      expect(snapshots.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
+      const text = normalizedText(snapshots);
       if (phase === "offline") {
         expect(text).toContain("Offline Connect to the Gateway to refresh diagnostics.");
       } else {
