@@ -9,7 +9,6 @@ import {
 import { readPreparedModelCatalog } from "../../agents/prepared-model-catalog.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import { captureRuntimeConfigPublicationCurrent } from "../../config/runtime-snapshot.js";
 import { isModelSelectionLocked } from "../../sessions/model-overrides.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
@@ -40,7 +39,7 @@ import type { CommandSelectionCurrent, InternalGetReplyOptions } from "./get-rep
 import { stripStructuralPrefixes } from "./mentions.js";
 import { resolveContextTokens } from "./model-selection-context.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
-import { capturePreparedPureAdapterRouteAssertion } from "./session-conversation-binding.js";
+import { captureCommandSelectionCurrent } from "./session-conversation-binding.js";
 import { persistReplySessionEntry } from "./session-entry-persistence.js";
 import { createSkillCommandLoaders } from "./skill-command-loaders.js";
 import type { createTypingController } from "./typing.js";
@@ -107,10 +106,8 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     return { handled: false };
   }
 
-  const commandSelectionCurrent = params.commandSelectionCurrent ?? {
-    publicationCurrent: captureRuntimeConfigPublicationCurrent(params.cfg),
-    assertRouteCurrent: capturePreparedPureAdapterRouteAssertion(params.ctx),
-  };
+  const commandSelectionCurrent =
+    params.commandSelectionCurrent ?? captureCommandSelectionCurrent(params.cfg, params.ctx);
   const sessionState = await initFastReplySessionState({
     ctx: params.ctx,
     cfg: params.cfg,

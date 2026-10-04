@@ -31,7 +31,7 @@ import {
   runChannelInboundEvent,
 } from "../../plugin-sdk/channel-inbound.js";
 import { resolveRuntimeConversationBindingRouteAsync } from "../../plugin-sdk/conversation-binding-runtime.js";
-import { SQLITE_SESSION_WRITER_QUEUES } from "../../state/openclaw-agent-write-admission.js";
+import { SQLITE_SESSION_WRITER_QUEUES } from "../../state/openclaw-agent-write-admission-state.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { ReplyPayload } from "../reply-payload.js";
@@ -52,6 +52,7 @@ const catalog: ModelCatalogSnapshot = {
 export async function createCommandSelectionFixture(params: {
   state: OpenClawTestState;
   sender: string;
+  body?: string;
   registerAdapter: (
     lookup: (ref: ConversationRef) => SessionBindingRecord | null,
   ) => SessionBindingAdapter;
@@ -108,7 +109,7 @@ export async function createCommandSelectionFixture(params: {
     conversation,
   });
   const replies: ReplyPayload[] = [];
-  const body = "/model mock-openai/selected -s";
+  const body = params.body ?? "/model mock-openai/selected -s";
   const ctxPayload = buildChannelInboundEventContext({
     channel: "webchat",
     accountId: "default",

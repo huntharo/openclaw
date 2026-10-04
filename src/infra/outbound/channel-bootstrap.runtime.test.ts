@@ -20,11 +20,12 @@ import { createCanonicalAgentConfigFixture } from "../../test-utils/config-roste
 
 const loaderMocks = vi.hoisted(() => ({
   loadPluginRegistryHandle: vi.fn(),
-  resolveDiscoverableScopedChannelPluginIds: vi.fn(() => ["discord"]),
+  resolveConfiguredChannelPluginIds: vi.fn(() => ["discord"]),
 }));
 
+// mock-isolation: These scheduling cases supply IDs; actual-loader cases prove configured admission.
 vi.mock("../../plugins/channel-plugin-ids.js", () => ({
-  resolveDiscoverableScopedChannelPluginIds: loaderMocks.resolveDiscoverableScopedChannelPluginIds,
+  resolveConfiguredChannelPluginIds: loaderMocks.resolveConfiguredChannelPluginIds,
 }));
 
 vi.mock("../../plugins/loader.js", () => ({
@@ -94,7 +95,7 @@ function installDiscordSetupShell(): void {
 describe("bootstrapOutboundChannelPlugin", () => {
   afterEach(() => {
     loaderMocks.loadPluginRegistryHandle.mockReset();
-    loaderMocks.resolveDiscoverableScopedChannelPluginIds.mockClear();
+    loaderMocks.resolveConfiguredChannelPluginIds.mockClear();
     resetPluginRuntimeStateForTest();
     vi.unstubAllEnvs();
   });
@@ -126,7 +127,7 @@ describe("bootstrapOutboundChannelPlugin", () => {
     });
     await expect(handler.sendText("hello")).resolves.toMatchObject({ messageId: "1" });
 
-    expect(loaderMocks.resolveDiscoverableScopedChannelPluginIds).toHaveBeenCalledWith(
+    expect(loaderMocks.resolveConfiguredChannelPluginIds).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceDir: path.resolve("/tmp/openclaw-ops") }),
     );
   });
@@ -168,7 +169,7 @@ describe("bootstrapOutboundChannelPlugin", () => {
     await expect(handler.sendText("hello")).resolves.toMatchObject({ messageId: "1" });
 
     expect(migrated.agents?.entries?.ops).not.toHaveProperty("default");
-    expect(loaderMocks.resolveDiscoverableScopedChannelPluginIds).toHaveBeenCalledWith(
+    expect(loaderMocks.resolveConfiguredChannelPluginIds).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceDir: path.resolve("/tmp/openclaw-legacy") }),
     );
   });
@@ -183,7 +184,7 @@ describe("bootstrapOutboundChannelPlugin", () => {
     });
 
     expect(loaderMocks.loadPluginRegistryHandle).toHaveBeenCalledTimes(1);
-    expect(loaderMocks.resolveDiscoverableScopedChannelPluginIds).toHaveBeenCalledWith(
+    expect(loaderMocks.resolveConfiguredChannelPluginIds).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceDir: path.resolve("/tmp/openclaw-ops") }),
     );
   });
@@ -200,7 +201,7 @@ describe("bootstrapOutboundChannelPlugin", () => {
     ).not.toThrow(AgentSelectionRequiredError);
 
     expect(loaderMocks.loadPluginRegistryHandle).toHaveBeenCalledTimes(1);
-    expect(loaderMocks.resolveDiscoverableScopedChannelPluginIds).toHaveBeenCalledWith(
+    expect(loaderMocks.resolveConfiguredChannelPluginIds).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceDir: undefined }),
     );
   });
@@ -221,7 +222,7 @@ describe("bootstrapOutboundChannelPlugin", () => {
     });
 
     expect(loaderMocks.loadPluginRegistryHandle).toHaveBeenCalledTimes(2);
-    expect(loaderMocks.resolveDiscoverableScopedChannelPluginIds).toHaveBeenNthCalledWith(
+    expect(loaderMocks.resolveConfiguredChannelPluginIds).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ workspaceDir: path.resolve("/tmp/openclaw-research") }),
     );

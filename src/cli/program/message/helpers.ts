@@ -2,6 +2,7 @@ import {
   parseStrictNonNegativeInteger,
   parseStrictPositiveInteger,
 } from "@openclaw/normalization-core/number-coercion";
+import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { Command } from "commander";
 import { getChannelPlugin } from "../../../channels/plugins/index.js";
 import {
@@ -12,20 +13,15 @@ import { resolveMessageSecretScope } from "../../../cli/message-secret-scope.js"
 import { parseAccountSelector } from "../../../commands/channels/account-selector.js";
 import { parseChannelSelector } from "../../../commands/channels/channel-selector.js";
 import type { messageCommand } from "../../../commands/message.js";
-import { getRuntimeConfig } from "../../../config/config.js";
 import { danger, setVerbose } from "../../../globals.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { CHANNEL_TARGET_DESCRIPTION } from "../../../infra/outbound/channel-target.js";
 import { resolveMessageActionOutcome } from "../../../infra/outbound/message-action-contracts.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
-import { withActivatedPluginIds } from "../../../plugins/activation-context.js";
-import {
-  resolveConfiguredChannelPluginIds,
-  resolveDiscoverableScopedChannelPluginIds,
-} from "../../../plugins/channel-plugin-ids.js";
 import type { PluginRegistry } from "../../../plugins/registry-types.js";
 import { withPluginRuntimeRegistryScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
+import { withArtifactPreservingStateReads } from "../../../state/openclaw-state-db-readonly.js";
 import {
   ABSOLUTE_DEADLINE_EXPIRED,
   awaitWithinDeadline,
@@ -49,7 +45,17 @@ const STRICT_NON_NEGATIVE_INTEGER_OPTIONS = new Map([
   ["deleteDays", "--delete-days"],
 ]);
 
-function validateMessageNumericOptions(opts: Record<string, unknown>): void {
+type MessagePluginPreloadPlan = { preload: true; channelId?: string } | { preload: false };
+
+function normalizeMessageOptions(opts: Record<string, unknown>): Record<string, unknown> {
+  const { account, ...rest } = opts;
+  return {
+    ...rest,
+    accountId: typeof account === "string" ? account : rest.accountId,
+  };
+}
+
+function validateMessageOptions(action: string, opts: Record<string, unknown>): void {
   for (const [options, parse, kind] of [
     [STRICT_POSITIVE_INTEGER_OPTIONS, parseStrictPositiveInteger, "positive"],
     [STRICT_NON_NEGATIVE_INTEGER_OPTIONS, parseStrictNonNegativeInteger, "non-negative"],
@@ -59,6 +65,9 @@ function validateMessageNumericOptions(opts: Record<string, unknown>): void {
         throw new Error(`${flag} must be a ${kind} integer.`);
       }
     }
+  }
+  if (action === "poll" && opts.pollAnonymous === true && opts.pollPublic === true) {
+    throw new Error("--poll-anonymous and --poll-public are mutually exclusive.");
   }
 }
 
@@ -79,15 +88,59 @@ async function runPluginStopHooks(registry: PluginRegistry): Promise<void> {
   }
 }
 
-function isGatewayOwnedMessageAction(action: string, scopedChannel: string | undefined): boolean {
-  if (!CHANNEL_MESSAGE_ACTION_NAME_SET.has(action) || !scopedChannel) {
-    return false;
+function resolveScopedMessageChannel(opts: Record<string, unknown>): string | undefined {
+  const explicit = normalizeOptionalLowercaseString(opts.channel);
+  if (explicit) {
+    // A cold custom channel is a requested metadata selection, not yet a registered transport.
+    return resolveMessageSecretScope({ channel: explicit }).channel ?? explicit;
   }
-  const plugin = getChannelPlugin(scopedChannel);
-  const executionMode = plugin?.actions?.resolveExecutionMode?.({
-    action: action as ChannelMessageActionName,
-  });
-  return executionMode === "gateway";
+  return resolveMessageSecretScope({
+    channel: opts.channel,
+    target: opts.target,
+    targets: opts.targets,
+  }).channel;
+}
+
+function asChannelMessageActionName(action: string): ChannelMessageActionName | undefined {
+  return CHANNEL_MESSAGE_ACTION_NAME_SET.has(action)
+    ? (action as ChannelMessageActionName)
+    : undefined;
+}
+
+function resolveCliActionRequest(action: string, opts: Record<string, unknown>) {
+  const channel = resolveScopedMessageChannel(opts);
+  const messageAction = asChannelMessageActionName(action);
+  const request =
+    channel && messageAction
+      ? getChannelPlugin(channel)?.actions?.resolveCliActionRequest?.({
+          action: messageAction,
+          args: opts,
+        })
+      : undefined;
+  return request ?? { action, args: opts };
+}
+
+function resolveMessagePluginPreloadPlan(
+  action: string,
+  opts: Record<string, unknown>,
+): MessagePluginPreloadPlan {
+  const scopedChannel = resolveScopedMessageChannel(opts);
+  const plugin = scopedChannel ? getChannelPlugin(scopedChannel) : undefined;
+  // An unavailable selected channel reaches the canonical command error without
+  // preparing local state or materializing an unconfigured implementation.
+  if (scopedChannel && !plugin) {
+    return { preload: false };
+  }
+  const messageAction = asChannelMessageActionName(action);
+  if (
+    opts.dryRun === true ||
+    action === "broadcast" ||
+    !messageAction ||
+    plugin?.actions?.resolveExecutionMode?.({ action: messageAction }) !== "gateway"
+  ) {
+    return { preload: true, ...(scopedChannel ? { channelId: scopedChannel } : {}) };
+  }
+  return { preload: false };
 }
 
 /** Create shared option decorators and the common message action runner. */
@@ -109,75 +162,84 @@ export function createMessageCliHelpers(messageChannelOptions: string) {
       setVerbose(Boolean(opts.verbose));
       let failed = false;
       let result: Awaited<ReturnType<typeof messageCommand>> | undefined;
-      let pluginRegistry: PluginRegistry | undefined;
+      let inspection: Awaited<
+        ReturnType<typeof import("./plugin-admission.js").acquireMessagePluginRegistry>
+      >;
+      let runStopHooks = false;
+      let dispatchedAction = action;
       try {
         await runCommandWithRuntime(
           defaultRuntime,
           async () => {
-            validateMessageNumericOptions(opts);
-            if (action === "poll" && opts.pollAnonymous === true && opts.pollPublic === true) {
-              throw new Error("--poll-anonymous and --poll-public are mutually exclusive.");
-            }
-            const { channel: scopedChannel } = resolveMessageSecretScope({
-              channel: opts.channel,
-              target: opts.target,
-              targets: opts.targets,
-            });
-            // Gateway-owned actions need no local plugin runtime; previews and broadcasts do.
-            const preloadPlugins =
-              opts.dryRun === true ||
-              action === "broadcast" ||
-              !isGatewayOwnedMessageAction(action, scopedChannel);
+            validateMessageOptions(action, opts);
             await measureCliCommandStartup("config-ready", async () => {
               const { ensureConfigReady } = await import("../config-guard.js");
               await ensureConfigReady({
                 runtime: defaultRuntime,
                 commandPath: ["message", action],
                 suppressDoctorStdout: opts.json === true,
-                validateConfigOnly: !preloadPlugins,
+                validateConfigOnly: true,
                 measure: (stage, run) => measureCliCommandStartup(stage, run),
               });
             });
-            if (preloadPlugins) {
-              const config = getRuntimeConfig();
-              const pluginIds = scopedChannel
-                ? resolveDiscoverableScopedChannelPluginIds({
-                    config,
-                    activationSourceConfig: config,
-                    channelIds: [scopedChannel],
-                    env: process.env,
-                  })
-                : resolveConfiguredChannelPluginIds({
-                    config,
-                    activationSourceConfig: config,
-                    env: process.env,
-                  });
-              const activatedConfig = withActivatedPluginIds({ config, pluginIds }) ?? config;
-              const { loadPluginRegistryHandle } = await import("../../../plugins/loader.js");
-              pluginRegistry = loadPluginRegistryHandle({
-                config: activatedConfig,
-                activationSourceConfig: activatedConfig,
-                onlyPluginIds: pluginIds,
-                throwOnLoadError: true,
-              });
+            const scopedChannel = resolveScopedMessageChannel(opts);
+            if (scopedChannel && !getChannelPlugin(scopedChannel)) {
+              const { acquireMessagePluginRegistry } = await import("./plugin-admission.js");
+              inspection = await acquireMessagePluginRegistry([scopedChannel]);
             }
-            const [{ messageCommand }, { createDefaultDeps }] = await Promise.all([
-              import("../../../commands/message.js"),
-              import("../../deps.js"),
-            ]);
+            const inAdmission = <T>(run: () => T) => {
+              inspection?.assertCurrent();
+              return withPluginRuntimeRegistryScope(inspection?.registry, run);
+            };
+            let request = inAdmission(() => resolveCliActionRequest(action, opts));
+            validateMessageOptions(request.action, request.args);
+            const preloadPlan = inAdmission(() =>
+              resolveMessagePluginPreloadPlan(request.action, request.args),
+            );
+            inspection?.assertCurrent();
+            if (preloadPlan.preload) {
+              await inspection?.release();
+              inspection = undefined;
+              const { ensureConfigReady } = await import("../config-guard.js");
+              await ensureConfigReady({
+                runtime: defaultRuntime,
+                commandPath: ["message", action],
+                suppressDoctorStdout: opts.json === true,
+                validateConfigOnly: false,
+                measure: (stage, run) => measureCliCommandStartup(stage, run),
+              });
+              const { acquireMessagePluginRegistry } = await import("./plugin-admission.js");
+              inspection = await acquireMessagePluginRegistry(
+                scopedChannel || preloadPlan.channelId
+                  ? [
+                      ...new Set(
+                        [scopedChannel, preloadPlan.channelId].filter((id) => id !== undefined),
+                      ),
+                    ]
+                  : undefined,
+              );
+              request = inAdmission(() => resolveCliActionRequest(action, opts));
+              validateMessageOptions(request.action, request.args);
+              runStopHooks = true;
+            }
+            // Late config preparers belong to module admission, before any operational writes.
+            const [{ messageCommand }, { createDefaultDeps }] =
+              await withArtifactPreservingStateReads(() =>
+                Promise.all([import("../../../commands/message.js"), import("../../deps.js")]),
+              );
             const deps = createDefaultDeps();
-            const { account, ...rest } = opts;
-            result = await withPluginRuntimeRegistryScope(pluginRegistry, () =>
+            const run = () =>
               messageCommand(
                 {
-                  ...rest,
-                  accountId: typeof account === "string" ? account : rest.accountId,
-                  action,
+                  ...normalizeMessageOptions(request.args),
+                  action: request.action,
                 },
                 deps,
                 defaultRuntime,
-              ),
-            );
+                inspection?.assertCurrent,
+              );
+            dispatchedAction = request.action;
+            result = await inAdmission(run);
           },
           (err) => {
             failed = true;
@@ -186,8 +248,12 @@ export function createMessageCliHelpers(messageChannelOptions: string) {
         );
       } finally {
         // Finalize only this command's registry, including JSON/expected errors that rethrow.
-        if (pluginRegistry && action !== "read") {
-          await runPluginStopHooks(pluginRegistry);
+        try {
+          if (runStopHooks && inspection && dispatchedAction !== "read") {
+            await runPluginStopHooks(inspection.registry);
+          }
+        } finally {
+          await inspection?.release();
         }
       }
       failed ||= result !== undefined && !resolveMessageActionOutcome(result).ok;

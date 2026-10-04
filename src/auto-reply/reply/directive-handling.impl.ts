@@ -469,7 +469,7 @@ export async function handleDirectiveOnly(
           modelSelectionUpdated && sessionEntry.liveModelSwitchPending === true,
         touchedFields: touchedSessionFields,
         commitGuard: modelResolution.modelSelectionSource,
-        validateCommit: preparedModel?.validateRuntimeSelection,
+        validateCommit: modelSelection ? validateSelection : undefined,
       });
       if (persistence.status !== "applied") {
         const errorText =

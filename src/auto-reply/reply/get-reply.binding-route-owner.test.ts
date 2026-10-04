@@ -132,17 +132,27 @@ const selectionRevocations: SelectionRevocation[] = [
   "binding-unbind",
   "binding-close",
 ];
-it.for(
-  selectionRevocations.flatMap((revocation) =>
-    (["preparation", "queued-commit"] as const).map((phase) => ({ revocation, phase })),
+it.for([
+  ...selectionRevocations.flatMap((revocation) =>
+    (["preparation", "queued-commit"] as const).map((phase) => ({
+      revocation,
+      phase,
+      body: "/model mock-openai/selected -s",
+    })),
   ),
-)(
-  "rejects $revocation during $phase at the canonical model write",
-  async ({ revocation, phase }, { signal }) => {
+  {
+    revocation: "source-publication" as const,
+    phase: "queued-commit" as const,
+    body: "/model mock-openai/selected -s /verbose on",
+  },
+])(
+  "rejects $revocation during $phase at the canonical model write ($body)",
+  async ({ revocation, phase, body }, { signal }) => {
     const fixture = await createCommandSelectionFixture({
       state,
       sender: "guest",
       registerAdapter,
+      body,
     });
     expect(fixture.authorization).toMatchObject({ senderIsOwner: false, isAuthorizedSender: true });
     const proof = await exerciseSelectionRevocation({ fixture, phase, revocation, signal });
@@ -154,6 +164,7 @@ it.for(
     });
     expect(fixture.read()?.modelOverride).toBeUndefined();
     expect(fixture.read()?.providerOverride).toBeUndefined();
+    expect(fixture.read()?.verboseLevel).toBeUndefined();
     const reply = fixture.replies.map((payload) => payload.text ?? "").join("\n");
     expect(reply).toMatch(
       revocation.endsWith("publication") ? /Configuration changed/ : /changed/i,

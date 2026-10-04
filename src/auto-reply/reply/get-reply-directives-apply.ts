@@ -5,7 +5,6 @@ import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import { modelKey } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
 import { resolveStickyModelSelectionScope } from "../../agents/sticky-model-selection.js";
-import { captureRuntimeConfigPublicationCurrent } from "../../config/runtime-snapshot.js";
 import type { SessionEntry, SessionScope } from "../../config/sessions/types.js";
 import type { AgentConfig } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -35,7 +34,7 @@ import type { CommandSelectionCurrent } from "./get-reply.types.js";
 import type { createModelSelectionState } from "./model-selection.js";
 import type { ReplyPreRunRejectionCode } from "./reply-operation-run-state.js";
 import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
-import { capturePreparedPureAdapterRouteAssertion } from "./session-conversation-binding.js";
+import { captureCommandSelectionCurrent } from "./session-conversation-binding.js";
 import type { TypingController } from "./typing.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
@@ -164,10 +163,8 @@ export async function applyInlineDirectiveOverrides(params: {
     return { kind: "reply", reply: { text, isError: true }, preRunRejection: code };
   };
   const requesterProfileId = readSessionInputProfileId(ctx);
-  const commandSelectionCurrent = params.commandSelectionCurrent ?? {
-    publicationCurrent: captureRuntimeConfigPublicationCurrent(cfg),
-    assertRouteCurrent: capturePreparedPureAdapterRouteAssertion(ctx),
-  };
+  const commandSelectionCurrent =
+    params.commandSelectionCurrent ?? captureCommandSelectionCurrent(cfg, ctx);
   const validateCommandSelection = () => {
     try {
       command.assertOwnerCurrent?.();
@@ -409,6 +406,8 @@ export async function applyInlineDirectiveOverrides(params: {
           canPersistStickyModelSelection,
           validateAuthProfileSelection: () =>
             validateCommandSelection() ?? modelResolution.validateAuthProfileSelection?.(),
+          // Live host checks retain the incumbent synchronous commit boundary.
+          nativeCommitValidation: true,
           ...(stickyModelSelectionTarget ? { stickyModelSelectionTarget } : {}),
           request: {
             ...modelSelection,

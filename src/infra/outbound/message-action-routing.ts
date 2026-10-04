@@ -21,6 +21,7 @@ import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
 import { resolveFirstBoundAccountId } from "../../routing/bound-account-read.js";
 import { readTrimmedStringAlias } from "../../utils/string-readers.js";
 import { resolveMessageChannelSelection } from "./channel-selection.js";
+import { assertOutboundHandoffCurrent } from "./deliver-handoff.js";
 import { validateExplicitMessageAccountSelection } from "./message-account-selection.js";
 import type { MessageActionInput } from "./message-action-contracts.js";
 import {
@@ -226,6 +227,7 @@ export async function prepareMessageRoute(params: {
   const cfg = input.cfg;
   const action = input.action;
   let actionParams = params.actionParams;
+  assertOutboundHandoffCurrent(input.assertDirectAdapterHandoff);
 
   applyImplicitSourceReplySendPolicy(input, actionParams);
   // Missing targets must fail before channel discovery, which can bootstrap or
@@ -243,6 +245,7 @@ export async function prepareMessageRoute(params: {
       action === "read" && requestedChannel ? undefined : input.toolContext?.currentChannelProvider,
     agentId,
   });
+  assertOutboundHandoffCurrent(input.assertDirectAdapterHandoff);
   actionParams.channel = channel;
   const explicitAccountId = await validateExplicitMessageAccountSelection({
     cfg,
@@ -250,6 +253,7 @@ export async function prepareMessageRoute(params: {
     accountId: readToolStringParam(actionParams, "accountId"),
     plugin: channelPlugin,
   });
+  assertOutboundHandoffCurrent(input.assertDirectAdapterHandoff);
   const pluginOwnedAction = action !== "send" && action !== "poll";
   if (
     pluginOwnedAction &&
@@ -351,6 +355,7 @@ export async function prepareMessageRoute(params: {
       messageActionAuthorization: authorization,
       assertDirectAdapterHandoff: input.assertDirectAdapterHandoff,
     });
+    assertOutboundHandoffCurrent(input.assertDirectAdapterHandoff);
     actionParams = preparedRead.params;
     accountId = preparedRead.accountId ?? accountId;
     assertReadAuthorityCurrent = preparedRead.assertReadAuthorityCurrent;

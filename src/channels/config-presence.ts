@@ -18,7 +18,6 @@ import { listOfficialExternalChannelEnvVars } from "../plugins/official-external
 import { isRecord } from "../utils.js";
 import { isChannelConfigMetadataKey } from "./config-metadata.js";
 import { listBundledChannelIds } from "./plugins/bundled-ids.js";
-
 export { hasMeaningfulChannelConfig } from "../config/channel-config-activation.js";
 
 export type AmbientEnvTriggerPolicy = "allow" | "suppress";

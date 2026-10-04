@@ -1,24 +1,5 @@
 import type { Command } from "commander";
-import { getChannelPlugin } from "../../../channels/plugins/index.js";
-import { resolveMessageSecretScope } from "../../message-secret-scope.js";
 import type { MessageCliHelpers } from "./helpers.js";
-
-function resolveThreadCreateRequest(opts: Record<string, unknown>) {
-  const { channel } = resolveMessageSecretScope(opts);
-  if (channel) {
-    const request = getChannelPlugin(channel)?.actions?.resolveCliActionRequest?.({
-      action: "thread-create",
-      args: opts,
-    });
-    if (request) {
-      return request;
-    }
-  }
-  return {
-    action: "thread-create" as const,
-    args: opts,
-  };
-}
 
 export function registerMessageThreadCommands(message: Command, helpers: MessageCliHelpers) {
   const thread = message.command("thread").description("Thread actions");
@@ -34,10 +15,7 @@ export function registerMessageThreadCommands(message: Command, helpers: Message
     .option("--message-id <id>", "Message id (optional)")
     .option("-m, --message <text>", "Initial thread message text")
     .option("--auto-archive-min <n>", "Thread auto-archive minutes")
-    .action(async (opts) => {
-      const request = resolveThreadCreateRequest(opts);
-      await helpers.runMessageAction(request.action, request.args);
-    });
+    .action((opts) => helpers.runMessageAction("thread-create", opts));
 
   helpers
     .withMessageBase(

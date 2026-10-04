@@ -1,5 +1,5 @@
 import type { ChannelMessageAdapterShape } from "../../channels/message/types.js";
-import { getChannelPlugin, getLoadedChannelPlugin } from "../../channels/plugins/index.js";
+import { getLoadedChannelPlugin } from "../../channels/plugins/index.js";
 import type { AnyChannelPlugin as ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
@@ -59,16 +59,14 @@ function resolveRuntimeOutboundPluginCandidate(params: {
   loaded?: ChannelPlugin;
   runtime?: ChannelPlugin;
   setupFallback?: ChannelPlugin;
-  bundled?: ChannelPlugin;
+  allowSetupShell?: boolean;
   requireActivatedRuntime?: boolean;
 }): ChannelPlugin | undefined {
   return (
-    [params.loaded, params.runtime, params.bundled].find((plugin) =>
+[params.loaded, params.runtime].find((plugin) =>
       hasOutboundSurface(plugin, params.requireActivatedRuntime),
     ) ??
-    (params.requireActivatedRuntime
-      ? undefined
-      : (params.loaded ?? params.setupFallback ?? params.bundled))
+    (params.allowSetupShell ? (params.loaded ?? params.setupFallback) : undefined)
   );
 }
 
@@ -144,12 +142,11 @@ function* resolveOutboundChannelPluginSteps(
     bootstrapRegistry ?? getOutboundRuntimeRegistry(),
     normalized,
   );
-  const bundledCurrent = getChannelPlugin(normalized);
   const candidate = resolveRuntimeOutboundPluginCandidate({
     loaded: current,
     runtime: runtimeCurrent,
     setupFallback,
-    bundled: bundledCurrent,
+    allowSetupShell: params.allowBootstrap !== true,
     requireActivatedRuntime,
   });
   if (candidate) {
@@ -168,7 +165,6 @@ function* resolveOutboundChannelPluginSteps(
   return resolveRuntimeOutboundPluginCandidate({
     loaded: getLoadedChannelPlugin(normalized),
     runtime: resolveOutboundPluginFromRuntimeRegistry(normalized, registry, true),
-    bundled: getChannelPlugin(normalized),
     requireActivatedRuntime: true,
   });
 }

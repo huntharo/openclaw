@@ -296,6 +296,7 @@ export async function persistSessionDirectiveSnapshot(params: {
     requireModelSelectionUnlocked: params.hasModelSelection,
     touchedFields: params.touchedFields,
     validateCommit: params.validateCommit,
+    nativeCommitValidation: params.validateCommit ? true : undefined,
     commitGuard: params.commitGuard,
   });
   if (persistence.status !== "current") {

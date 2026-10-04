@@ -4,7 +4,7 @@ import {
   normalizeOptionalString,
   normalizeOptionalStringifiedId,
 } from "@openclaw/normalization-core/string-coerce";
-import { getBootstrapChannelPlugin } from "../../channels/plugins/bootstrap-registry.js";
+import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type {
   ChannelMessageActionAdapter,
   ChannelMessageActionName,
@@ -106,7 +106,7 @@ export type ActionDeliveryTargetAliasSpec = NonNullable<
 
 type ActionTargetAliasOptions = {
   channel?: string;
-  /** null preserves a selected adapter's absence; undefined permits bootstrap discovery. */
+  /** null preserves a selected adapter's absence; undefined permits registered lookup. */
   aliasSpec?: ActionDeliveryTargetAliasSpec | null;
 };
 
@@ -123,7 +123,7 @@ function resolvePluginActionTargetAliasSpec(
   const selected = options?.aliasSpec;
   return selected !== undefined
     ? selected
-    : getBootstrapChannelPlugin(channel)?.actions?.messageActionTargetAliases?.[action];
+    : getChannelPlugin(channel)?.actions?.messageActionTargetAliases?.[action];
 }
 
 const ACTION_TARGET_ALIASES: Partial<Record<ChannelMessageActionName, string[]>> = {
