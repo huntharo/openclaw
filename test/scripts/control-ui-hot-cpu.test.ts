@@ -238,6 +238,32 @@ it.each(["abort", "navigation", "stop failure", "abort after cleanup"])(
   },
 );
 
+it("redacts unadmitted browser frames instead of applying Node native attribution", async () => {
+  const send = native.send.getMockImplementation()!;
+  native.send.mockImplementation(async (method: string) => {
+    if (method === "Profiler.stop") {
+      const value = profile("");
+      value.nodes[1]!.callFrame = {
+        functionName: "privateNativeValue",
+        scriptId: "0",
+        url: "",
+        lineNumber: -1,
+        columnNumber: -1,
+      };
+      stopped++;
+      return { profile: value };
+    }
+    return send(method);
+  });
+  const result = await capture();
+  expect(result.currentWindow.redactedNodeCount).toBe(1);
+  expect(result.currentWindow.profile.nodes[1]!.callFrame.functionName).toBe("[redacted]");
+  expect(result.currentWindow.profile.nodes).toHaveLength(2);
+  expect(result.currentWindow.profile.samples).toEqual([2, 2]);
+  const artifact = await fs.readFile(output, "utf8");
+  expect(artifact).not.toMatch(/privateNativeValue|\[native\]/);
+});
+
 it("refuses combined history limits without writing a partial artifact", async () => {
   const send = native.send.getMockImplementation()!;
   native.send.mockImplementation(async (method: string) => {
