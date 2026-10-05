@@ -46,6 +46,7 @@ function fixture() {
   };
   const activate = () => {
     controller.toggle();
+    controller.runOnce();
     controller.bind(frame);
     controller.frameLoaded(frame!);
     message("openclaw-svg-ready");
@@ -85,6 +86,33 @@ afterEach(() => {
 });
 
 describe("interactive SVG lightbox lifecycle", () => {
+  it("does not start the viewer before Run Once or admit a source replaced while the notice is open", () => {
+    const { controller, setItem, first, message, closeViewer } = fixture();
+    controller.toggle();
+    expect(controller.confirmationOpen).toBe(true);
+    expect(controller.active).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+    message("openclaw-svg-ready");
+    message("openclaw-svg-search");
+    message("openclaw-svg-escape");
+    expect(first.post).not.toHaveBeenCalled();
+    expect(closeViewer).not.toHaveBeenCalled();
+    setItem({
+      src: "blob:selected",
+      title: "Replacement",
+      svgSource: { src: "blob:selected", text: validSvg },
+    });
+    controller.runOnce();
+    expect(controller.active).toBeUndefined();
+    expect(controller.confirmationOpen).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    controller.toggle();
+    controller.reset();
+    controller.runOnce();
+    expect(controller.active).toBeUndefined();
+    expect(first.post).not.toHaveBeenCalled();
+  });
+
   it("reports unsupported source decoding without admitting a frame or losing the preview source", () => {
     const { controller, setItem, getItem, first } = fixture();
     setItem({
@@ -93,6 +121,7 @@ describe("interactive SVG lightbox lifecycle", () => {
       svgSource: { src: "blob:selected", decodeError: true },
     });
     controller.toggle();
+    controller.runOnce();
     expect(controller.available).toBe(true);
     expect(controller.active).toBeUndefined();
     expect(controller.error).toBe(true);
@@ -108,6 +137,7 @@ describe("interactive SVG lightbox lifecycle", () => {
   it("publishes only after the exact opaque frame is ready and stops loading after activation", () => {
     const { controller, first, message, closeViewer } = fixture();
     controller.toggle();
+    controller.runOnce();
     controller.bind(first.element);
     expect(controller.active?.scheme).toBe("dark");
     expect(controller.loading).toBe(true);
@@ -197,6 +227,7 @@ describe("interactive SVG lightbox lifecycle", () => {
     controller.bind(first.element);
     expect(vi.getTimerCount()).toBe(0);
     controller.toggle();
+    controller.runOnce();
     expect(controller.loading).toBe(true);
   });
 
@@ -205,6 +236,7 @@ describe("interactive SVG lightbox lifecycle", () => {
     (operation) => {
       const { controller, first, message } = fixture();
       controller.toggle();
+      controller.runOnce();
       controller.bind(first.element);
       controller.setSearchTerm("retired term");
       controller[operation]();
@@ -222,6 +254,7 @@ describe("interactive SVG lightbox lifecycle", () => {
   it("retires a pending source watchdog without failing the replacement preview", () => {
     const { controller, setItem, first } = fixture();
     controller.toggle();
+    controller.runOnce();
     controller.bind(first.element);
     setItem({ src: "blob:replacement", title: "Replacement preview" });
     controller.bind(first.element);
@@ -234,6 +267,7 @@ describe("interactive SVG lightbox lifecycle", () => {
   it("falls back visibly when the shell never activates and permits an explicit retry", () => {
     const { controller, first, message } = fixture();
     controller.toggle();
+    controller.runOnce();
     controller.bind(first.element);
     message("openclaw-svg-ready");
     vi.advanceTimersByTime(10_000);
@@ -244,6 +278,7 @@ describe("interactive SVG lightbox lifecycle", () => {
     message("openclaw-svg-search");
     expect(controller.searchOpen).toBe(false);
     controller.toggle();
+    controller.runOnce();
     expect(controller.error).toBe(false);
     expect(controller.loading).toBe(true);
   });
@@ -300,6 +335,7 @@ describe("interactive SVG lightbox lifecycle", () => {
     const { controller, setItem, first } = fixture();
     setItem(item);
     controller.toggle();
+    controller.runOnce();
     expect(controller.available).toBe(false);
     expect(controller.active).toBeUndefined();
     expect(first.post).not.toHaveBeenCalled();
@@ -317,6 +353,7 @@ describe("interactive SVG lightbox lifecycle", () => {
       svgSource: { src: "blob:selected", text },
     });
     controller.toggle();
+    controller.runOnce();
     expect(controller.error).toBe(true);
     expect(controller.active).toBeUndefined();
     expect(first.post).not.toHaveBeenCalled();

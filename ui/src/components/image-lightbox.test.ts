@@ -166,6 +166,8 @@ describe("openclaw-image-lightbox", () => {
     expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
     viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-interaction")?.click();
     await viewer.updateComplete;
+    viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-run-once")?.click();
+    await viewer.updateComplete;
     expect(viewer.shadowRoot?.querySelector("iframe")?.getAttribute("sandbox")).toBe(
       "allow-scripts",
     );
@@ -179,6 +181,8 @@ describe("openclaw-image-lightbox", () => {
     await viewer.updateComplete;
     expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
     viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-interaction")?.click();
+    await viewer.updateComplete;
+    viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-run-once")?.click();
     await viewer.updateComplete;
     viewer.remove();
     container.append(viewer);
@@ -198,6 +202,8 @@ describe("openclaw-image-lightbox", () => {
     const viewer = container.querySelector("openclaw-image-lightbox")!;
     await viewer.updateComplete;
     viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-interaction")?.click();
+    await viewer.updateComplete;
+    viewer.shadowRoot?.querySelector<HTMLButtonElement>(".svg-run-once")?.click();
     await viewer.updateComplete;
     expect(viewer.shadowRoot?.querySelector("iframe")).toBeNull();
     expect(viewer.shadowRoot?.querySelector("img")).not.toBeNull();

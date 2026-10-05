@@ -1,10 +1,66 @@
-import { html, type TemplateResult } from "lit";
+import { html, nothing, type TemplateResult } from "lit";
 import { INTERACTIVE_SVG_VIEWER_PATH } from "../../../src/shared/interactive-svg-viewer.js";
 import { resolveControlUiPaths } from "../app/browser.ts";
 import { t } from "../i18n/index.ts";
 import { registerInteractiveSvgEnglish } from "../i18n/locales/en-interactive-svg.ts";
+import { icons } from "./icons.ts";
 
 registerInteractiveSvgEnglish();
+
+export function renderLightboxOriginalLink(url: string, preparing: boolean) {
+  return url || preparing
+    ? html`<a
+        class="action open-original"
+        href=${url || nothing}
+        aria-disabled=${!url}
+        tabindex=${url ? 0 : -1}
+        target="_blank"
+        rel="noreferrer"
+        aria-label=${t("chat.imageLightbox.openOriginal")}
+      >
+        <span class="open-original-label">${t("chat.imageLightbox.openOriginal")}</span>
+        <span class="open-original-icon" aria-hidden="true">${icons.externalLink}</span>
+      </a>`
+    : nothing;
+}
+
+export function renderLightboxImage(options: {
+  src: string;
+  title: string;
+  scale: number;
+  width?: number;
+  height?: number;
+  interactive: boolean;
+  loaded: (event: Event) => void;
+  failed: (event: Event) => void;
+  clicked: (event: MouseEvent) => void;
+  keydown: (event: KeyboardEvent) => void;
+}) {
+  const { width, height } = options;
+  const sized = Number.isFinite(width) && width! > 0 && Number.isFinite(height) && height! > 0;
+  const imageSize = sized
+    ? `width: min(${width}px, 100cqw, calc(100cqh * ${width! / height!}))`
+    : nothing;
+  const hint = options.interactive ? t("chat.imageLightbox.svgClickHint") : nothing;
+  return html`<div class="slide">
+    <img
+      class=${options.scale > 1 ? "image zoomed" : "image"}
+      style=${imageSize}
+      src=${options.src}
+      alt=${options.title}
+      role=${options.interactive ? "button" : nothing}
+      tabindex=${options.interactive ? "0" : nothing}
+      title=${hint}
+      aria-description=${hint}
+      referrerpolicy="no-referrer"
+      @load=${options.loaded}
+      @error=${options.failed}
+      @dragstart=${(event: DragEvent) => event.preventDefault()}
+      @click=${options.clicked}
+      @keydown=${options.keydown}
+    />
+  </div>`;
+}
 
 export function renderLightboxAction(
   className: string,

@@ -30,13 +30,15 @@ While the initial connection or a route loads, shimmer placeholders reserve the 
 
 The selected chat loads before automatic sidebar session lists refresh. Live events remain subscribed during startup, and explicit sidebar actions remain available. Background lists resume after the transcript loads or reports an error.
 
-SVG attachments open as inert image previews. Choose **Interact with SVG** in
-the image lightbox to run the SVG's scripts, event handlers, and CSS controls in
-an isolated frame. This opt-in preserves JavaScript-driven hover, zoom, and
+SVG attachments open as inert image previews. Click the SVG image or choose
+**Interact with SVG** in the lightbox, then choose **Run Once** in the script
+notice. **Cancel** or **Escape** leaves the image preview without running code.
+This opt-in runs the SVG's scripts, event handlers, and CSS controls in an
+isolated frame, preserving JavaScript-driven hover, zoom, and
 search behavior without granting access to OpenClaw's page or storage. The
 frame blocks external scripts, resource loads, network APIs, forms, popups, and
 navigation of the parent page; an SVG can still navigate its own frame.
-Choosing **Interact with SVG** admits arbitrary attachment scripts. Navigation
+Choosing **Run Once** admits arbitrary attachment scripts. Navigation
 within the frame can load attacker-controlled resources despite its initial
 network policy. This boundary does not prevent every form of data exfiltration
 or provide complete CPU or memory isolation.
@@ -47,6 +49,10 @@ preview** leaves interaction mode. Changing the attachment or closing the
 lightbox retires the isolated document and its message bridge. Navigating the
 SVG frame also retires interaction; choose **Interact with SVG** again to load
 the original attachment.
+The interactive view preserves the root SVG's declared width and aspect ratio,
+including absolute units and percentages. Fluid diagrams that remove their
+width or viewBox retain their original width and live height; nested SVGs keep
+their own dimensions.
 The attachment honors its XML byte-order mark, media charset, and encoding
 declaration. If the browser cannot decode that encoding for interaction, the
 lightbox shows an error and keeps the image preview available.
