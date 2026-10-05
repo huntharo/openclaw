@@ -27,7 +27,11 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import { applyCodeModeCatalog, createCodeModeTools } from "./code-mode.js";
-import { createCodeModeHarness, resetCodeModeTestState } from "./code-mode.test-support.js";
+import {
+  createCodeModeHarness,
+  resetCodeModeTestState,
+  resultDetails,
+} from "./code-mode.test-support.js";
 import { createAgentToolResultMiddlewareRunner } from "./harness/tool-result-middleware.js";
 import { SessionManager } from "./sessions/session-manager.js";
 import { clearToolSearchCatalog } from "./tool-search.js";
@@ -165,18 +169,27 @@ function fixture(disposition: "summarize" | "pass_through" = "summarize") {
   const runtime = createPluginRuntime();
   const complete = vi.fn<typeof runtime.llm.complete>(async (request) => {
     const prompt = JSON.parse(request.messages[0]?.content ?? "") as {
-      outerResult: { output: string; originalBytes: number; truncated: boolean };
+      outerResult?: { output: string; originalBytes: number; truncated: boolean };
       members: Array<{ id: string; output: string }>;
     };
-    expect(prompt.outerResult.output).toContain(measurement);
-    expect(prompt.outerResult.truncated).toBe(false);
-    expect(prompt.members.every((member) => !member.output.includes(measurement))).toBe(true);
+    if (prompt.outerResult) {
+      expect(prompt.outerResult.output).toContain(measurement);
+      expect(prompt.outerResult.truncated).toBe(false);
+      expect(prompt.members.every((member) => !member.output.includes(measurement))).toBe(true);
+    }
     return {
       text: JSON.stringify({
         disposition,
         summary: "Build completed.",
         usefulDetails: disposition === "summarize" ? [measurement] : [],
-        members: prompt.members.map(({ id }) => ({ id, summary: "Completed worker output." })),
+        ...(prompt.outerResult
+          ? {
+              members: prompt.members.map(({ id }) => ({
+                id,
+                summary: "Completed worker output.",
+              })),
+            }
+          : {}),
       }),
       provider: "fixture-provider",
       model: "fixture-model",
@@ -222,9 +235,11 @@ function fixture(disposition: "summarize" | "pass_through" = "summarize") {
     });
   };
   const execute = async (
-    options: { incomplete?: boolean; source?: boolean } = {},
+    options: { incomplete?: boolean; source?: boolean; contract?: "describe" | "API.read" } = {},
   ): Promise<AgentToolResultMiddlewareEvent> => {
-    const harness = createCodeModeHarness({ codeMode: { executor: "node", maxOutputBytes: 1024 } });
+    const harness = createCodeModeHarness({
+      codeMode: { executor: "node", maxOutputBytes: options.contract ? 16_000 : 1024 },
+    });
     const context = {
       ...harness.ctx,
       ...scope,
@@ -236,10 +251,21 @@ function fixture(disposition: "summarize" | "pass_through" = "summarize") {
     const tool = (name: string): AnyAgentTool => ({
       name,
       label: name,
-      description: "Synthetic completed output.",
+      description: options.contract
+        ? "Keep each worker label and exact status when comparing results. ".repeat(100) +
+          "END OF REQUIRED TOOL INSTRUCTIONS"
+        : "Synthetic completed output.",
       parameters: {
         type: "object",
-        properties: { label: { type: "string", enum: ["a", "b"] } },
+        properties: {
+          label: {
+            type: "string",
+            enum:
+              options.contract === "API.read"
+                ? Array.from({ length: 200 }, (_, index) => `worker_status_${index}`)
+                : ["a", "b"],
+          },
+        },
         required: ["label"],
       },
       execute: vi.fn(async (_id, args) => ({
@@ -253,20 +279,56 @@ function fixture(disposition: "summarize" | "pass_through" = "summarize") {
       ...context,
       tools: [...controls, logs, ...(options.source ? [source] : [])],
     });
-    const code = `const results = [await ${options.source ? "read_file" : "build_logs"}({label:"a"}), await build_logs({label:"b"})]; const elapsedMs = 21 * 2; const measurement = "Computed elapsed: " + elapsedMs + " ms; checked workers: " + results.length + "."; text(measurement); return ${JSON.stringify("worker completed 🦀漢字\n")}.repeat(400) + measurement;`;
+    const code =
+      options.contract === "API.read"
+        ? 'return await API.read("tools/build_logs.d.ts");'
+        : options.contract === "describe"
+          ? 'const [tool] = await catalog.search("build_logs"); const schema = await tool.describe(); await yield_control(); return schema;'
+          : `const results = [await ${options.source ? "read_file" : "build_logs"}({label:"a"}), await build_logs({label:"b"})]; const elapsedMs = 21 * 2; const measurement = "Computed elapsed: " + elapsedMs + " ms; checked workers: " + results.length + "."; text(measurement); return ${JSON.stringify("worker completed 🦀漢字\n")}.repeat(400) + measurement;`;
     const args = { title: "Inspect worker output", code };
-    const result = await controls[0]!.execute("outer", args);
+    let result = await controls[0]!.execute("outer", args);
+    let deliveredArgs: Record<string, unknown> = args;
+    let toolName = "exec";
+    if (options.contract === "describe") {
+      expect(result.details).toMatchObject({ status: "waiting" });
+      const runId = resultDetails(result).runId;
+      deliveredArgs = { runId };
+      toolName = "wait";
+      result = await controls[1]!.execute("outer-wait", deliveredArgs);
+    }
     expect(result.details).toMatchObject({ status: "completed" });
-    expect(logs.execute).toHaveBeenCalledTimes(options.source ? 1 : 2);
+    expect(logs.execute).toHaveBeenCalledTimes(options.contract ? 0 : options.source ? 1 : 2);
     if (options.source) {
       expect(source.execute).toHaveBeenCalledOnce();
     }
-    return { toolCallId: "outer", toolName: "exec", args, result };
+    return {
+      toolCallId: toolName === "wait" ? "outer-wait" : "outer",
+      toolName,
+      args: deliveredArgs,
+      result,
+    };
   };
   return { blobs, markers, operations, failures, complete, run, execute };
 }
 
 describe("Token Miser actual Code Mode group selection", () => {
+  it.each([
+    { contract: "describe", tail: "END OF REQUIRED TOOL INSTRUCTIONS" },
+    { contract: "API.read", tail: "worker_status_199" },
+  ] as const)(
+    "preserves $contract tool instructions without helper evaluation",
+    async ({ contract, tail }) => {
+      const f = fixture();
+      const input = await f.execute({ contract });
+      expect(JSON.stringify(input.result.content)).toContain(tail);
+      const result = await f.run().applyToolResultMiddleware(input);
+      expect(f.complete.mock.calls.length).toBe(0);
+      expect(result.content).toEqual(input.result.content);
+      expect(f.blobs.size).toBe(0);
+      expect(f.markers.size).toBe(0);
+    },
+  );
+
   it.each(["summarize", "pass_through"] as const)(
     "attributes grouped %s output through the public plugin entry",
     async (disposition) => {
