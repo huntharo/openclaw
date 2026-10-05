@@ -132,6 +132,14 @@ decisions, oversized summaries, storage failures, capacity exhaustion, and
 failed replacement acceptance preserve the ordinary result and its failure
 semantics.
 
+Instruction reads are conservative: explicit `AGENTS.md`, `CLAUDE.md`, and
+`SKILL.md` paths bypass evaluation even through a document tool with a different
+name. Tool Search results, tool descriptions, schema-bearing JSON, and generated
+function declarations also bypass the helper and original storage. This includes
+Code Mode contract output delivered later by `wait`. If a captured group contains
+protected content, the whole group passes through; noisy companions are not
+summarized separately. Ambiguous matches can therefore decline reduction.
+
 ## Storage and lifetime
 
 Originals and acceptance markers use the existing plugin-scoped SQLite blob and

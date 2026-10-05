@@ -274,6 +274,27 @@ describe("Token Miser selected tool-result delivery", () => {
       input: { result: { content: originalContent, details: { status: "waiting" } } },
     },
     { name: "source request", input: { toolName: "read_file", args: { path: "src/owner.ts" } } },
+    ...[
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".agents/skills/release/SKILL.md",
+      "~/.codex/pr-style.md",
+      ".github/workflows/ci.yml",
+    ].map((path) => ({
+      name: `instructions with companion discovery: ${path}`,
+      ctx: undefined,
+      input: { toolName: "exec", args: { command: `cat ${path}; rg -l owner src` } },
+    })),
+    ...["tool_search", "tool_describe", "mcp__skills__read"].map((toolName) => ({
+      name: `tool or skill instructions: ${toolName}`,
+      ctx: undefined,
+      input: { toolName, args: { id: "build_logs" } },
+    })),
+    ...["AGENTS.md", "CLAUDE.md", ".agents/skills/release/SKILL.md"].map((path) => ({
+      name: `instruction path through a document tool: ${path}`,
+      ctx: undefined,
+      input: { toolName: "mcp__documents__fetch", args: { path } },
+    })),
     {
       name: "requested CSV shell read",
       input: { toolName: "exec", args: { command: "cat data.csv" } },
