@@ -3,7 +3,7 @@ import {
   channelBlockedPatch,
   channelReadyPatch,
   channelStoppedPatch,
-} from "openclaw/plugin-sdk/gateway-runtime";
+} from "openclaw/plugin-sdk/channel-status";
 
 export type MSTeamsStatusSink = (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
 

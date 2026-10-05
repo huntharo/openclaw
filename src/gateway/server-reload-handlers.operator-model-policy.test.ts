@@ -9,6 +9,7 @@ import {
 } from "../agents/auth-profiles/runtime-snapshots.js";
 import * as activeRunProjections from "../agents/embedded-agent-runner/active-run-projections.js";
 import * as preparedModelRuntime from "../agents/prepared-model-runtime.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -32,7 +33,6 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { captureGatewayAuthPolicy } from "./auth-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
-import { createChannelManager } from "./server-channels.js";
 import { createContext as createGatewayTestContext } from "./server-plugin-in-process-dispatch.test-support.js";
 import {
   createDefaultGatewayReloadState,

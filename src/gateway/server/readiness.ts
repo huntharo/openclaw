@@ -1,15 +1,15 @@
 // Gateway readiness checker for channel health and startup sidecar state.
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import type { ChannelAccountSnapshot } from "../../channels/plugins/types.public.js";
-import type { AgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
+import type { ChannelManager } from "../../channels/runtime/manager.js";
 import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
   DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
   evaluateChannelHealth,
   type ChannelHealthPolicy,
   type ChannelHealthEvaluation,
-} from "../channel-health-policy.js";
-import type { ChannelManager } from "../server-channels.js";
+} from "../../channels/status/health-policy.js";
+import type { AgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
 import type { GatewayPluginReloadStatus } from "../server-plugin-runtime-generation.js";
 import type { GatewayEventLoopHealth } from "./event-loop-health.js";
 

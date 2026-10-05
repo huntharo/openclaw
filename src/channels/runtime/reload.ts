@@ -1,9 +1,9 @@
-import { resolveChannelAccount } from "../channels/account-resolution.js";
-import { getLoadedChannelPluginEntryById } from "../channels/plugins/registry-loaded.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { formatErrorMessage } from "../infra/errors.js";
-import type { ChannelKind } from "./config-reload-plan.js";
-import type { GatewayReloadHandlerParams } from "./server-reload-contracts.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { ChannelKind } from "../../gateway/config-reload-plan.js";
+import type { GatewayReloadHandlerParams } from "../../gateway/server-reload-contracts.js";
+import { formatErrorMessage } from "../../infra/errors.js";
+import { resolveChannelAccount } from "../account-resolution.js";
+import { getLoadedChannelPluginEntryById } from "../plugins/registry-loaded.js";
 
 export async function restartGatewayChannels(options: {
   params: Pick<

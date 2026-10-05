@@ -2,14 +2,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  DiscordApiError,
-  handleDiscordMessageAction,
-  requestDiscord as requestDiscordLive,
-} from "@openclaw/discord/api.js";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
 import { sleep } from "openclaw/plugin-sdk/runtime-env";
 import { writeExternalFileWithinRoot } from "openclaw/plugin-sdk/security-runtime";
 import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -19,7 +15,7 @@ import type { QaGatewayChild } from "../../gateway-child.js";
 import { isTruthyOptIn } from "../../mantis-options.runtime.js";
 import { readLiveQaChannelAccounts } from "../shared/live-channel-status.js";
 import { requireLiveQaEnv } from "../shared/live-credential-env.js";
-import { createDiscordQaEndpointFetcher } from "./discord-live.endpoint.js";
+import { requestDiscord, withRegisteredDiscordQaApiBase } from "./discord-live.endpoint.js";
 import {
   buildDiscordWebMessageUrl,
   collectSeenReactionSequence,
@@ -33,6 +29,10 @@ import {
   type DiscordUser,
 } from "./discord-live.evidence.js";
 import type { DiscordTranscriptsVoiceAuthorizationRun } from "./discord-transcripts-authorization.types.js";
+
+export { registerDiscordQaApiBase } from "./discord-live.endpoint.js";
+const { DiscordApiError, handleDiscordMessageAction } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
 
 export type DiscordQaRuntimeEnv = z.infer<typeof discordQaCredentialPayloadSchema>;
 
@@ -141,60 +141,6 @@ type DiscordThreadReplyAttachmentEvidence = {
 
 const DISCORD_QA_CAPTURE_UI_METADATA_ENV = "OPENCLAW_QA_DISCORD_CAPTURE_UI_METADATA";
 const DISCORD_QA_KEEP_THREADS_ENV = "OPENCLAW_QA_DISCORD_KEEP_THREADS";
-const discordQaApiBaseByToken = new Map<string, string>();
-
-type DiscordQaRequestOptions = NonNullable<Parameters<typeof requestDiscordLive>[2]>;
-
-async function requestDiscord<T>(
-  requestPath: string,
-  token: string,
-  options?: DiscordQaRequestOptions,
-): Promise<T> {
-  const apiBaseUrl = discordQaApiBaseByToken.get(token);
-  return await requestDiscordLive<T>(requestPath, token, {
-    timeoutMs: 15_000,
-    ...options,
-    ...(apiBaseUrl
-      ? { endpointRuntime: null, fetcher: createDiscordQaEndpointFetcher(apiBaseUrl) }
-      : {}),
-  });
-}
-
-export function registerDiscordQaApiBase(params: {
-  apiBaseUrl: string;
-  tokens: readonly string[];
-}): () => void {
-  const normalized = new URL(params.apiBaseUrl).toString().replace(/\/$/u, "");
-  for (const token of params.tokens) {
-    discordQaApiBaseByToken.set(token, normalized);
-  }
-  return () => {
-    for (const token of params.tokens) {
-      if (discordQaApiBaseByToken.get(token) === normalized) {
-        discordQaApiBaseByToken.delete(token);
-      }
-    }
-  };
-}
-
-async function withRegisteredDiscordQaApiBase<T>(token: string, run: () => Promise<T>): Promise<T> {
-  const apiBaseUrl = discordQaApiBaseByToken.get(token);
-  if (!apiBaseUrl) {
-    return await run();
-  }
-  const previous = process.env.DISCORD_API_URL;
-  process.env.DISCORD_API_URL = apiBaseUrl;
-  try {
-    return await run();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.DISCORD_API_URL;
-    } else {
-      process.env.DISCORD_API_URL = previous;
-    }
-  }
-}
-
 export const discordQaCanaryScenario: DiscordQaScenarioImplementation = {
   buildRun: (sutApplicationId) => {
     const token = `DISCORD_QA_ECHO_${randomUUID().slice(0, 8).toUpperCase()}`;

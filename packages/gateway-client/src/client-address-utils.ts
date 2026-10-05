@@ -1,4 +1,8 @@
+import net from "node:net";
 import {
+  isLoopbackIpAddress,
+  isPrivateOrLoopbackIpAddress,
+  isRfc8215LocalUseNat64Ipv6Address,
   normalizeIpAddress,
   parseCanonicalIpAddress,
   type ParsedIpAddress,
@@ -70,4 +74,46 @@ export function parseHostForAddressChecks(
 export function parseGatewayIpAddress(host: string): ParsedIpAddress | undefined {
   const normalized = normalizeIpAddress(host);
   return normalized ? parseCanonicalIpAddress(normalized) : undefined;
+}
+
+export function isLoopbackHost(host: string): boolean {
+  const parsed = typeof host === "string" ? parseHostForAddressChecks(host) : null;
+  if (!parsed) {
+    return false;
+  }
+  if (parsed.isLocalhost) {
+    return true;
+  }
+  return isLoopbackIpAddress(parsed.unbracketedHost);
+}
+
+export function isPrivateOrLoopbackHost(host: string): boolean {
+  const parsed = typeof host === "string" ? parseHostForAddressChecks(host) : null;
+  if (!parsed) {
+    return false;
+  }
+  if (parsed.isLocalhost) {
+    return true;
+  }
+  const normalized = normalizeIpAddress(parsed.unbracketedHost);
+  if (
+    !normalized ||
+    !isPrivateOrLoopbackIpAddress(normalized) ||
+    isRfc8215LocalUseNat64Ipv6Address(normalized)
+  ) {
+    return false;
+  }
+  // The address classifier reuses SSRF-blocking ranges for IPv6, which
+  // include unspecified (::) and multicast (ff00::/8). Exclude these —
+  // they are not private/loopback unicast endpoints. (Multicast is UDP-only
+  // so TCP/WebSocket connections would fail regardless.)
+  if (net.isIP(normalized) === 6) {
+    if (normalized.startsWith("ff")) {
+      return false;
+    }
+    if (normalized === "::") {
+      return false;
+    }
+  }
+  return true;
 }

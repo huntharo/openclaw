@@ -10,6 +10,7 @@ import type {
   ChannelPlugin,
   ChannelStatusIssue,
 } from "../../channels/plugins/types.public.js";
+import { createChannelManager } from "../../channels/runtime/manager.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createPluginRecord } from "../../plugins/status.test-fixtures.js";
@@ -20,7 +21,6 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { CallGatewayOptions } from "../call.js";
-import { createChannelManager } from "../server-channels.js";
 import type { GatewayEventLoopHealth } from "../server/event-loop-health.js";
 import { requireGatewayRecord } from "../test-helpers.assertions.js";
 import {

@@ -38,7 +38,7 @@ vi.mock("./live-transports/cli.js", () => ({
   listLiveTransportQaAdapterFactories: liveTransportMock.listAdapterFactories,
 }));
 
-vi.mock("openclaw/plugin-sdk/qa-channel", () => ({
+vi.mock("openclaw/plugin-sdk/qa-runner-runtime", () => ({
   qaChannelPlugin: {
     config: {
       resolveAccount: qaChannelMock.resolveAccount,

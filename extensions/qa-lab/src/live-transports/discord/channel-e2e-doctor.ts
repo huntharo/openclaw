@@ -1,6 +1,9 @@
-import { DiscordApiError } from "@openclaw/discord/api.js";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
 import type { QaChannelE2eDoctorResult } from "../shared/channel-e2e.types.js";
 import type { DiscordQaRuntimeEnv } from "./discord-live.runtime.js";
+
+const { DiscordApiError } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
 
 export type DiscordE2eChannel = {
   id: string;

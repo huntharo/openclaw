@@ -58,6 +58,7 @@ export const BOUNDARY_CHECKS = (
     "lint:docker-e2e",
     "lint:tmp:no-random-messaging",
     "lint:tmp:channel-agnostic-boundaries",
+    "lint:messaging:architecture",
     "lint:tmp:tsgo-core-boundary",
     "lint:tmp:no-raw-channel-fetch",
     "lint:tmp:no-raw-http2-imports",

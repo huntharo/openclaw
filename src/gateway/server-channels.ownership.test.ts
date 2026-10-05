@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAccountListHelpers } from "../channels/plugins/account-helpers.js";
 import type { ChannelGatewayContext } from "../channels/plugins/types.adapters.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
+import { createChannelManager, type ChannelManager } from "../channels/runtime/manager.js";
+import { channelReadyPatch } from "../channels/status/patches.js";
 import { applyLegacyDoctorMigrations } from "../commands/doctor/shared/legacy-config-compat.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
@@ -16,8 +18,6 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
-import { channelReadyPatch } from "./channel-status-patches.js";
-import { createChannelManager, type ChannelManager } from "./server-channels.js";
 
 describe("channel ownership startup", () => {
   let state: OpenClawTestState;

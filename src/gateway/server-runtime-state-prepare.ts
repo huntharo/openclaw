@@ -421,7 +421,7 @@ export async function prepareGatewayKernelState(params: {
 
   const { createChannelManager } = await startupTrace.measure(
     "gateway.channel-manager-import",
-    () => import("./server-channels.js"),
+    () => import("../channels/runtime/manager.js"),
   );
   const channelManager = createChannelManager({
     scheduler,

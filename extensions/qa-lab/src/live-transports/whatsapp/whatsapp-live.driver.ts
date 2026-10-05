@@ -1,14 +1,17 @@
-import {
-  startWhatsAppQaDriverSession,
-  type WhatsAppQaDriverObservedMessage,
-  type WhatsAppQaDriverSession,
+import type {
+  WhatsAppQaDriverObservedMessage,
+  WhatsAppQaDriverSession,
 } from "@openclaw/whatsapp/api.js";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
 import type { WhatsAppQaMessageScenarioContext } from "./whatsapp-live.contracts.js";
 import {
   isWhatsAppScenarioSutMessage,
   waitForScenarioObservedMessage,
 } from "./whatsapp-live.observations.js";
+
+const { startWhatsAppQaDriverSession } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/whatsapp/api.js")>("whatsapp");
 
 export const WHATSAPP_QA_TRANSIENT_DRIVER_ATTEMPTS = 5;
 const WHATSAPP_QA_DRIVER_RECONNECT_DELAY_MS = 10_000;

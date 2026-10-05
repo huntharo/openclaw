@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDiscordQaEndpointFetcher } from "./discord-live.endpoint.js";
+import { registerDiscordQaApiBase, requestDiscord } from "./discord-live.endpoint.js";
 import {
   buildDiscordWebMessageUrl,
   collectSeenReactionSequence,
@@ -29,7 +29,7 @@ describe("discord live qa runtime", () => {
     vi.useRealTimers();
   });
 
-  it("forwards Discord Requests through the guarded QA endpoint and preserves null responses", async () => {
+  it("forwards registered Discord QA requests and accepts empty responses", async () => {
     const received: Array<{ authorization?: string; body: string; method?: string; url?: string }> =
       [];
     const server = createServer((request, response) => {
@@ -53,29 +53,24 @@ describe("discord live qa runtime", () => {
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     const port = (server.address() as AddressInfo).port;
-    const endpointFetch = createDiscordQaEndpointFetcher(`http://127.0.0.1:${port}/api/v10`);
+    const dispose = registerDiscordQaApiBase({
+      apiBaseUrl: `http://127.0.0.1:${port}/api/v10`,
+      tokens: ["qa-token"],
+    });
 
     try {
-      const writeResponse = await endpointFetch(
-        new Request("https://discord.com/api/v10/channels/123/messages", {
+      await expect(
+        requestDiscord("/channels/123/messages", "qa-token", {
           body: JSON.stringify({ content: "hello" }),
-          headers: {
-            authorization: "Bot qa-token",
-            "content-type": "application/json",
-          },
+          headers: { "content-type": "application/json" },
           method: "POST",
         }),
-      );
-      await expect(writeResponse.json()).resolves.toEqual({ ok: true });
-
-      const deleteResponse = await endpointFetch(
-        new Request("https://discord.com/api/v10/channels/123/messages/456", {
-          headers: { authorization: "Bot qa-token" },
+      ).resolves.toEqual({ ok: true });
+      await expect(
+        requestDiscord("/channels/123/messages/456", "qa-token", {
           method: "DELETE",
         }),
-      );
-      expect(deleteResponse.status).toBe(204);
-      expect(deleteResponse.body).toBeNull();
+      ).resolves.toBeUndefined();
       expect(received).toEqual([
         {
           authorization: "Bot qa-token",
@@ -91,6 +86,7 @@ describe("discord live qa runtime", () => {
         },
       ]);
     } finally {
+      dispose();
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

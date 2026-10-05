@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import nodePath from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { ChannelManager } from "../channels/runtime/manager.js";
 import {
   prepareGatewaySuspend,
   resumeGatewaySuspend,
@@ -13,7 +14,6 @@ import {
   resetGatewayWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { resolveRuntimeServiceVersion } from "../version.js";
-import type { ChannelManager } from "./server-channels.js";
 import {
   AUTH_TOKEN,
   AUTH_NONE,

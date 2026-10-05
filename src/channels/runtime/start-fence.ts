@@ -1,4 +1,4 @@
-import type { ChannelAccountSnapshot, ChannelId } from "../channels/plugins/types.public.js";
+import type { ChannelAccountSnapshot, ChannelId } from "../plugins/types.public.js";
 
 export type ChannelStartFence = {
   state: "paused" | "published" | "failed";

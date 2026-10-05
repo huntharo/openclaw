@@ -10,6 +10,15 @@ import {
 import { createMessageActionClientForTests } from "./send.test-helpers.js";
 import type { GatewayClient, GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 
+export async function prepareMessageMethodTestHandlers() {
+  const { sendHandlers } = await import("./send.js");
+  await Promise.all([
+    import("../../infra/outbound/message-action-runner.js"),
+    import("../../channels/message/operations/send.js"),
+  ]);
+  return sendHandlers;
+}
+
 export const makeContext = (): GatewayRequestContext =>
   ({
     dedupe: new Map(),

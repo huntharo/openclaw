@@ -20,7 +20,7 @@ export {
   searchQaBusMessages,
   sendQaBusMessage,
   setQaChannelRuntime,
-} from "openclaw/plugin-sdk/qa-channel";
+} from "openclaw/plugin-sdk/qa-runner-runtime";
 export type {
   QaBusAttachment,
   QaBusConversation,

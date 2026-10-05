@@ -860,6 +860,7 @@ export function createChangedCheckPlan(
     // After 2026-07-24, lapsed compatibility windows intentionally fail this gate
     // until their scheduled deletion PRs land.
     add("plugin boundaries", ["plugins:boundary-report:ci"]);
+    add("messaging architecture", ["lint:messaging:architecture"]);
   }
   if (result.lanes.all || shouldRunWrapperShadowingCheck(result.paths)) {
     add("wrapper shadowing", ["check:wrapper-shadowing"]);

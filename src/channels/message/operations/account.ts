@@ -1,14 +1,14 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { resolveChannelAccount } from "../../channels/account-resolution.js";
-import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
-import type { ChannelAccountSnapshot, ChannelId } from "../../channels/plugins/types.public.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
-import { DEFAULT_ACCOUNT_ID } from "../../routing/session-key.js";
-import { defaultRuntime } from "../../runtime.js";
-import type { GatewayMethodRegistry } from "../methods/registry.js";
-import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
-import type { GatewayRequestContext } from "./types.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { GatewayMethodRegistry } from "../../../gateway/methods/registry.js";
+import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
+import { getPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
+import { DEFAULT_ACCOUNT_ID } from "../../../routing/session-key.js";
+import { defaultRuntime } from "../../../runtime.js";
+import { resolveChannelAccount } from "../../account-resolution.js";
+import type { ChannelPlugin } from "../../plugins/types.plugin.js";
+import type { ChannelAccountSnapshot, ChannelId } from "../../plugins/types.public.js";
+import type { ChannelRuntimeSnapshot } from "../../runtime/snapshot.types.js";
 
 export function resolveRuntimeAccountSnapshot(params: {
   runtime: ChannelRuntimeSnapshot;

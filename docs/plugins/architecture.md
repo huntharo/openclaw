@@ -620,7 +620,7 @@ This is why embedded-runner routing changes are still plugin work: the runner is
 
 For channel-owned execution helpers, channel plugins should keep the execution runtime inside their own plugin modules. Core no longer owns the Discord, Slack, Telegram, or WhatsApp message-action runtimes under `src/agents/tools`. We do not publish separate `plugin-sdk/*-action-runtime` subpaths, and those plugins should import their own local runtime code directly from their plugin-owned modules.
 
-The same boundary applies to provider-named SDK seams in general: core should not import channel-specific convenience barrels for Discord, Signal, Slack, WhatsApp, or similar plugins. If core needs a behavior, either consume the bundled plugin's own `api.ts` / `runtime-api.ts` barrel or promote the need into a narrow generic capability in the shared SDK.
+The same boundary applies to provider-named SDK seams in general: core should not import channel-specific convenience barrels for Discord, Signal, Slack, WhatsApp, or similar plugins. Messaging provider imports, including their `api.ts` / `runtime-api.ts` barrels, belong in `src/channels`. Other core callers consume generic channel APIs. Promote reusable plugin-facing behavior into a narrow generic capability in the shared SDK.
 
 Bundled plugins follow the same rule. A bundled plugin's `runtime-api.ts` should not re-export its own branded `openclaw/plugin-sdk/<plugin-id>` facade. Those branded facades remain compatibility shims for external plugins and older consumers, but bundled plugins should use local exports plus narrow generic SDK subpaths such as `openclaw/plugin-sdk/channel-policy`, `openclaw/plugin-sdk/runtime-store`, or `openclaw/plugin-sdk/webhook-ingress`. New code should not add plugin-id-specific SDK facades unless the compatibility boundary for an existing external ecosystem requires it.
 
@@ -632,6 +632,40 @@ For polls specifically, there are two execution paths:
 Core now defers shared poll parsing until after plugin poll dispatch declines the action, so plugin-owned poll handlers can accept channel-specific poll fields without being blocked by the generic poll parser first.
 
 See [Plugin architecture internals](/plugins/architecture-internals) for the full startup sequence.
+
+### Messaging dependency enforcement
+
+`.dependency-cruiser.cjs` declares the messaging dependency rules. Run their
+repository-native checker with prepared development dependencies:
+
+```sh
+node --import ./scripts/tsx.mjs scripts/check-messaging-architecture.mts
+node --import ./scripts/tsx.mjs scripts/check-messaging-architecture.mts --json
+```
+
+The checker uses the existing native TypeScript parser and module resolver;
+it does not require a dependency-cruiser installation. Channel plugin manifests
+and package metadata determine provider membership, including private and
+source-only plugins. Adding a channel does not require updating a provider list.
+
+Only `src/channels` and a provider's own package can load that provider.
+UI, Gateway, other host callers, SDK barrels, and sibling providers cannot
+import its implementation or public barrels, including type imports. Explicit
+QA driver plugins may reference provider-owned public test types, which erase
+at compilation; their runtime loads still go through messaging-owned QA
+admission. Providers use the Plugin SDK
+instead of importing core, UI, or native-app internals. Generic channel contract
+modules cannot import providers or host apps, including through type imports.
+
+Checks cover static imports, re-exports, literal dynamic imports, CommonJS,
+import types, module URLs, and TypeScript path aliases. Production entrypoints
+are scanned across `src`, `ui`, `apps`, `extensions`, and `packages`. Test files
+are not entrypoints; a test helper reached from production is still checked.
+When using dependency-cruiser directly, supply the same production entrypoints;
+the shared config deliberately has no graph-wide test exclusion.
+Computed runtime plugin loading remains the plugin admission owner's concern;
+this check enforces statically discoverable dependency edges. Violations fail
+without a baseline or a provider-specific exception list.
 
 ## Capability ownership model
 

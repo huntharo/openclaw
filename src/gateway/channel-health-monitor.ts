@@ -2,17 +2,17 @@ import {
   isFutureDateTimestampMs,
   resolveTimerTimeoutMs,
 } from "@openclaw/normalization-core/number-coercion";
-import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
-import { settlesWithin } from "../shared/settle-within.js";
+import type { ChannelManager } from "../channels/runtime/manager.js";
 import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
   DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
   evaluateChannelHealth,
   resolveChannelRestartReason,
   type ChannelHealthPolicy,
-} from "./channel-health-policy.js";
-import type { ChannelManager } from "./server-channels.js";
+} from "../channels/status/health-policy.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { settlesWithin } from "../shared/settle-within.js";
 
 const log = createSubsystemLogger("gateway/health-monitor");
 

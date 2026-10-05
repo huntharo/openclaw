@@ -1,9 +1,9 @@
+import { extractErrorCode, formatErrorMessage } from "../../infra/errors.js";
+import { isPluginTrustRefusalError } from "../../plugins/plugin-trust.js";
 // Channel status patch factories centralize timestamp fields that multiple
 // runtime paths send into the gateway status store.
-import { isChannelIngressUnavailableError } from "../channels/message/ingress-unavailable.js";
-import type { ChannelAccountSnapshot } from "../channels/plugins/types.core.js";
-import { extractErrorCode, formatErrorMessage } from "../infra/errors.js";
-import { isPluginTrustRefusalError } from "../plugins/plugin-trust.js";
+import { isChannelIngressUnavailableError } from "../message/ingress-unavailable.js";
+import type { ChannelAccountSnapshot } from "../plugins/types.core.js";
 
 /** Patch emitted when a channel connection is established. */
 type ConnectedChannelStatusPatch = {

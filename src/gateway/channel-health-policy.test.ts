@@ -3,7 +3,7 @@ import {
   evaluateChannelHealth,
   resolveChannelHealthState,
   resolveChannelRestartReason,
-} from "./channel-health-policy.js";
+} from "../channels/status/health-policy.js";
 
 function evaluateHealth(
   account: Record<string, unknown>,

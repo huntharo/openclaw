@@ -5,7 +5,7 @@ import {
   isFutureDateTimestampMs,
   resolveNonNegativeIntegerOption,
 } from "@openclaw/normalization-core/number-coercion";
-import type { ChannelAccountSnapshot, ChannelId } from "../channels/plugins/types.public.js";
+import type { ChannelAccountSnapshot, ChannelId } from "../plugins/types.public.js";
 
 type ChannelHealthSnapshot = Omit<ChannelAccountSnapshot, "accountId">;
 

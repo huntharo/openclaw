@@ -4,7 +4,7 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
+import type { ChannelRuntimeSnapshot } from "../../channels/runtime/snapshot.types.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const mocks = vi.hoisted(() => ({

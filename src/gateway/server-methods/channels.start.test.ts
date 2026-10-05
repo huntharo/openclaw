@@ -6,6 +6,8 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { getChannelPlugin as getRegisteredChannelPlugin } from "../../channels/plugins/registry.js";
+import { createChannelManager } from "../../channels/runtime/manager.js";
+import type { ChannelRuntimeSnapshot } from "../../channels/runtime/snapshot.types.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { resetGatewayWorkAdmission } from "../../process/gateway-work-admission.js";
@@ -15,8 +17,6 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
-import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
-import { createChannelManager } from "../server-channels.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const mocks = vi.hoisted(() => ({

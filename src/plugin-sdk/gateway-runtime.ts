@@ -50,4 +50,4 @@ export {
   channelStoppedPatch,
   createConnectedChannelStatusPatch,
   createTransportActivityStatusPatch,
-} from "../gateway/channel-status-patches.js";
+} from "../channels/status/patches.js";

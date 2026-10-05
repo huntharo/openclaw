@@ -24,7 +24,6 @@ import {
   resolveQaEvidenceArtifactFile,
   resolveQaEvidenceProducerFile,
 } from "./evidence-gallery.js";
-import { createQaRunnerRuntime } from "./harness-runtime.js";
 import {
   createQaCaptureLifecycle,
   isCaptureQueryPreset,
@@ -48,7 +47,7 @@ import type {
   QaLabServerHandle,
   QaLabServerStartParams,
 } from "./lab-server.types.js";
-import { createQaChannelGatewayConfig } from "./qa-channel-transport.js";
+import { createQaChannelGatewayConfig, startQaChannelGatewayLoop } from "./qa-channel-transport.js";
 import {
   qaTransportSupportsModuleFlows,
   type QaTransportAdapterFactory,
@@ -235,49 +234,6 @@ function detectQaEvidenceArtifactContentType(filePath: string): string {
   );
 }
 
-async function startQaGatewayLoop(params: { baseUrl: string }) {
-  const { qaChannelPlugin, setQaChannelRuntime } = await import("openclaw/plugin-sdk/qa-channel");
-  const runtime = createQaRunnerRuntime();
-  setQaChannelRuntime(runtime);
-  const cfg = createQaChannelGatewayConfig({ baseUrl: params.baseUrl });
-  const account = qaChannelPlugin.config.resolveAccount(cfg, "default");
-  const abort = new AbortController();
-  const task = Promise.resolve().then(
-    async () =>
-      await qaChannelPlugin.gateway?.startAccount?.({
-        accountId: account.accountId,
-        account,
-        cfg,
-        runtime: {
-          log: () => undefined,
-          error: () => undefined,
-          exit: () => undefined,
-        },
-        abortSignal: abort.signal,
-        log: {
-          info: () => undefined,
-          warn: () => undefined,
-          error: () => undefined,
-          debug: () => undefined,
-        },
-        getStatus: () => ({
-          accountId: account.accountId,
-          configured: true,
-          enabled: true,
-          running: true,
-        }),
-        setStatus: () => undefined,
-      }),
-  );
-  return {
-    cfg,
-    async stop() {
-      abort.abort();
-      await task;
-    },
-  };
-}
-
 export async function startQaLabServer(
   params?: QaLabServerStartParams,
 ): Promise<QaLabServerHandle> {
@@ -344,7 +300,7 @@ export async function startQaLabServer(
     : null;
   let controlUiProxyToken = params?.controlUiProxyToken?.trim() || null;
   let controlUiUrl = sanitizeControlUiPublicUrl(params?.controlUiUrl?.trim() || null);
-  let gateway: Awaited<ReturnType<typeof startQaGatewayLoop>> | undefined;
+  let gateway: Awaited<ReturnType<typeof startQaChannelGatewayLoop>> | undefined;
   const embeddedGatewayEnabled = params?.embeddedGateway !== "disabled";
   let labHandle: QaLabServerHandle | null = null;
   let serverListening = false;
@@ -905,7 +861,7 @@ export async function startQaLabServer(
       advertisePort: params?.advertisePort,
     });
     if (embeddedGatewayEnabled) {
-      gateway = await startQaGatewayLoop({ baseUrl: listenUrl });
+      gateway = await startQaChannelGatewayLoop({ baseUrl: listenUrl });
     }
     if (params?.sendKickoffOnStart) {
       injectKickoffMessage({

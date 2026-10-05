@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { ChannelId, ChannelAccountSnapshot } from "../channels/plugins/types.public.js";
-import type { ChannelRuntimeSnapshot } from "./server-channel-runtime.types.js";
-import type { ChannelManager } from "./server-channels.js";
+import type { ChannelManager } from "../channels/runtime/manager.js";
+import type { ChannelRuntimeSnapshot } from "../channels/runtime/snapshot.types.js";
 
 export function createMockChannelManager(overrides?: Partial<ChannelManager>): ChannelManager {
   return {

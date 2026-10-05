@@ -1,4 +1,4 @@
-import { settlesWithin } from "../shared/settle-within.js";
+import { settlesWithin } from "../../shared/settle-within.js";
 
 export async function waitForChannelStopGracefully(
   task: Promise<unknown> | undefined,

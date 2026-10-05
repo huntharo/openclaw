@@ -4,7 +4,10 @@ import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 const { requestDiscordMock } = vi.hoisted(() => ({ requestDiscordMock: vi.fn() }));
 
-vi.mock("@openclaw/discord/api.js", () => ({ requestDiscord: requestDiscordMock }));
+vi.mock("openclaw/plugin-sdk/qa-runner-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/qa-runner-runtime")>()),
+  loadQaRunnerChannelApi: () => ({ requestDiscord: requestDiscordMock }),
+}));
 
 import * as testing from "./discord-live.runtime.js";
 import {

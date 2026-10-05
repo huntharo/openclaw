@@ -404,7 +404,7 @@ function shouldNeverBundleDeclarationDependency(id: string): boolean {
   // Keep dependency declarations beside their package modules.
   return (
     shouldNeverBundleDependency(id) ||
-    ["zod", "kysely"].some((name) => id === name || id.startsWith(`${name}/`))
+    ["zod", "kysely", "ipaddr.js"].some((name) => id === name || id.startsWith(`${name}/`))
   );
 }
 

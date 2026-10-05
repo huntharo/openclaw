@@ -2,12 +2,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChannelId } from "../../channels/plugins/index.js";
 import type { ChannelAccountSnapshot } from "../../channels/plugins/types.public.js";
+import type { ChannelManager } from "../../channels/runtime/manager.js";
+import type { ChannelRuntimeSnapshot } from "../../channels/runtime/snapshot.types.js";
 import {
   createAgentDatabaseInspectionRefusal,
   type AgentDatabaseAdmissionRefusal,
 } from "../../state/agent-database-admission.js";
-import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
-import type { ChannelManager } from "../server-channels.js";
 import type { GatewayPluginReloadStatus } from "../server-plugin-runtime-generation.js";
 import { createReadinessChecker } from "./readiness.js";
 

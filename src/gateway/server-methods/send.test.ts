@@ -47,6 +47,7 @@ import {
   createMessageMethodPluginFixtures,
   createMessageMethodTestDriver,
   makeContext,
+  prepareMessageMethodTestHandlers,
 } from "./send.test-support.js";
 import { registerSendUploadPolicyTests } from "./send.upload-policy.test-support.js";
 import type { GatewayRequestContext } from "./types.js";
@@ -297,8 +298,7 @@ describe("gateway send mirroring", () => {
   let registrySeq = 0;
 
   beforeAll(async () => {
-    ({ sendHandlers } = await import("./send.js"));
-    await import("../../infra/outbound/message-action-runner.js");
+    sendHandlers = await prepareMessageMethodTestHandlers();
   });
 
   afterEach(() => {

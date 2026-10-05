@@ -449,7 +449,6 @@ src/gateway/openai-http.ts
 src/gateway/openresponses-http.test.ts
 src/gateway/openresponses-http.ts
 src/gateway/server-channels.test.ts
-src/gateway/server-channels.ts
 src/gateway/server-chat.agent-events.test.ts
 src/gateway/server-chat.ts
 src/gateway/server-close.test.ts
@@ -475,7 +474,6 @@ src/gateway/server-methods/models-auth-status.test.ts
 src/gateway/server-methods/models.test.ts
 src/gateway/server-methods/nodes.invoke-wake.test.ts
 src/gateway/server-methods/send.test.ts
-src/gateway/server-methods/send.ts
 src/gateway/server-methods/server-methods.test.ts
 src/gateway/server-node-events.test.ts
 src/gateway/server-node-events.ts
