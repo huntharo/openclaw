@@ -156,6 +156,47 @@ export const imageLightboxStyles = css`
     font-size: 12px;
   }
 
+  openclaw-modal-dialog.svg-script-notice {
+    --openclaw-modal-width: 480px;
+    --openclaw-modal-max-width: calc(100vw - 24px);
+    --openclaw-modal-max-height: calc(100dvh - 24px);
+  }
+
+  .svg-script-notice-content {
+    padding: 24px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--card);
+    color: var(--text);
+  }
+
+  .svg-script-notice-content h2 {
+    margin: 0 0 12px;
+    font-size: 18px;
+  }
+
+  .svg-script-notice-content p {
+    margin: 0;
+    line-height: 1.6;
+  }
+
+  .svg-script-notice-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  .svg-script-notice-actions .action {
+    color: var(--text);
+    text-shadow: none;
+  }
+
+  .svg-script-notice-actions .svg-run-once {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+
   .svg-search {
     position: fixed;
     z-index: 2;
@@ -315,6 +356,10 @@ export const imageLightboxStyles = css`
 
   .image.zoomed {
     cursor: grab;
+  }
+
+  .image[role="button"]:not(.zoomed) {
+    cursor: default;
   }
 
   .zoom-controls {

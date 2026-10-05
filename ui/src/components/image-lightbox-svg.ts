@@ -21,6 +21,7 @@ type SvgControllerOptions = {
 export class ImageLightboxSvgController {
   private selectedSource?: SvgSource;
   private prepared?: ActiveSvg;
+  private pending?: ActiveSvg;
   private failure?: "document" | "encoding";
   private activated = false;
   private published = false;
@@ -34,6 +35,7 @@ export class ImageLightboxSvgController {
   private term = "";
   private searchFailed = false;
   private searchInput?: HTMLInputElement;
+  private previewPress?: { x: number; y: number };
 
   constructor(private readonly options: SvgControllerOptions) {}
 
@@ -56,6 +58,10 @@ export class ImageLightboxSvgController {
     return this.active !== undefined && !this.activated;
   }
 
+  get confirmationOpen() {
+    return this.pending !== undefined && this.pending.source === this.readSource();
+  }
+
   get error() {
     return this.failure !== undefined && this.selectedSource === this.readSource();
   }
@@ -72,9 +78,42 @@ export class ImageLightboxSvgController {
     return this.searchOpen && this.searchFailed;
   }
 
+  previewPointerDown(event: PointerEvent) {
+    this.previewPress =
+      event.button === 0 && event.isPrimary && event.target instanceof HTMLImageElement
+        ? { x: event.clientX, y: event.clientY }
+        : undefined;
+  }
+
+  cancelPreviewPress() {
+    this.previewPress = undefined;
+  }
+
+  handlePreviewClick = (event: MouseEvent) => {
+    const start = this.previewPress;
+    this.cancelPreviewPress();
+    if (
+      this.available &&
+      (event.detail === 0 ||
+        (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) <= 4))
+    ) {
+      this.toggle();
+    }
+  };
+
+  handlePreviewKeydown = (event: KeyboardEvent) => {
+    if (this.available && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      this.toggle();
+    }
+  };
+
   toggle() {
     if (this.prepared) {
       this.reset();
+      return;
+    }
+    if (this.confirmationOpen) {
       return;
     }
     this.clear();
@@ -94,13 +133,27 @@ export class ImageLightboxSvgController {
       if (document.length > MAX_INTERACTIVE_SVG_DOCUMENT_LENGTH) {
         throw new Error("Interactive SVG document exceeds the viewer limit");
       }
-      this.prepared = { source, document, scheme };
-      window.addEventListener("message", this.handleMessage);
-      this.listening = true;
-      this.startDeadline();
+      this.pending = { source, document, scheme };
     } catch {
       this.failure = "document";
     }
+    this.options.invalidate();
+  }
+
+  runOnce() {
+    const pending = this.pending;
+    if (!pending) {
+      return;
+    }
+    if (pending.source !== this.readSource()) {
+      this.reset();
+      return;
+    }
+    this.pending = undefined;
+    this.prepared = pending;
+    window.addEventListener("message", this.handleMessage);
+    this.listening = true;
+    this.startDeadline();
     this.options.invalidate();
   }
 
@@ -260,7 +313,9 @@ export class ImageLightboxSvgController {
     }
     this.selectedSource = undefined;
     this.prepared = undefined;
+    this.pending = undefined;
     this.failure = undefined;
+    this.cancelPreviewPress();
     this.activated = false;
     this.published = false;
     this.shellReady = false;
@@ -274,7 +329,8 @@ export class ImageLightboxSvgController {
   }
 
   reset() {
-    const changed = this.prepared !== undefined || this.failure !== undefined;
+    const changed =
+      this.prepared !== undefined || this.pending !== undefined || this.failure !== undefined;
     this.clear();
     if (changed) {
       this.options.invalidate();
@@ -307,6 +363,34 @@ export class ImageLightboxSvgController {
       : this.loading
         ? html`<p class="svg-notice" role="status">${t("chat.imageLightbox.svgLoading")}</p>`
         : nothing;
+  }
+
+  renderConfirmation(runOnce: () => void) {
+    return this.confirmationOpen
+      ? html`<openclaw-modal-dialog
+          class="svg-script-notice"
+          label=${t("chat.imageLightbox.svgNoticeTitle")}
+          description=${t("chat.imageLightbox.svgNoticeBody")}
+          @modal-cancel=${(event: Event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.reset();
+          }}
+        >
+          <section class="svg-script-notice-content">
+            <h2>${t("chat.imageLightbox.svgNoticeTitle")}</h2>
+            <p>${t("chat.imageLightbox.svgNoticeBody")}</p>
+            <div class="svg-script-notice-actions">
+              <button class="action" type="button" autofocus @click=${() => this.reset()}>
+                ${t("common.cancel")}
+              </button>
+              <button class="action svg-run-once" type="button" @click=${runOnce}>
+                ${t("chat.imageLightbox.svgRunOnce")}
+              </button>
+            </div>
+          </section>
+        </openclaw-modal-dialog>`
+      : nothing;
   }
 
   private bindSearchInput = (element?: Element) => {

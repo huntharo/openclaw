@@ -16,10 +16,11 @@ export function interactiveSvgDocument(
   }
 
   const serialized = new XMLSerializer().serializeToString(svg);
+  const rootWidth = interactiveSvgRootWidth(svg);
   return `<!doctype html><html><head>
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-src 'none'">
     <meta name="referrer" content="no-referrer">
-    <style>:root { color-scheme: ${colorScheme}; } html { height: 100%; overflow: auto; } body { display: flex; flex-direction: column; min-height: 100%; margin: 0; } svg { display: block; flex: none; max-width: 100%; height: auto; margin: auto; background: Canvas; }</style>
+    <style>:root { color-scheme: ${colorScheme}; } html { height: 100%; overflow: auto; } body { display: flex; flex-direction: column; min-height: 100%; margin: 0; } body > svg { display: block; flex: none; width: ${rootWidth}; max-width: 100%; margin: auto; background: Canvas; } body > svg[viewBox] { height: auto; }</style>
     <script>
       (function() {
         // SVG viewers update their fragment while searching. Opaque frames cannot replace a URL.
@@ -64,4 +65,34 @@ export function interactiveSvgDocument(
       parent.postMessage("openclaw-svg-active", "*");
     </script>
   </body></html>`;
+}
+
+function interactiveSvgRootWidth(svg: Element): string {
+  // Capture sizing before fluid FlameGraphs remove their root width/viewBox on load.
+  const declared = (svg.getAttribute("width") ?? "").trim();
+  const numeric = /^[+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(declared);
+  const length = Number(declared);
+  const widthStyle = document.createElement("div").style;
+  widthStyle.width = numeric && Number.isFinite(length) ? `${length}px` : declared;
+  if (widthStyle.width) {
+    return widthStyle.width;
+  }
+  const viewBox = (svg.getAttribute("viewBox") ?? "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  const viewWidth = viewBox[2];
+  const viewHeight = viewBox[3];
+  if (
+    viewBox.length === 4 &&
+    viewBox.every(Number.isFinite) &&
+    viewWidth !== undefined &&
+    viewHeight !== undefined &&
+    viewWidth > 0 &&
+    viewHeight > 0 &&
+    Number.isFinite(viewWidth / viewHeight)
+  ) {
+    return `min(100%, calc(100vh * ${viewWidth / viewHeight}))`;
+  }
+  return "100%";
 }

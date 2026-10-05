@@ -7,6 +7,11 @@ const enInteractiveSvg = {
       svgInteract: "Interact with SVG",
       svgPreview: "Show image preview",
       svgLabel: "Isolated SVG: {title}",
+      svgClickHint: "Click to enable SVG interaction",
+      svgNoticeTitle: "Run this SVG’s scripts?",
+      svgNoticeBody:
+        "Run only if you trust this SVG’s source. Its isolated frame cannot access OpenClaw, but can navigate itself and send content it holds to other sites. Scripts may slow or freeze the tab.",
+      svgRunOnce: "Run Once",
       svgInteractionHelp:
         "Run this SVG's scripts and controls in an isolated view. The SVG cannot access OpenClaw or navigate the parent page, but can navigate its own frame.",
       svgInvalid:

@@ -21,9 +21,10 @@ declare global {
   }
 }
 
-const diagram = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450" onload="initialize()">
+const diagram = `<svg xmlns="http://www.w3.org/2000/svg" width="50em" height="450" viewBox="0 0 800 450" onload="initialize()">
   <style>rect { fill: #345477; } rect:hover { fill: #d26a40; } text { font: 24px sans-serif; fill: white; } #control { cursor: pointer; } #status { pointer-events: none; }</style>
   <rect width="800" height="450"/>
+  <svg id="frames" width="1180" height="40" viewBox="0 0 1180 40"><rect width="1180" height="40"/></svg>
   <rect id="control" x="100" y="160" width="600" height="130" rx="20" onclick="zoom()"/>
   <text id="status" x="190" y="232">Click to zoom this region</text>
   <text id="search" x="610" y="50" onclick="search()">Search</text>
@@ -31,6 +32,8 @@ const diagram = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450
   <script><![CDATA[
     var runs = 0;
     function initialize() {
+      document.querySelector("svg").removeAttribute("width");
+      document.querySelector("svg").removeAttribute("viewBox");
       window.addEventListener("pagehide", function(event) { event.stopImmediatePropagation(); }, { capture: true });
       var status = document.getElementById("status");
       status.dataset.runs = String(++runs);
@@ -188,7 +191,43 @@ describe("Control UI scripted SVG attachment through production HTTP owner", () 
       const responsePromise = page.waitForResponse((response) =>
         response.url().endsWith("/operator/ui/__openclaw__/svg-viewer"),
       );
+      const preview = viewer.locator("img");
+      const previewBox = await preview.boundingBox();
+      expect(previewBox).not.toBeNull();
+      if (previewBox) {
+        await page.mouse.move(previewBox.x + 30, previewBox.y + 30);
+        await page.mouse.down();
+        await page.mouse.move(previewBox.x + 60, previewBox.y + 30);
+        await page.mouse.up();
+      }
+      expect(await page.locator(".svg-script-notice").count()).toBe(0);
+      await preview.click();
+      const notice = page.locator("openclaw-modal-dialog.svg-script-notice");
+      await notice.waitFor();
+      expect(await viewer.locator("iframe").count()).toBe(0);
+      const cancel = notice.getByRole("button", { name: "Cancel", exact: true });
+      await expect.poll(() => cancel.evaluate((button) => button.matches(":focus"))).toBe(true);
+      if (proofDir) {
+        await notice.locator("dialog").evaluate(async (dialog) => {
+          await Promise.all(
+            dialog.getAnimations({ subtree: true }).map((animation) => animation.finished),
+          );
+        });
+        await page.screenshot({ path: path.join(proofDir, "script-notice.png") });
+        await page.setViewportSize({ width: 400, height: 800 });
+        await page.screenshot({ path: path.join(proofDir, "mobile-notice.png") });
+        await page.setViewportSize({ width: 1440, height: 900 });
+      }
+      await cancel.click();
+      expect(await viewer.locator("iframe").count()).toBe(0);
+      await viewer.locator("img").focus();
+      await viewer.locator("img").press("Enter");
+      await notice.waitFor();
+      await page.keyboard.press("Escape");
+      await notice.waitFor({ state: "hidden" });
+      expect(await viewer.count()).toBe(1);
       await viewer.getByRole("button", { name: "Interact with SVG" }).click();
+      await notice.getByRole("button", { name: "Run Once", exact: true }).click();
       const viewerResponse = await responsePromise;
       expect(viewerResponse.headers()["content-security-policy"]).toContain(
         "sandbox allow-scripts",
@@ -198,6 +237,15 @@ describe("Control UI scripted SVG attachment through production HTTP owner", () 
       const frame = page.frameLocator("openclaw-image-lightbox iframe.interactive-svg");
       const status = frame.locator("#status");
       await expect.poll(() => status.getAttribute("data-runs")).toBe("1");
+      if (proofDir) {
+        await page.screenshot({ path: path.join(proofDir, "interactive-layout.png") });
+      }
+      const rootSize = await frame.locator("body > svg").boundingBox();
+      expect(rootSize?.width).toBe(800);
+      expect(rootSize?.height).toBe(450);
+      const nestedSize = await frame.locator("#frames").boundingBox();
+      expect(nestedSize?.width).toBe(1180);
+      expect(nestedSize?.height).toBe(40);
       // A second parent document publication cannot remount the one-shot shell.
       await element.evaluate((node) =>
         (node as HTMLIFrameElement).contentWindow?.postMessage(
@@ -235,6 +283,7 @@ describe("Control UI scripted SVG attachment through production HTTP owner", () 
       await viewer.getByRole("button", { name: "Show image preview" }).click();
       expect(await element.count()).toBe(0);
       await viewer.getByRole("button", { name: "Interact with SVG" }).click();
+      await page.getByRole("button", { name: "Run Once", exact: true }).click();
       await expect.poll(() => status.getAttribute("data-runs")).toBe("1");
       await page.evaluate((source) => {
         for (const data of [
@@ -255,6 +304,7 @@ describe("Control UI scripted SVG attachment through production HTTP owner", () 
       await trigger.click();
       expect(await viewer.locator("iframe").count()).toBe(0);
       await viewer.getByRole("button", { name: "Interact with SVG" }).click();
+      await page.getByRole("button", { name: "Run Once", exact: true }).click();
       await expect.poll(() => status.getAttribute("data-runs")).toBe("1");
       expect(
         await page.evaluate(() => document.documentElement.dataset.svgExecuted),
@@ -292,6 +342,7 @@ describe("Control UI scripted SVG attachment through production HTTP owner", () 
       expect(await viewer.count()).toBe(1);
       expect(await search.count()).toBe(0);
       await viewer.getByRole("button", { name: "Interact with SVG" }).click();
+      await page.getByRole("button", { name: "Run Once", exact: true }).click();
       await expect.poll(() => status.getAttribute("data-runs")).toBe("1");
       await viewer.locator('.svg-notice[role="status"]').waitFor({ state: "hidden" });
       await frame.locator("#search").click();
