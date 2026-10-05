@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
@@ -12,7 +13,6 @@ import {
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
 import { restartRunningChannelAccounts } from "./channel-thaw-restart.js";
-import { createChannelManager } from "./server-channels.js";
 import { createTestPlugin } from "./server-channels.test-support.js";
 
 vi.mock("../infra/approval-handler-bootstrap.js", () => ({

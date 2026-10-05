@@ -1859,6 +1859,7 @@
     "lint:no-widen-then-assert": "node scripts/run-oxlint.mjs --openclaw-focused-config --config config/oxlint/boundary-guards.json src extensions packages ui/src",
     "lint:scripts": "pnpm lint:docker-e2e && pnpm lint:tmp:no-raw-http2-imports && node scripts/run-oxlint.mjs --tsconfig config/tsconfig/oxlint.scripts.json scripts",
     "lint:swift": "./scripts/lint-swift.sh",
+    "lint:messaging:architecture": "node --import ./scripts/tsx.mjs scripts/check-messaging-architecture.mts",
     "lint:tmp:channel-agnostic-boundaries": "node --import ./scripts/tsx.mjs scripts/check-channel-agnostic-boundaries.mts",
     "lint:tmp:dynamic-import-warts": "node --import ./scripts/tsx.mjs scripts/check-dynamic-import-warts.mts",
     "lint:tmp:export-name-collisions": "node --import ./scripts/tsx.mjs scripts/check-export-name-collisions.mts",

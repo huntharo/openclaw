@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createTranscriptsTool } from "../agents/tools/transcripts-tool.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import { clearRuntimeConfigSnapshot } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { CronService } from "../cron/service.js";
@@ -30,7 +31,6 @@ import { clearTranscriptCapturesForTest } from "../transcripts/capture.test-supp
 import type { TranscriptStartRequest } from "../transcripts/provider-types.js";
 import { TranscriptsStore } from "../transcripts/store.js";
 import { buildGatewayReloadPlan } from "./config-reload-plan.js";
-import { createChannelManager } from "./server-channels.js";
 import { startGatewayDiscovery } from "./server-discovery-runtime.js";
 import {
   verifyIndependentPostCommitActivation,

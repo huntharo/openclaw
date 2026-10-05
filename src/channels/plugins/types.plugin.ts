@@ -1,4 +1,4 @@
-import type { OperatorScope } from "../../gateway/operator-scopes.js";
+import type { OperatorScope } from "../../../packages/gateway-protocol/src/operator-scopes.js";
 import type { ChannelMessageAdapterShape } from "../message/types.js";
 import type { ChannelSetupPlugin } from "./setup-wizard-types.js";
 import type {

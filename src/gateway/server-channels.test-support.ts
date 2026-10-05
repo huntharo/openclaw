@@ -3,8 +3,8 @@ import type {
   ChannelId,
   ChannelPlugin,
 } from "../channels/plugins/types.public.js";
+import { evaluateChannelHealth } from "../channels/status/health-policy.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
-import { evaluateChannelHealth } from "./channel-health-policy.js";
 
 export type TestAccount = {
   enabled?: boolean;

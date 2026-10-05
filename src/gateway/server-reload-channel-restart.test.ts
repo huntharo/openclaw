@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
+import { createChannelManager, type ChannelManager } from "../channels/runtime/manager.js";
+import { restartGatewayChannels } from "../channels/runtime/reload.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { writeProviderAuthConfig } from "../plugins/provider-auth-config.js";
@@ -17,8 +19,6 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { ChannelKind } from "./config-reload-plan.js";
 import { startGatewayConfigReloader } from "./config-reload.js";
-import { createChannelManager, type ChannelManager } from "./server-channels.js";
-import { restartGatewayChannels } from "./server-reload-channel-restart.js";
 
 async function reloadChannels(
   owner: ChannelManager,

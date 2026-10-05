@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { requestDiscord } from "@openclaw/discord/api.js";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
+const { requestDiscord } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { sleep } from "openclaw/plugin-sdk/runtime-env";
 import { assertLiveScenarioReply as assertDiscordScenarioReply } from "../shared/live-scenario-reply.js";

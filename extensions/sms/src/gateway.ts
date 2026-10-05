@@ -4,7 +4,7 @@ import {
   channelBlockedPatch,
   channelReadyPatch,
   channelStoppedPatch,
-} from "openclaw/plugin-sdk/gateway-runtime";
+} from "openclaw/plugin-sdk/channel-status";
 import { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
 import { createSmsIngressSpool, type SmsIngressLog } from "./ingress-spool.js";
 import { resolveTwilioStatusCallbackUrl } from "./public-webhook-url.js";

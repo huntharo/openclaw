@@ -1,5 +1,5 @@
 import { fanInChannelIngressLifecycles } from "openclaw/plugin-sdk/channel-ingress-runtime";
-import { isLoopbackHost } from "openclaw/plugin-sdk/gateway-runtime";
+import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
 import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { isPrivateNetworkOptInEnabled } from "openclaw/plugin-sdk/ssrf-runtime";
 import {

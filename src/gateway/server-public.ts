@@ -1,11 +1,11 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { AmbientEnvTriggerPolicy } from "../channels/config-presence.js";
+import type { ChannelAutostartSuppression } from "../channels/runtime/manager.js";
 import type { ConfigSnapshotPreparation } from "../config/io.snapshot-preparation.types.js";
 import type { GatewayActiveWorkSnapshot } from "../infra/gateway-active-work.js";
 import type { GatewaySuspendHandoffOwner } from "../infra/gateway-suspend-coordinator.js";
 import type { GatewayRestartEmitter } from "../infra/restart.js";
 import type { GatewayTailscaleIngressEndpoint } from "./ingress-attribution.js";
-import type { ChannelAutostartSuppression } from "./server-channels.js";
 import type { GatewaySidecarStartupMode } from "./server-sidecar-startup-mode.js";
 
 export type GatewayCloseOptions = {

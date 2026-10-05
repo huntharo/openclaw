@@ -186,7 +186,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: createSessionHeaderLink shares plugin-owned conversation navigation (PR #158742).
       // +4: owner-approved replay V2 types on core and plugin-entry (2026-10-01).
       // +7: approved portable model-menu exports and read-only publication capture (2026-10-03).
-      3638,
+      // +4: channel-owned status helpers replace all bundled Gateway-runtime imports.
+      // +1: existing CLI RPC helper for explicit channel setup verification.
+      3643,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -194,7 +196,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: createChannelSecretContract consolidates seven channel secret contracts (approved by Peter, 2026-10-01).
       // +1: createSessionHeaderLink shares plugin-owned conversation navigation (PR #158742).
       // +4: approved pure model-menu functions and read-only publication capture (2026-10-03).
-      2111,
+      // +4: channel-owned status helpers replace all bundled Gateway-runtime imports.
+      // +1: existing CLI RPC helper for explicit channel setup verification.
+      2116,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

@@ -11,7 +11,14 @@ import {
   normalizeIpAddress,
 } from "@openclaw/net-policy/ip";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { parseHostForAddressChecks } from "../../packages/gateway-client/src/client-address-utils.js";
+import {
+  isLoopbackHost,
+  isPrivateOrLoopbackHost,
+} from "../../packages/gateway-client/src/client-address-utils.js";
+export {
+  isLoopbackHost,
+  isPrivateOrLoopbackHost,
+} from "../../packages/gateway-client/src/client-address-utils.js";
 import type { GatewayBindMode } from "../config/types.gateway.js";
 import { isContainerEnvironment } from "../infra/container-environment.js";
 import {
@@ -404,22 +411,6 @@ export function isValidIPv4(host: string): boolean {
   return isCanonicalDottedDecimalIPv4(host);
 }
 
-/**
- * Check if a hostname or IP refers to the local machine.
- * Handles: localhost, 127.x.x.x, ::1, [::1], ::ffff:127.x.x.x
- * Note: 0.0.0.0 and :: are NOT loopback - they bind to all interfaces.
- */
-export function isLoopbackHost(host: string): boolean {
-  const parsed = typeof host === "string" ? parseHostForAddressChecks(host) : null;
-  if (!parsed) {
-    return false;
-  }
-  if (parsed.isLocalhost) {
-    return true;
-  }
-  return isLoopbackAddress(parsed.unbracketedHost);
-}
-
 // Gateway-local policy rejects dotted localhost and intentionally allows any URL scheme.
 export function isLoopbackGatewayUrl(rawUrl: string): boolean {
   try {
@@ -443,38 +434,6 @@ export function isLocalishHost(hostHeader?: string): boolean {
     return false;
   }
   return isLoopbackHost(host) || host.endsWith(".ts.net");
-}
-
-/**
- * Check if a hostname or IP refers to a private or loopback address.
- * Handles the same hostname formats as isLoopbackHost, but also accepts
- * RFC 1918, link-local, CGNAT, and IPv6 ULA/link-local addresses.
- */
-export function isPrivateOrLoopbackHost(host: string): boolean {
-  const parsed = typeof host === "string" ? parseHostForAddressChecks(host) : null;
-  if (!parsed) {
-    return false;
-  }
-  if (parsed.isLocalhost) {
-    return true;
-  }
-  const normalized = normalizeIpAddress(parsed.unbracketedHost);
-  if (!normalized || !isPrivateOrLoopbackAddress(normalized)) {
-    return false;
-  }
-  // isPrivateOrLoopbackAddress reuses SSRF-blocking ranges for IPv6, which
-  // include unspecified (::) and multicast (ff00::/8). Exclude these —
-  // they are not private/loopback unicast endpoints. (Multicast is UDP-only
-  // so TCP/WebSocket connections would fail regardless.)
-  if (net.isIP(normalized) === 6) {
-    if (normalized.startsWith("ff")) {
-      return false;
-    }
-    if (normalized === "::") {
-      return false;
-    }
-  }
-  return true;
 }
 
 /**

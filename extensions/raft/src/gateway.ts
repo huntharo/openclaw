@@ -6,7 +6,7 @@ import type { Socket } from "node:net";
 import process from "node:process";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { keepHttpServerTaskAlive, waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
-import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createChannelReplayGuard } from "openclaw/plugin-sdk/persistent-dedupe";
 import { killProcessTree } from "openclaw/plugin-sdk/process-runtime";

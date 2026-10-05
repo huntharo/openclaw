@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChannelManager } from "./server-channels.js";
+import type { ChannelManager } from "../channels/runtime/manager.js";
 import {
   AUTH_NONE,
   createRequest,

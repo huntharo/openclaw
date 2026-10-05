@@ -1,6 +1,6 @@
 // Gateway channel runtime snapshot types.
 // Exposes read-only channel/account state to status and server-method surfaces.
-import type { ChannelId, ChannelAccountSnapshot } from "../channels/plugins/types.public.js";
+import type { ChannelId, ChannelAccountSnapshot } from "../plugins/types.public.js";
 
 export type ChannelRuntimeSnapshotOptions = {
   channelId?: ChannelId;

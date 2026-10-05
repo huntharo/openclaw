@@ -1,3 +1,7 @@
+import type {
+  ChannelAutostartSuppression,
+  createChannelManager,
+} from "../channels/runtime/manager.js";
 // Owns serialized secrets snapshot replacement and dependent runtime lifecycle recovery.
 import {
   getRuntimeConfigSnapshot,
@@ -21,7 +25,6 @@ import {
   type ChannelKind,
   type GatewayReloadPlan,
 } from "./config-reload-plan.js";
-import type { ChannelAutostartSuppression, createChannelManager } from "./server-channels.js";
 import { refreshModelRuntimeAfterHotReload } from "./server-reload-model-runtime-scope.js";
 import {
   disconnectStaleSharedGatewayAuthClients,

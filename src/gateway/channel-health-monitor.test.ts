@@ -5,6 +5,7 @@ import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coerci
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { ChannelId, ChannelAccountSnapshot } from "../channels/plugins/types.public.js";
+import type { ChannelManager } from "../channels/runtime/manager.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
@@ -15,7 +16,6 @@ import {
   createSnapshotManager,
   snapshotWith,
 } from "./channel-health-monitor.test-support.js";
-import type { ChannelManager } from "./server-channels.js";
 
 const DEFAULT_CHECK_INTERVAL_MS = 5_000;
 let clock: ReturnType<typeof createGatewaySchedulerClock>;

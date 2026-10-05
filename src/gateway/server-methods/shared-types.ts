@@ -11,6 +11,12 @@ import type {
   RequestFrame,
 } from "../../../packages/gateway-protocol/src/schema/frames.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
+import type {
+  ChannelAccountStartOutcome,
+  ChannelRuntimeSnapshot,
+  ChannelRuntimeSnapshotOptions,
+  StartChannelOptions,
+} from "../../channels/runtime/snapshot.types.js";
 import type { CliDeps } from "../../cli/deps.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { AgentRunDelegatedAuthority } from "../../infra/agent-run-authority.types.js";
@@ -51,12 +57,6 @@ import type {
   GatewayBroadcastOpts,
   GatewayBroadcastToConnIdsFn,
 } from "../server-broadcast-types.js";
-import type {
-  ChannelAccountStartOutcome,
-  ChannelRuntimeSnapshot,
-  ChannelRuntimeSnapshotOptions,
-  StartChannelOptions,
-} from "../server-channel-runtime.types.js";
 import type {
   ChatRunEntry,
   ChatRunRegistration,

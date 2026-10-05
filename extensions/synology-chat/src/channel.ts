@@ -16,12 +16,12 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { createTextPairingAdapter } from "openclaw/plugin-sdk/channel-pairing";
 import { createConditionalWarningCollector } from "openclaw/plugin-sdk/channel-policy";
-import { createEmptyChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import {
   channelBlockedPatch,
   channelReadyPatch,
   channelStoppedPatch,
-} from "openclaw/plugin-sdk/gateway-runtime";
+} from "openclaw/plugin-sdk/channel-status";
+import { createEmptyChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
 import {
   createComputedAccountStatusAdapter,

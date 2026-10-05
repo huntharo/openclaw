@@ -2,9 +2,9 @@ import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
 import { attachChannelToResult } from "openclaw/plugin-sdk/channel-send-result";
+import { channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import { computeBackoff, sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { sendBuzzTextOneShot, startBuzzBus, type BuzzBus } from "./buzz-bus.js";

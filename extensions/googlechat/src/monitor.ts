@@ -6,8 +6,8 @@ import {
   toInboundMediaFactsWithMetadata,
   type ChannelInboundMediaInput,
 } from "openclaw/plugin-sdk/channel-inbound";
+import { channelBlockedPatch, channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { channelBlockedPatch, channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { MediaFetchError } from "openclaw/plugin-sdk/media-runtime";
 import { parseDateStringTimestampMs as resolveGoogleChatTimestampMs } from "openclaw/plugin-sdk/number-runtime";
 import { mergePairLoopGuardConfig } from "openclaw/plugin-sdk/pair-loop-guard-runtime";

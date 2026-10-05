@@ -1,5 +1,5 @@
+import { channelBlockedPatch, channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
-import { channelBlockedPatch, channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import {
   asOptionalRecord as asRecord,
   normalizeOptionalString,

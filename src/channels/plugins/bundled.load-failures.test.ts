@@ -61,7 +61,10 @@ module.exports = {
   id: "telegram", meta: { id: "telegram", label: "Telegram" },
   capabilities: { chatTypes: ["direct"] },
   config: { listAccountIds() { return ["default"]; }, resolveAccount() { return {}; } },
-  outbound: { sendText() {}, presentationCapabilities: { supported: true, buttons: true, modelPicker: true } }
+  outbound: { sendText() {}, async sendPoll({poll}) {
+    require("node:fs").appendFileSync(${JSON.stringify(evaluationsPath)}, "poll:" + poll.question + "\\n");
+    return { channel: "telegram", messageId: "fixture-poll", chatId: "fixture-chat" };
+  }, presentationCapabilities: { supported: true, buttons: true, modelPicker: true } }
 };`,
   );
   fs.writeFileSync(
@@ -96,6 +99,7 @@ exports.configured = ({env}) => Boolean(env.TELEGRAM_BOT_TOKEN);`,
     await import("../../infra/outbound/channel-resolution.js");
   const { buildCommandsMessagePaginated } =
     await import("../../auto-reply/command-status-builders.js");
+  const { sendHandlers } = await import("../../gateway/server-methods/send.js");
   const cfg = {
     channels: { telegram: { enabled: false } },
     plugins: { entries: { telegram: { enabled: false } } },
@@ -168,14 +172,49 @@ exports.configured = ({env}) => Boolean(env.TELEGRAM_BOT_TOKEN);`,
   }
   try {
     expect(getRuntimeVisibleChannelPlugin("telegram")).toBeUndefined();
-    withPluginRuntimeRegistryScope(registry, () => {
+    await withPluginRuntimeRegistryScope(registry, async () => {
       expect(getRuntimeVisibleChannelPlugin("telegram")).toBe(plugin);
       expect(resolveOutboundChannelPlugin({ channel: "telegram", cfg: enabled })).toBe(plugin);
+      const { makeContext } = await import("../../gateway/server-methods/send.test-support.js");
+      const context = makeContext();
+      context.getRuntimeConfig = () => enabled;
+      const respond = vi.fn();
+      const poll = sendHandlers.poll;
+      if (!poll) {
+        throw new Error("Gateway poll entry is missing");
+      }
+      await poll({
+        params: JSON.parse(
+          JSON.stringify({
+            channel: "telegram",
+            to: "fixture-chat",
+            question: "Selected provider?",
+            options: ["Yes", "No"],
+            idempotencyKey: "messaging-bus-poll",
+          }),
+        ),
+        respond,
+        context,
+        client: null,
+        isWebchatConnect: () => false,
+        req: { type: "req", id: "bus-poll", method: "poll" },
+      });
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({
+          channel: "telegram",
+          messageId: "fixture-poll",
+        }),
+        undefined,
+        { channel: "telegram" },
+      );
     });
   } finally {
     await disposePluginRegistryInstances(registry);
   }
-  expect(fs.readFileSync(evaluationsPath, "utf8")).toBe("entry\nimplementation\n");
+  expect(fs.readFileSync(evaluationsPath, "utf8")).toBe(
+    "entry\nimplementation\npoll:Selected provider?\n",
+  );
 });
 
 it("does not reevaluate a bundled source entry after an initialization error", async () => {

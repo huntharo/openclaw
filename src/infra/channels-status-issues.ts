@@ -11,7 +11,7 @@ import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
   DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
   evaluateChannelHealth,
-} from "../gateway/channel-health-policy.js";
+} from "../channels/status/health-policy.js";
 
 function resolveIssueAccountId(account: ChannelAccountSnapshot): string {
   return typeof account.accountId === "string" && account.accountId.trim()

@@ -2,8 +2,8 @@ import { resolveHumanDelayConfig } from "openclaw/plugin-sdk/agent-runtime";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import { hasFinalInboundReplyDispatch } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveChannelStreamingBlockEnabled } from "openclaw/plugin-sdk/channel-outbound";
+import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/channel-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import {
   danger,
   logVerbose,

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChannelIngressMonitor } from "../channels/message/ingress-monitor.js";
 import type { ChannelGatewayContext } from "../channels/plugins/types.adapters.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
+import { createChannelManager, type ChannelManager } from "../channels/runtime/manager.js";
 import { collectChannelStatusIssues } from "../infra/channels-status-issues.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { createEmptyPluginRegistry, createPluginRegistry } from "../plugins/registry.js";
@@ -13,7 +14,6 @@ import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
-import { createChannelManager, type ChannelManager } from "./server-channels.js";
 
 describe("channel startup trust refusal", () => {
   let previousRegistry: ReturnType<typeof getActivePluginRegistry>;

@@ -1,3 +1,26 @@
+import { loadQaRuntimeModule } from "../channels/testing/qa-runtime.js";
+export { loadQaRuntimeModule, isQaRuntimeAvailable } from "../channels/testing/qa-runtime.js";
+export {
+  loadQaRunnerChannelApi,
+  loadQaRunnerBundledPluginTestApi,
+} from "../channels/testing/provider-api.js";
+export {
+  buildQaTarget,
+  createQaBusThread,
+  deleteQaBusMessage,
+  editQaBusMessage,
+  getQaBusState,
+  injectQaBusInboundMessage,
+  normalizeQaTarget,
+  parseQaTarget,
+  pollQaBus,
+  qaChannelPlugin,
+  reactToQaBusMessage,
+  readQaBusMessage,
+  searchQaBusMessages,
+  sendQaBusMessage,
+  setQaChannelRuntime,
+} from "../channels/testing/qa-channel.js";
 import type { Command } from "commander";
 import { loadBundledPluginManifestRegistry } from "../plugins/manifest-registry-build.js";
 import { loadPluginManifestRegistryCore } from "../plugins/manifest-registry.js";
@@ -453,7 +476,7 @@ type QaRunnerSurface = {
 const QA_RUNNER_API_ARTIFACT_BASENAME = "qa-runner-api.js";
 const LEGACY_QA_RUNNER_API_ARTIFACT_BASENAME = "runtime-api.js";
 
-type QaRuntimeSurface = {
+export type QaRuntimeSurface = {
   defaultQaRuntimeModelForMode: (
     mode: string,
     options?: {
@@ -486,51 +509,6 @@ export type QaRunnerCliContribution =
       description?: string;
       status: "blocked";
     };
-
-function isMissingQaRuntimeError(error: unknown) {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  return (
-    error.message.includes("qa-lab") &&
-    (error.message.includes("runtime-api.js") ||
-      error.message.startsWith("Unable to open bundled plugin public surface "))
-  );
-}
-
-/** Load the private QA Lab runtime facade used by QA runner commands. */
-export function loadQaRuntimeModule(): QaRuntimeSurface {
-  const env = resolvePrivateQaBundledPluginsEnv();
-  return loadBundledPluginPublicSurfaceModuleSync<QaRuntimeSurface>({
-    dirName: ["qa", "lab"].join("-"),
-    artifactBasename: ["runtime-api", "js"].join("."),
-    ...(env ? { env } : {}),
-  });
-}
-
-/** Load a bundled QA runner plugin test API facade by plugin id. */
-// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- QA runtime loader uses caller-supplied test API surface type.
-export function loadQaRunnerBundledPluginTestApi<T extends object>(pluginId: string): T {
-  const env = resolvePrivateQaBundledPluginsEnv();
-  return loadBundledPluginPublicSurfaceModuleSync<T>({
-    dirName: pluginId,
-    artifactBasename: "test-api.js",
-    ...(env ? { env } : {}),
-  });
-}
-
-/** Returns whether the private QA Lab runtime facade is available in this build. */
-export function isQaRuntimeAvailable(): boolean {
-  try {
-    loadQaRuntimeModule();
-    return true;
-  } catch (error) {
-    if (isMissingQaRuntimeError(error)) {
-      return false;
-    }
-    throw error;
-  }
-}
 
 /** Run a plugin-owned transport adapter through QA Lab's shared suite host. */
 export async function runLiveTransportQaSuiteCommand(params: LiveTransportQaSuiteCommandOptions) {

@@ -1,8 +1,10 @@
-import {
-  startWhatsAppQaDriverSession,
-  type WhatsAppQaDriverObservedMessage,
-  type WhatsAppQaDriverSession,
+import type {
+  WhatsAppQaDriverObservedMessage,
+  WhatsAppQaDriverSession,
 } from "@openclaw/whatsapp/api.js";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
+const { startWhatsAppQaDriverSession } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/whatsapp/api.js")>("whatsapp");
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { WhatsAppQaMessageScenarioContext } from "./whatsapp-live.contracts.js";
 import {

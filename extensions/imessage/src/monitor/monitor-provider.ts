@@ -24,13 +24,13 @@ import {
   resolveChannelGroupsConfigPath,
 } from "openclaw/plugin-sdk/channel-policy";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
+import { channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import {
   ensureConfiguredBindingRouteReady,
   readChannelAllowFromStore,
   upsertChannelPairingRequest,
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { redactIdentifier } from "openclaw/plugin-sdk/logging-core";
 import { isInboundPathAllowed, kindFromMime } from "openclaw/plugin-sdk/media-runtime";
 import { resolvePromptHistoryLimit } from "openclaw/plugin-sdk/number-runtime";

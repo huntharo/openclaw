@@ -1,5 +1,5 @@
+import type { GatewayRequestHandlerOptions } from "openclaw/plugin-sdk/core";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import type { GatewayRequestHandlerOptions } from "openclaw/plugin-sdk/gateway-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 

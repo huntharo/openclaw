@@ -6,13 +6,13 @@ import type {
   ChannelAccountSnapshot,
   ChannelId,
 } from "../../../../src/channels/plugins/types.public.js";
-import { startChannelHealthMonitor } from "../../../../src/gateway/channel-health-monitor.js";
+import type { ChannelManager } from "../../../../src/channels/runtime/manager.js";
+import type { ChannelRuntimeSnapshot } from "../../../../src/channels/runtime/snapshot.types.js";
 import {
   evaluateChannelHealth,
   type ChannelHealthPolicy,
-} from "../../../../src/gateway/channel-health-policy.js";
-import type { ChannelRuntimeSnapshot } from "../../../../src/gateway/server-channel-runtime.types.js";
-import type { ChannelManager } from "../../../../src/gateway/server-channels.js";
+} from "../../../../src/channels/status/health-policy.js";
+import { startChannelHealthMonitor } from "../../../../src/gateway/channel-health-monitor.js";
 import { GatewayScheduler } from "../../../../src/infra/gateway-scheduler.js";
 import { resetLogger, setLoggerOverride } from "../../../../src/logging/logger.js";
 import { createDiagnosticLogRecordCapture } from "../../../../src/logging/test-helpers/diagnostic-log-capture.js";

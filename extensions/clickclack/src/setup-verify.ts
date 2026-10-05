@@ -121,7 +121,7 @@ function isGatewayNotRunningError(error: unknown): boolean {
 
 async function probeClickClackGatewayStatus(): Promise<ClickClackGatewayStatus> {
   try {
-    const { callGatewayFromCli } = await import("openclaw/plugin-sdk/gateway-runtime");
+    const { callGatewayFromCli } = await import("openclaw/plugin-sdk/setup-runtime");
     await callGatewayFromCli("health", { timeout: "1000", json: true }, undefined, {
       expectFinal: false,
       progress: false,

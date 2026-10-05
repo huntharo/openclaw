@@ -3,6 +3,7 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { expect, vi } from "vitest";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import { setRuntimeConfigSnapshot } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger, type SubsystemLogger } from "../logging/subsystem.js";
@@ -33,7 +34,6 @@ import { setActiveDegradedSecretOwners } from "../secrets/runtime-degraded-state
 import { createDeferredCore } from "../shared/deferred.js";
 import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
-import { createChannelManager } from "./server-channels.js";
 import { reloadGatewayPlugins } from "./server-plugin-reload.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
 import { GatewayRequestEntryLifetime } from "./server-request-entry.js";
