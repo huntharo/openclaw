@@ -59,7 +59,7 @@ export async function collectMessagingArchitectureViolations(
   )
     .map((file) => normalizeRepoPath(root, file))
     .filter((file) => !testPath.test(file) && !generated.has(file))
-    .sort();
+    .toSorted();
   using parser = createNativeTypeScriptParser({ cwd: root });
   using graph = createRuntimeImportGraph(root, files, {
     sourceImports: true,
@@ -107,7 +107,7 @@ export async function collectMessagingArchitectureViolations(
       }
     }
   }
-  return violations.sort(
+  return violations.toSorted(
     (left, right) =>
       left.file.localeCompare(right.file) ||
       left.line - right.line ||

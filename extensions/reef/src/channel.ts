@@ -4,8 +4,7 @@ import {
   recordChannelBotPairLoopAndCheckSuppression,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
-import { PAIRING_APPROVED_MESSAGE } from "openclaw/plugin-sdk/channel-status";
-import { channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
+import { PAIRING_APPROVED_MESSAGE, channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import {
   buildChannelConfigSchema,
   buildChannelOutboundSessionRoute,
