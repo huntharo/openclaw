@@ -16,6 +16,41 @@ platform: DM security, pairing, reply threading, and outbound messaging.
   first for package structure and manifest setup.
 </Info>
 
+## Messaging boundary
+
+The Gateway sends the existing JSON request vocabulary through
+`src/channels/message/bus.ts`: send, poll, message actions, channel status and
+account control, login, and pairing. The bus lazily imports the selected
+operation. `src/channels/runtime` owns channel account startup, teardown,
+retry, route handoff, and status snapshots. Gateway request authority and
+lifetime stay in the host invocation; they are not serialized into messages
+or reconstructed from a channel id.
+
+Providers implement the existing `ChannelPlugin` adapters. The messaging
+subsystem translates requests into those adapters, so there is one adapter
+contract for bundled and installed providers. This is an in-process bus; it
+does not add an IPC transport, persistence, or a second provider registry.
+The existing plugin admission owner still selects configured, enabled channel
+owners before module evaluation. A disabled or unregistered provider is not
+materialized by ordinary discovery, formatting, command, or dispatch reads.
+Explicit installation, setup, migration, and activation keep their separate
+admission paths.
+
+UI and Gateway code must not import channel provider implementations. Channel
+providers must not import UI or Gateway implementations, or another provider's
+private source. Consume narrow `openclaw/plugin-sdk/*` contracts instead.
+Account monitors import `channelBlockedPatch`, `channelReadyPatch`,
+`channelStoppedPatch`, and `createTransportActivityStatusPatch` from
+`openclaw/plugin-sdk/channel-status`. The earlier `gateway-runtime` exports
+remain available for external plugin compatibility, but bundled providers use
+the channel-owned surface. SDK host services remain explicit capabilities;
+this boundary does not promise that every transitive SDK dependency is
+host-independent.
+
+Post-setup verification can use `callGatewayFromCli` from
+`openclaw/plugin-sdk/setup-runtime`. It retains the existing lazy CLI RPC
+transport and authentication; importing setup contracts does not start a Gateway.
+
 ## What your plugin owns
 
 Channel plugins do not implement send/edit/react tools; core provides one

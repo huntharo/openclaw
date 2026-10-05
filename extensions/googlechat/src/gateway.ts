@@ -5,8 +5,8 @@ import {
   runPassiveAccountLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
+import { channelBlockedPatch } from "openclaw/plugin-sdk/channel-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { channelBlockedPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { createLazyRuntimeNamedExport } from "openclaw/plugin-sdk/lazy-runtime";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";

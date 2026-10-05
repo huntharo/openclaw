@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   workspaces: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/setup-runtime", () => ({
   callGatewayFromCli: mocks.callGatewayFromCli,
 }));
 

@@ -20,7 +20,7 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { CallGatewayOptions } from "../call.js";
-import { createChannelManager } from "../server-channels.js";
+import { createChannelManager } from "../../channels/runtime/manager.js";
 import { requireGatewayRecord } from "../test-helpers.assertions.js";
 import {
   channelAccounts,

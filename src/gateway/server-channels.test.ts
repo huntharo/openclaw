@@ -49,10 +49,10 @@ import {
   channelBlockedPatch,
   channelReadyPatch,
   createTransportActivityStatusPatch,
-} from "./channel-status-patches.js";
+} from "../channels/status/patches.js";
 import { restartRunningChannelAccounts } from "./channel-thaw-restart.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
-import { createChannelManager, type ChannelManager } from "./server-channels.js";
+import { createChannelManager, type ChannelManager } from "../channels/runtime/manager.js";
 import { registerChannelAutostartRecoveryTests } from "./server-channels.recovery.test-support.js";
 import {
   createTestPlugin,

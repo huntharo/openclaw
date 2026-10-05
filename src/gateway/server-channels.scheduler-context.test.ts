@@ -25,7 +25,7 @@ import {
   readOperatorToolGatewayAuthority,
   runWithOperatorToolGatewayAuthority,
 } from "./operator-tool-gateway-authority.js";
-import { createChannelManager } from "./server-channels.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import { createTestPlugin, type TestAccount } from "./server-channels.test-support.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import { createGatewayRequestContext } from "./server-request-context.js";

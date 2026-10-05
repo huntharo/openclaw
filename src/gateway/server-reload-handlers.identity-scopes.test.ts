@@ -12,6 +12,7 @@ import {
 import { clearFinishedSessionsForScopes } from "../agents/bash-process-registry.js";
 import { runExecProcess, type ExecProcessHandle } from "../agents/bash-tools.exec-runtime.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -36,7 +37,6 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { captureGatewayAuthPolicy } from "./auth-policy.js";
 import { resolveGatewayAuthForConfig } from "./auth-resolve.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
-import { createChannelManager } from "./server-channels.js";
 import { readGatewayRequestMutationAuthority } from "./server-methods/session-mutation-guards.js";
 import { createContext as createGatewayTestContext } from "./server-plugin-in-process-dispatch.test-support.js";
 import {

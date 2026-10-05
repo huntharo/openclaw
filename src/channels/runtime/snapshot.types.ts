@@ -1,4 +1,4 @@
-import type { ChannelId, ChannelAccountSnapshot } from "../channels/plugins/types.public.js";
+import type { ChannelId, ChannelAccountSnapshot } from "../plugins/types.public.js";
 
 export type ChannelRuntimeSnapshotOptions = {
   channelId?: ChannelId;

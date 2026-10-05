@@ -1,4 +1,4 @@
-import { createTransportActivityStatusPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { createTransportActivityStatusPatch } from "openclaw/plugin-sdk/channel-status";
 import { asDateTimestampMs, parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { danger, sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";

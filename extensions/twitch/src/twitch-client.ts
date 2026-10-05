@@ -5,10 +5,10 @@ import {
   createChannelPartialDeliveryError,
   isChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
+import { channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { captureEffectAuthority } from "openclaw/plugin-sdk/fetch-runtime";
-import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { TWITCH_CHAT_MESSAGE_LIMIT } from "./constants.js";

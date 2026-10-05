@@ -17,8 +17,8 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { ChannelKind } from "./config-reload-plan.js";
 import { startGatewayConfigReloader } from "./config-reload.js";
-import { createChannelManager, type ChannelManager } from "./server-channels.js";
-import { restartGatewayChannels } from "./server-reload-channel-restart.js";
+import { createChannelManager, type ChannelManager } from "../channels/runtime/manager.js";
+import { restartGatewayChannels } from "../channels/runtime/reload.js";
 
 async function reloadChannels(
   owner: ChannelManager,

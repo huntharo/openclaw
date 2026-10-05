@@ -1,6 +1,8 @@
 /**
  * Runtime SDK subpath for channel setup wizards, prompts, and allowlist helpers.
  */
+// Setup verification uses the existing lazy, authenticated CLI RPC owner.
+export { callGatewayFromCli } from "../cli/gateway-rpc.js";
 export type { OpenClawConfig } from "../config/config.js";
 export type { WizardPrompter } from "../wizard/prompts.js";
 export { createClackPrompter } from "../wizard/clack-prompter.js";

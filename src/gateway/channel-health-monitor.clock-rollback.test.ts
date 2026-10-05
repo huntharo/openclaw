@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelAccountSnapshot } from "../channels/plugins/types.public.js";
+import type { ChannelManager } from "../channels/runtime/manager.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
-import type { ChannelManager } from "./server-channels.js";
 
 const STARTED_AT = 1_000_000;
 const CHECK_INTERVAL_MS = 1_000;

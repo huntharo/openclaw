@@ -8,7 +8,7 @@ import {
   channelStoppedPatch,
   createConnectedChannelStatusPatch,
   createTransportActivityStatusPatch,
-} from "./channel-status-patches.js";
+} from "../channels/status/patches.js";
 
 describe("createConnectedChannelStatusPatch", () => {
   it("uses one timestamp for connected event-liveness state", () => {

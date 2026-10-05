@@ -1,7 +1,7 @@
 // Host-thaw channel restart over the public ChannelManager surface.
 import type { ChannelId } from "../channels/plugins/index.js";
+import type { ChannelManager } from "../channels/runtime/manager.js";
 import { dedupeByKey } from "../shared/dedupe-by-key.js";
-import type { ChannelManager } from "./server-channels.js";
 
 type ThawRestartManager = Pick<
   ChannelManager,
