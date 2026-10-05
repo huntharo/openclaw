@@ -19,9 +19,9 @@ import { createPairingPrefixStripper } from "openclaw/plugin-sdk/channel-pairing
 import {
   PAIRING_APPROVED_MESSAGE,
   buildTokenChannelStatusSummary,
+  channelBlockedPatch,
   projectCredentialSnapshotFields,
 } from "openclaw/plugin-sdk/channel-status";
-import { channelBlockedPatch } from "openclaw/plugin-sdk/channel-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";

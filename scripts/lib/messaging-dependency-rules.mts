@@ -18,7 +18,7 @@ export const MESSAGING_TEST_PATH =
 export const MESSAGING_SOURCE_ROOTS = ["src", "ui", "apps", "extensions", "packages"];
 
 /** Discover every messaging plugin, including source-only and private QA plugins. */
-export function collectMessagingProviders(repoRoot: string) {
+function collectMessagingProviders(repoRoot: string) {
   return collectPluginSourceEntries(repoRoot)
     .filter(
       ({ manifest, packageJson }) =>

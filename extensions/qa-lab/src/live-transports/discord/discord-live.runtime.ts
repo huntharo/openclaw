@@ -2,12 +2,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
-const { DiscordApiError, handleDiscordMessageAction } =
-  loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
 import { sleep } from "openclaw/plugin-sdk/runtime-env";
 import { writeExternalFileWithinRoot } from "openclaw/plugin-sdk/security-runtime";
 import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -18,7 +16,6 @@ import { isTruthyOptIn } from "../../mantis-options.runtime.js";
 import { readLiveQaChannelAccounts } from "../shared/live-channel-status.js";
 import { requireLiveQaEnv } from "../shared/live-credential-env.js";
 import { requestDiscord, withRegisteredDiscordQaApiBase } from "./discord-live.endpoint.js";
-export { registerDiscordQaApiBase } from "./discord-live.endpoint.js";
 import {
   buildDiscordWebMessageUrl,
   collectSeenReactionSequence,
@@ -32,6 +29,10 @@ import {
   type DiscordUser,
 } from "./discord-live.evidence.js";
 import type { DiscordTranscriptsVoiceAuthorizationRun } from "./discord-transcripts-authorization.types.js";
+
+export { registerDiscordQaApiBase } from "./discord-live.endpoint.js";
+const { DiscordApiError, handleDiscordMessageAction } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
 
 export type DiscordQaRuntimeEnv = z.infer<typeof discordQaCredentialPayloadSchema>;
 

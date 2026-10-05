@@ -1,7 +1,8 @@
 import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+
 const { requestDiscord: requestDiscordLive } =
   loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 
 const DISCORD_PUBLIC_API_BASE = "https://discord.com/api/v10";
 
@@ -23,7 +24,7 @@ function requestInitFromDiscordQaRequest(request: Request): DiscordQaRequestInit
   };
 }
 
-export function createDiscordQaEndpointFetcher(apiBaseUrl: string): typeof fetch {
+function createDiscordQaEndpointFetcher(apiBaseUrl: string): typeof fetch {
   const base = new URL(apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`);
   return async (input, init) => {
     const request = new Request(input, init);
