@@ -70,18 +70,29 @@ const commandResult = (value = "", code = 0) => ({
 
 const getOrCreatePromise = lazyPromise.getOrCreatePromise;
 
-function observeSharedReadAdmission() {
+function observeSharedCredentialAdmission() {
   const joined = createDeferred();
   vi.spyOn(lazyPromise, "getOrCreatePromise").mockImplementation((cache, key, create, options) => {
     const pending = cache.get(key);
     const shared = getOrCreatePromise(cache, key, create, options);
-    // Credential verification precedes filesystem awaits; wait for actual singleflight admission.
+    // Native credential lookup has its own singleflight while the Actions owner is shared.
     if (pending === shared) {
       joined.resolve();
     }
     return shared;
   });
   return joined.promise;
+}
+
+function observeActionsReadIngress() {
+  const entered = createDeferred();
+  const fetchGitHubApi = gitHubPublicApi.fetchGitHubApi;
+  vi.spyOn(gitHubPublicApi, "fetchGitHubApi").mockImplementation((...args) => {
+    const pending = fetchGitHubApi(...args);
+    entered.resolve();
+    return pending;
+  });
+  return entered.promise;
 }
 
 describe("board authenticated GitHub Actions", () => {
@@ -180,11 +191,12 @@ describe("board authenticated GitHub Actions", () => {
       harness?: ReturnType<typeof createBoardHarness>;
       name?: string;
       agentId?: string;
+      sessionKey?: string;
     } = {},
   ) {
     const harness = options.harness ?? createGitHubBoardHarness();
     const name = options.name ?? "runs";
-    const sessionKey = boardSessionKey(options.agentId);
+    const sessionKey = options.sessionKey ?? boardSessionKey(options.agentId);
     const saved = await harness.invoke("board.widget.put", {
       sessionKey,
       name,
@@ -500,7 +512,7 @@ describe("board authenticated GitHub Actions", () => {
     expect(actionCalls()).toHaveLength(0);
   });
 
-  it("coalesces successful reads and scopes cache entries to filters and current credentials", async () => {
+  it("shares Actions facts across board sessions while filters and credentials stay separate", async () => {
     const started = createDeferred();
     const release = createDeferred();
     actions = async () => {
@@ -508,9 +520,10 @@ describe("board authenticated GitHub Actions", () => {
       await release.promise;
       return json(result);
     };
-    const { read } = await reader();
+    const { read, harness } = await reader();
+    const other = await reader({ harness, sessionKey: `agent:main:other-runs-${caseNumber}` });
     const first = read();
-    const second = read();
+    const second = other.read();
     await started.promise;
     release.resolve();
     expect((await first).mock.calls[0]).toEqual([true, result]);
@@ -538,7 +551,7 @@ describe("board authenticated GitHub Actions", () => {
     });
     const freshGateway = await reader();
     await freshGateway.read();
-    expect(actionCalls()).toHaveLength(4);
+    expect(actionCalls()).toHaveLength(3);
   });
 
   it.each(["session ownership", "token"] as const)(
@@ -577,7 +590,7 @@ describe("board authenticated GitHub Actions", () => {
     };
     const leaderRead = leader.read();
     await started.promise;
-    const joined = observeSharedReadAdmission();
+    const joined = observeActionsReadIngress();
     const followerRead = follower.read();
     await joined;
     await leader.invoke("board.update", {
@@ -629,7 +642,7 @@ describe("board authenticated GitHub Actions", () => {
     };
     const leaderRead = leader.read();
     await started.promise;
-    const joined = observeSharedReadAdmission();
+    const joined = observeActionsReadIngress();
     const followerRead = follower.read();
     await joined;
     await leader.invoke("board.update", {
@@ -651,7 +664,7 @@ describe("board authenticated GitHub Actions", () => {
         ]),
       ).toBe("reading");
       expect((await leaderRead).mock.calls[0]?.[0]).toBe(false);
-      const nativeJoined = observeSharedReadAdmission();
+      const nativeJoined = observeSharedCredentialAdmission();
       const thirdRead = third.read();
       // Native revalidation is shared too; both surviving callers await this lookup.
       expect(

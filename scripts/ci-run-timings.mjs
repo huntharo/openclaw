@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { requireOptionArgument } from "./lib/arg-utils.runtime.mjs";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
+import { createGitHubCommandQuota } from "./lib/github-command-quota.mjs";
 import { parsePositiveInt } from "./lib/numeric-options.mjs";
 import { execPlainGh } from "./lib/plain-gh.mjs";
 
@@ -16,6 +17,15 @@ const TREND_RUNS_MAX_PAGES = 100;
 const DEFAULT_TREND_COMPARE_HOURS = 12;
 const DEFAULT_TREND_DETAIL_RUNS = 100;
 const GH_JSON_RETRY_DELAYS_MS = [1_000, 3_000, 6_000];
+let executeGithubCommand;
+
+function readGh(args) {
+  const { body, error } = executeGithubCommand(args);
+  if (error) {
+    throw error;
+  }
+  return body;
+}
 
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -26,7 +36,7 @@ function parseJsonCommand(args, onAttempt = null) {
   for (let attempt = 0; attempt <= GH_JSON_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
       onAttempt?.();
-      const stdout = execPlainGh(args, { encoding: "utf8" });
+      const stdout = readGh(args);
       return JSON.parse(stdout);
     } catch (error) {
       lastError = error;
@@ -42,9 +52,7 @@ function parseJsonCommand(args, onAttempt = null) {
 }
 
 export function isRetryableGhJsonErrorMessage(message) {
-  return /HTTP 5\d\d|HTTP 429|Server Error|secondary rate limit|abuse detection|ETIMEDOUT|ECONNRESET|EAI_AGAIN/iu.test(
-    message,
-  );
+  return /HTTP 5\d\d|Server Error|ETIMEDOUT|ECONNRESET|EAI_AGAIN/iu.test(message);
 }
 
 function normalizeRunJob(job) {
@@ -106,11 +114,6 @@ function summarizeDistribution(values) {
 
 function summarizeMetric(rows, key) {
   return summarizeDistribution(rows.map((row) => row[key]).filter((value) => value !== null));
-}
-
-function parseRunList(raw) {
-  const parsed = JSON.parse(raw);
-  return Array.isArray(parsed) ? parsed : [];
 }
 
 function collectRunTimingContext(run) {
@@ -184,13 +187,31 @@ export function selectLatestMainPushCiRun(runs, headSha = null) {
   return pushRuns[0] ?? null;
 }
 
+function listCiRuns(limit, event = null) {
+  const repository = process.env.GITHUB_REPOSITORY || "{owner}/{repo}";
+  const pageSize = Math.min(limit, 100);
+  const runs = [];
+  const query = new URLSearchParams({
+    branch: "main",
+    per_page: String(pageSize),
+    ...(event ? { event } : {}),
+  });
+  for (let page = 1; page <= Math.ceil(limit / pageSize); page += 1) {
+    const payload = parseJsonCommand([
+      "api",
+      `repos/${repository}/actions/workflows/ci.yml/runs?${query}&page=${page}`,
+    ]);
+    const pageRuns = Array.isArray(payload.workflow_runs) ? payload.workflow_runs : [];
+    runs.push(...pageRuns.map(normalizeTrendRun));
+    if (pageRuns.length < pageSize || runs.length >= limit) {
+      break;
+    }
+  }
+  return runs.slice(0, limit);
+}
+
 function getLatestCiRunId() {
-  const raw = execPlainGh(
-    ["run", "list", "--branch", "main", "--workflow", "CI", "--limit", "1", "--json", "databaseId"],
-    { encoding: "utf8" },
-  );
-  const runs = JSON.parse(raw);
-  const runId = runs[0]?.databaseId;
+  const runId = listCiRuns(1)[0]?.databaseId;
   if (!runId) {
     throw new Error("No CI runs found on main");
   }
@@ -208,22 +229,7 @@ function getRemoteMainSha() {
 
 function getLatestMainPushCiRunId() {
   const headSha = getRemoteMainSha();
-  const raw = execPlainGh(
-    [
-      "run",
-      "list",
-      "--branch",
-      "main",
-      "--workflow",
-      "CI",
-      "--limit",
-      "20",
-      "--json",
-      "databaseId,headSha,event,status,conclusion",
-    ],
-    { encoding: "utf8" },
-  );
-  const run = selectLatestMainPushCiRun(parseRunList(raw), headSha);
+  const run = selectLatestMainPushCiRun(listCiRuns(20), headSha);
   const databaseId = run?.databaseId;
   if (typeof databaseId !== "string" && typeof databaseId !== "number") {
     throw new Error(`No push CI run found for origin/main ${headSha.slice(0, 10)}`);
@@ -232,24 +238,7 @@ function getLatestMainPushCiRunId() {
 }
 
 function listRecentSuccessfulCiRuns(limit) {
-  const raw = execPlainGh(
-    [
-      "run",
-      "list",
-      "--branch",
-      "main",
-      "--event",
-      "push",
-      "--workflow",
-      "CI",
-      "--limit",
-      String(Math.max(limit * 4, limit)),
-      "--json",
-      "databaseId,headSha,event,status,conclusion",
-    ],
-    { encoding: "utf8" },
-  );
-  return JSON.parse(raw)
+  return listCiRuns(Math.max(limit * 4, limit), "push")
     .filter(
       (run) => run.event === "push" && run.status === "completed" && run.conclusion === "success",
     )
@@ -292,15 +281,10 @@ function loadRunJobs(runId, runAttempt = null) {
 }
 
 function loadRun(runId) {
-  const run = parseJsonCommand([
-    "run",
-    "view",
-    runId,
-    "--json",
-    "status,conclusion,createdAt,updatedAt",
-  ]);
+  const repository = process.env.GITHUB_REPOSITORY || "{owner}/{repo}";
+  const run = parseJsonCommand(["api", `repos/${repository}/actions/runs/${runId}`]);
   return {
-    ...run,
+    ...normalizeTrendRun(run),
     jobs: loadRunJobs(runId).jobs,
   };
 }
@@ -310,6 +294,7 @@ function normalizeTrendRun(run) {
     conclusion: run.conclusion ?? "",
     createdAt: run.createdAt ?? run.created_at ?? null,
     databaseId: run.databaseId ?? run.id,
+    event: run.event ?? "",
     headSha: run.headSha ?? run.head_sha ?? "",
     runAttempt: run.runAttempt ?? run.run_attempt ?? 1,
     status: run.status ?? "",
@@ -1034,5 +1019,8 @@ async function main() {
 }
 
 if (isDirectRunUrl(process.argv[1], import.meta.url)) {
+  executeGithubCommand = await createGitHubCommandQuota({
+    runGh: (args) => execPlainGh(args, { encoding: "utf8" }),
+  });
   await main();
 }

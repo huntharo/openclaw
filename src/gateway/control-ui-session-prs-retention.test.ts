@@ -2,6 +2,8 @@ import { getEventListeners } from "node:events";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runGitWorkerOperation } from "../infra/git-worker.js";
+import { getSharedApiStore } from "../infra/http-api-quota.js";
+import { apiStoreRequestKey } from "../infra/http-api-read-store.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
 import {
@@ -17,6 +19,42 @@ const loadControlUiSessionPullRequests = fixture.load;
 vi.mock("../infra/git-worker.js", () => ({ runGitWorkerOperation: vi.fn() }));
 
 let cacheEpochMs = Date.now();
+
+type WatchedSnapshot = {
+  rateLimited: boolean;
+  pullRequests: unknown[];
+  repository: unknown;
+};
+
+function collectSnapshots(snapshots: Map<string, WatchedSnapshot>) {
+  return (_event: string, payload: unknown) => {
+    if (!isRecord(payload) || !isRecord(payload.sessions)) {
+      throw new Error("invalid subscription event");
+    }
+    for (const [key, snapshot] of Object.entries(payload.sessions)) {
+      if (
+        !isRecord(snapshot) ||
+        typeof snapshot.rateLimited !== "boolean" ||
+        !Array.isArray(snapshot.pullRequests)
+      ) {
+        throw new Error("invalid subscription snapshot");
+      }
+      snapshots.set(key, {
+        rateLimited: snapshot.rateLimited,
+        pullRequests: snapshot.pullRequests,
+        repository: snapshot.repository,
+      });
+    }
+  };
+}
+
+async function rememberBranchPulls(branch: string, fetchImpl: typeof fetch) {
+  const url = `https://api.github.com/repos/openclaw/openclaw/pulls?head=${encodeURIComponent(`openclaw:${branch}`)}&state=all&sort=updated&direction=desc&per_page=5`;
+  await getSharedApiStore({ apiBaseUrl: "https://api.github.com", fetchImpl }).responses.remember(
+    apiStoreRequestKey(url),
+    githubJson([pullListItem({ merged_at: "2026-07-09T10:00:00Z" })]),
+  );
+}
 
 function localGitReads() {
   return vi
@@ -136,40 +174,28 @@ describe("watched session PR retention", () => {
     const fetchImpl = routedFetch([
       {
         match: "/pulls?head=",
-        response: () =>
-          limited
+        response: () => {
+          const response = limited
             ? githubJson({}, 429)
-            : githubJson([pullListItem({ merged_at: "2026-07-09T10:00:00Z" })]),
+            : githubJson([pullListItem({ merged_at: "2026-07-09T10:00:00Z" })]);
+          if (limited) {
+            response.headers.set("Retry-After", "300");
+          }
+          return response;
+        },
       },
     ]);
-    const snapshots = new Map<
-      string,
-      { rateLimited: boolean; pullRequests: unknown[]; repository: unknown }
-    >();
+    const snapshots = new Map<string, WatchedSnapshot>();
     const subscriptions = createControlUiSessionPullRequestSubscriptions({
       scheduler: createTestGatewayScheduler("fake-timers"),
       prepareRead: fixture.prepareRead,
-      broadcastToConnIds: (_event, payload) => {
-        if (!isRecord(payload) || !isRecord(payload.sessions)) {
-          throw new Error("invalid subscription event");
+      broadcastToConnIds: collectSnapshots(snapshots),
+      load: async (params, cacheSignal) => {
+        if (!limited) {
+          // Retention setup/recovery consumes accepted facts without spending admission tokens.
+          await rememberBranchPulls(params.sessionKey, fetchImpl);
         }
-        for (const [key, snapshot] of Object.entries(payload.sessions)) {
-          if (
-            !isRecord(snapshot) ||
-            typeof snapshot.rateLimited !== "boolean" ||
-            !Array.isArray(snapshot.pullRequests)
-          ) {
-            throw new Error("invalid subscription snapshot");
-          }
-          snapshots.set(key, {
-            rateLimited: snapshot.rateLimited,
-            pullRequests: snapshot.pullRequests,
-            repository: snapshot.repository,
-          });
-        }
-      },
-      load: (params, cacheSignal) =>
-        loadControlUiSessionPullRequests(params, {
+        return loadControlUiSessionPullRequests(params, {
           cacheSignal,
           fetchImpl,
           resolveGitContext: async () => ({
@@ -177,17 +203,25 @@ describe("watched session PR retention", () => {
             repo: "openclaw",
             branch: params.sessionKey,
           }),
-        }),
+        });
+      },
     });
     const keys = Array.from({ length: 101 }, (_, index) => `quota-${index}`);
     try {
       await subscriptions.replace("watcher", keys);
-      expect(fetchImpl.mock.calls).toHaveLength(101);
+      expect(fetchImpl.mock.calls).toHaveLength(0);
+      expect(snapshots.size).toBe(101);
+      expect(
+        [...snapshots.values()].every(
+          (snapshot) => !snapshot.rateLimited && snapshot.pullRequests.length === 1,
+        ),
+      ).toBe(true);
       limited = true;
       vi.setSystemTime(Date.now() + 90_001);
-      await subscriptions.pollNow();
+      await subscriptions.replace("watcher", keys, new Set(keys));
       const callsAtBackoff = fetchImpl.mock.calls.length;
-      expect(callsAtBackoff).toBeGreaterThan(101);
+      expect(callsAtBackoff).toBeGreaterThan(0);
+      expect(callsAtBackoff).toBeLessThanOrEqual(4);
       expect(
         [...snapshots.values()].every(
           (snapshot) => snapshot.rateLimited && snapshot.pullRequests.length === 1,
@@ -207,7 +241,8 @@ describe("watched session PR retention", () => {
       limited = false;
       vi.setSystemTime(Date.now() + 240_001);
       await subscriptions.pollNow();
-      expect(fetchImpl.mock.calls).toHaveLength(callsAtBackoff + 101);
+      expect(fetchImpl.mock.calls).toHaveLength(callsAtBackoff);
+      expect(snapshots.size).toBe(101);
       expect(
         [...snapshots.values()].every(
           (snapshot) => !snapshot.rateLimited && snapshot.pullRequests.length === 1,
@@ -225,6 +260,8 @@ describe("watched session PR retention", () => {
         response: () => githubJson([pullListItem({ merged_at: "2026-07-09T10:00:00Z" })]),
       },
     ]);
+    const snapshots = new Map<string, WatchedSnapshot>();
+    const initialized = new Set<string>();
     const signals = new Set<AbortSignal>();
     vi.mocked(runGitWorkerOperation).mockImplementation(async (operation) => {
       if (operation.type === "checkout.revision") {
@@ -247,10 +284,14 @@ describe("watched session PR retention", () => {
     const subscriptions = createControlUiSessionPullRequestSubscriptions({
       scheduler: createTestGatewayScheduler("fake-timers"),
       prepareRead: fixture.prepareRead,
-      broadcastToConnIds: vi.fn(),
-      load: (params, cacheSignal) => {
+      broadcastToConnIds: collectSnapshots(snapshots),
+      load: async (params, cacheSignal) => {
         if (cacheSignal) {
           signals.add(cacheSignal);
+        }
+        if (!initialized.has(params.sessionKey)) {
+          await rememberBranchPulls(params.sessionKey, fetchImpl);
+          initialized.add(params.sessionKey);
         }
         return loadControlUiSessionPullRequests(params, {
           cacheSignal,
@@ -268,18 +309,24 @@ describe("watched session PR retention", () => {
         "second",
         Array.from({ length: 100 }, (_, index) => `watched-${index + 200}`),
       );
-      expect(fetchImpl.mock.calls).toHaveLength(300);
+      expect(fetchImpl.mock.calls).toHaveLength(0);
+      expect(snapshots.size).toBe(300);
+      expect(
+        [...snapshots.values()].every(
+          (snapshot) => !snapshot.rateLimited && snapshot.pullRequests.length === 1,
+        ),
+      ).toBe(true);
       expect(localGitReads()).toHaveLength(600);
 
       vi.setSystemTime(Date.now() + 60_000);
       await subscriptions.pollNow();
 
-      expect(fetchImpl.mock.calls).toHaveLength(300);
+      expect(fetchImpl.mock.calls).toHaveLength(0);
       expect(localGitReads()).toHaveLength(600);
 
       vi.setSystemTime(Date.now() + 15_001);
       await subscriptions.pollNow();
-      expect(fetchImpl.mock.calls).toHaveLength(300);
+      expect(fetchImpl.mock.calls).toHaveLength(0);
       expect(localGitReads()).toHaveLength(600);
       vi.setSystemTime(Date.now() + 225_000);
       await subscriptions.pollNow();

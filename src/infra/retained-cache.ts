@@ -3,7 +3,9 @@ import { pruneMapToMaxSize } from "./map-size.js";
 const UNWATCHED_CACHE_LIMIT = 100;
 
 /** Signal-scoped watchers retain one canonical entry beyond the unobserved bound. */
-export function createRetainedCache<T>() {
+export function createRetainedCache<T>(
+  options: { onRelease?: (entry: T, signal: AbortSignal) => void } = {},
+) {
   const entries = new Map<string, T>();
   const retained = new Map<string, { entry: T | undefined; watchers: Set<AbortSignal> }>();
   const pins = new WeakMap<AbortSignal, { key: string; release: () => void }>();
@@ -26,6 +28,9 @@ export function createRetainedCache<T>() {
       signal.removeEventListener("abort", unpin);
       pins.delete(signal);
       current.watchers.delete(signal);
+      if (current.entry !== undefined) {
+        options.onRelease?.(current.entry, signal);
+      }
       if (current.watchers.size === 0) {
         retained.delete(key);
       }
@@ -35,6 +40,15 @@ export function createRetainedCache<T>() {
   };
 
   return {
+    values(): IterableIterator<T> {
+      const current = new Map(entries);
+      for (const [key, retainedEntry] of retained) {
+        if (retainedEntry.entry !== undefined) {
+          current.set(key, retainedEntry.entry);
+        }
+      }
+      return current.values();
+    },
     get(key: string, signal?: AbortSignal): T | undefined {
       if (signal && pins.get(signal)?.key !== key) {
         release(signal);

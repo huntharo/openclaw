@@ -118,11 +118,54 @@ function runVerifier(
       ...(json ? ["--json"] : []),
       ...extraArgs,
     ],
-    { cwd, encoding: "utf8", env: { ...process.env, ...env } },
+    {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GH_TOKEN: "synthetic-verifier-token", ...env },
+    },
   );
 }
 
 describe("release-note verification", () => {
+  it("stops SHA association after a secondary limit instead of rapidly retrying gh", () => {
+    const cwd = tempDirs.make("openclaw-release-notes-rate-limit-");
+    git(cwd, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(cwd, "CHANGELOG.md"), createReleaseNotesFixtureLines().join("\n"));
+    git(cwd, ["add", "CHANGELOG.md"]);
+    git(cwd, ["commit", "-qm", "chore: baseline"]);
+    const base = git(cwd, ["rev-parse", "HEAD"]);
+    git(cwd, ["commit", "--allow-empty", "-qm", "fix: example (#1)"]);
+    const calls = join(cwd, "calls.txt");
+    const gh = join(cwd, "gh");
+    writeFileSync(
+      gh,
+      `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(calls)}, "call\\n");
+if (process.argv.includes("--include")) process.stdout.write("HTTP/2.0 403 Forbidden\\nretry-after: 7200\\n\\n");
+console.log(JSON.stringify({errors: [{type: "RATE_LIMITED", message: "You have exceeded a secondary rate limit."}]}));
+process.stderr.write("gh: secondary rate limit (HTTP 403)\\n");
+process.exitCode = 1;
+`,
+    );
+    chmodSync(gh, 0o755);
+    const preload = join(cwd, "clock.mjs");
+    writeFileSync(
+      preload,
+      "const wait = Atomics.wait; Atomics.wait = (...args) => [500, 1000, 2000, 4000].includes(args[3]) ? 'timed-out' : wait(...args);\n",
+    );
+    const result = runVerifier(cwd, {
+      base,
+      write: false,
+      preload,
+      extraArgs: ["--no-github-snapshot"],
+      env: { PATH: `${cwd}:${process.env.PATH}`, GH_TOKEN: "synthetic-verifier-quota-token" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(result.stderr).toContain("quota unavailable");
+  });
+
   it("refuses docs mirrors before source or GitHub work and preserves frozen records", () => {
     const cwd = tempDirs.make("openclaw-mirror-generation-");
     writeFileSync(
@@ -1462,7 +1505,7 @@ console.log(JSON.stringify({ data }));
       target,
       manifest: manifestPath,
       extraArgs: ["--seed-ref", seed],
-      env: { TMPDIR: privateTmp, PATH: `${cwd}:${process.env.PATH}` },
+      env: { TMPDIR: privateTmp, TSX_DISABLE_CACHE: "1", PATH: `${cwd}:${process.env.PATH}` },
     });
     expect(readFileSync(index)).toEqual(originalIndex);
     expect(git(cwd, ["rev-parse", "HEAD"])).toBe(target);
@@ -1702,7 +1745,9 @@ console.log(JSON.stringify({ data }));
     writeFileSync(
       preload,
       `import fs from "node:fs";
+const wait = Atomics.wait;
 Atomics.wait = function (...args) {
+  if (![500, 1000, 2000, 4000].includes(args[3])) return wait(...args);
   const result = "timed-out";
   fs.appendFileSync(${JSON.stringify(waitsPath)}, JSON.stringify({ timeout: args[3], result }) + "\\n");
   return result;

@@ -30,6 +30,7 @@ async function handleGitHubRequest(
       method === "github.preview" ? "controlUi.githubPreview" : "controlUi.githubDetail",
       {
         ...parsed.target,
+        readerUrl: parsed.url,
         ...(parsed.agentId ? { agentId: parsed.agentId } : {}),
         ...(parsed.refresh ? { refresh: true } : {}),
       },

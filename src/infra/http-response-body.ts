@@ -1,6 +1,8 @@
 // Response readers do not depend on inbound request lifecycle or logging policy.
-import { consumeResponseBytes, decodeTextPrefix } from "@openclaw/normalization-core";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+// Standalone CLI source imports also consume this owner without workspace package aliases.
+import { consumeResponseBytes } from "../../packages/normalization-core/src/response-bytes.js";
+import { decodeTextPrefix } from "../../packages/normalization-core/src/text-decoding.js";
+import { truncateUtf16Safe } from "../../packages/normalization-core/src/utf16-slice.js";
 import {
   withResponseBodyIdleTimeout,
   withResponseBodyTimeout,

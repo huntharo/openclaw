@@ -86,13 +86,18 @@ describe("shared GitHub publication reconciliation", () => {
       const hostScans = vi.spyOn(sqliteQueries, "iterateSqliteQuerySync");
       let recoveryScanStart = 0;
       mocks.runCommand.mockImplementation(async (argv: string[], options?: { input?: string }) => {
+        const secondPage = argv.find(
+          (arg) => arg.startsWith("https://api.github.com/") && arg.includes("page=2"),
+        );
+        if (secondPage) {
+          return commandResult(JSON.stringify([pullRequest]));
+        }
         if (argv.includes("state=all")) {
           recoveryLookup ||= revoked;
-          // gh emits one compact JSON array per page; without pagination the open PR is absent.
+          const endpoint = argv.find((arg) => arg.startsWith("repos/") && arg.endsWith("/pulls"))!;
+          // Only the next page has the accepted PR; the transport must follow Link.
           return commandResult(
-            [closed, ...(argv.includes("--paginate") ? [[pullRequest]] : [])]
-              .map((page) => JSON.stringify(page))
-              .join("\n"),
+            `HTTP/2.0 200\r\nLink: <https://api.github.com/${endpoint}?state=all&page=2>; rel="next"\r\n\r\n${JSON.stringify(closed)}\n`,
           );
         }
         const response = await transport(argv, options);

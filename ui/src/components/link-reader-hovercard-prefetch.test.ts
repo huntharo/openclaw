@@ -24,7 +24,11 @@ function createIssueLink() {
   provider.append(anchor);
   document.body.append(provider);
   const request = vi.fn().mockResolvedValue(issuePreviewResponse());
-  provider.client = { request, connected: true } as unknown as GatewayBrowserClient;
+  provider.client = {
+    addEventListener: () => () => {},
+    request,
+    connected: true,
+  } as unknown as GatewayBrowserClient;
   return { provider, anchor, request };
 }
 
@@ -97,7 +101,13 @@ describe("GitHub hovercard prefetch subscriptions", () => {
   ])("retires $phase inline state after $change changes", async ({ phase, change }) => {
     const { provider, anchor, request } = createIssueLink();
     anchor.className = "markdown-github-item";
-    const client = { request, connected: true, connectionGeneration: 1, recoveryScope: "first" };
+    const client = {
+      addEventListener: () => () => {},
+      request,
+      connected: true,
+      connectionGeneration: 1,
+      recoveryScope: "first",
+    };
     provider.client = client as unknown as GatewayBrowserClient;
     const target = resolveLinkReaderTarget(anchor.href, [TEST_LINK_READER])!;
     const pending =
@@ -193,7 +203,7 @@ describe("GitHub hovercard prefetch subscriptions", () => {
 
   it("leaves disconnected previews eligible to warm after reconnect", async () => {
     const { anchor, provider, request } = createIssueLink();
-    const client = { request, connected: false };
+    const client = { addEventListener: () => () => {}, request, connected: false };
     provider.client = client as unknown as GatewayBrowserClient;
     const target = resolveLinkReaderTarget(ISSUE_HREF, [TEST_LINK_READER])!;
     await provider.prefetch(target, new AbortController().signal);
@@ -220,7 +230,10 @@ describe("GitHub hovercard prefetch subscriptions", () => {
       if (change === "agent") {
         provider.agentId = "other";
       } else if (change === "client") {
-        provider.client = { request } as unknown as GatewayBrowserClient;
+        provider.client = {
+          addEventListener: () => () => {},
+          request,
+        } as unknown as GatewayBrowserClient;
       } else {
         provider.remove();
         document.body.append(provider);

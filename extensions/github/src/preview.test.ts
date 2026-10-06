@@ -115,7 +115,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it.each(["repository", "body", "commits", "co-author avatar"])(
-    "bounds slow %s reads with the preview deadline and reuses the settled cache",
+    "bounds slow %s reads with the preview deadline",
     async (stage) => {
       vi.useFakeTimers();
       // Native AbortSignal timers do not use Vitest's clock.
@@ -196,9 +196,6 @@ describe("loadControlUiGitHubPreview", () => {
         });
       }
       await pending;
-      const calls = fetchMock.mock.calls.length;
-      expect(await load()).toEqual(settled.mock.calls[0]?.[0]);
-      expect(fetchMock).toHaveBeenCalledTimes(calls);
       expect(identity.revalidate).toHaveBeenCalled();
     },
   );
@@ -287,7 +284,7 @@ describe("loadControlUiGitHubPreview", () => {
     },
   );
 
-  it("shares in-flight previews across readers and expires them after one minute", async () => {
+  it("shares in-flight content across readers and expires it after one minute", async () => {
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const started = createDeferred<void>();
@@ -306,13 +303,15 @@ describe("loadControlUiGitHubPreview", () => {
     const second = loadControlUiGitHubPreview(target, { ...identity }, fetchMock);
     item.resolve(githubJson(previewPayload({ user: { login: "octocat" } })));
     expect(await first).toEqual(await second);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const itemRequests = () =>
+      fetchMock.mock.calls.filter(([input]) => requestUrl(input).includes("/issues/")).length;
+    expect(itemRequests()).toBe(1);
     now += 59_999;
     await loadControlUiGitHubPreview(target, identity, fetchMock);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(itemRequests()).toBe(1);
     now += 1;
     await loadControlUiGitHubPreview(target, identity, fetchMock);
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(itemRequests()).toBe(2);
   });
 
   it("starts PR metadata and commits together after public admission", async () => {
@@ -375,13 +374,15 @@ describe("loadControlUiGitHubPreview", () => {
     repository.resolve(publicRepository());
     await rejected;
     await expect(second).resolves.toMatchObject({ login: "octocat" });
-    const calls = fetchMock.mock.calls.length;
+    const itemRequests = () =>
+      fetchMock.mock.calls.filter(([input]) => requestUrl(input).includes("/issues/")).length;
+    const calls = itemRequests();
     await expect(
       loadControlUiGitHubPreview(fixtureTarget, follower, fetchMock),
     ).resolves.toMatchObject({
       login: "octocat",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(calls);
+    expect(itemRequests()).toBe(calls);
   });
 
   it("does not retry a selected identity authentication failure anonymously", async () => {
@@ -683,7 +684,7 @@ describe("loadControlUiGitHubPreview", () => {
     );
   });
 
-  it("rechecks public visibility for every authenticated preview cache miss", async () => {
+  it("rechecks public visibility before delivering cached authenticated preview content", async () => {
     selectFixtureToken("github-test-token");
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -706,7 +707,7 @@ describe("loadControlUiGitHubPreview", () => {
     );
     await expect(
       loadControlUiGitHubPreview(
-        previewTarget(70006, "issue", "visibility-change"),
+        previewTarget(70005, "issue", "visibility-change"),
         undefined,
         fetchMock,
       ),
@@ -714,7 +715,7 @@ describe("loadControlUiGitHubPreview", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("does not let a failed older request replace an explicit refresh", async () => {
+  it("serves the accepted refresh when an older request fails later", async () => {
     const started = createDeferred<void>();
     const older = createDeferred<Response>();
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => {
@@ -726,14 +727,13 @@ describe("loadControlUiGitHubPreview", () => {
     });
     const fixtureTarget = previewTarget(70015, "issue", "refresh-order");
     const pending = loadControlUiGitHubPreview(fixtureTarget, undefined, fetchMock);
-    const rejected = expect(pending).rejects.toMatchObject({ statusCode: 404 });
     await started.promise;
     await expect(
       loadControlUiGitHubPreview(fixtureTarget, undefined, fetchMock, true),
     ).resolves.toMatchObject({ title: "Refreshed preview" });
     const missingResponse = githubJson({}, 404);
     older.resolve(missingResponse);
-    await rejected;
+    await expect(pending).resolves.toMatchObject({ title: "Refreshed preview" });
     expect(missingResponse.bodyUsed).toBe(true);
     await expect(
       loadControlUiGitHubPreview(fixtureTarget, undefined, fetchMock),

@@ -39,6 +39,7 @@ import {
   inspectActionsArtifactZipWithPolicy,
   sha256Digest,
 } from "./lib/actions-artifact-archive.mjs";
+import { createGitHubAsyncCommandQuota } from "./lib/github-command-quota.mjs";
 import { execPlainGh, plainGhAuthenticatedEnv, resolvePlainGhBin } from "./lib/plain-gh.mjs";
 import {
   RELEASE_PRIORITY_VARIABLE,
@@ -237,14 +238,34 @@ async function execCommand(command, args, options = {}) {
     maxBuffer: 64 * 1024 * 1024,
     timeout: options.timeoutMs ?? 60_000,
   });
-  return result.stdout.trim();
+  return result.stdout;
 }
 
-function execGh(args, options = {}) {
-  return execCommand(resolvePlainGhBin(), args, {
-    ...options,
-    env: plainGhAuthenticatedEnv(),
+async function execGh(args, options = {}) {
+  const env = plainGhAuthenticatedEnv();
+  const ghBin = resolvePlainGhBin();
+  const execute = await createGitHubAsyncCommandQuota({
+    env,
+    ...(options.operationDeadline === undefined
+      ? {}
+      : { remainingMs: () => remainingOperationTime(options.operationDeadline) }),
+    runGhAsync: (commandArgs) => {
+      const remaining =
+        options.operationDeadline === undefined
+          ? Number.MAX_SAFE_INTEGER
+          : remainingOperationTime(options.operationDeadline);
+      return execCommand(ghBin, commandArgs, {
+        ...options,
+        env,
+        timeoutMs: Math.min(options.timeoutMs ?? 60_000, remaining),
+      });
+    },
   });
+  const result = await execute(args);
+  if (result.error) {
+    throw result.error;
+  }
+  return result.body.trim();
 }
 
 function verifierEvidenceNeedsRefresh(error) {

@@ -13,6 +13,7 @@ packages/agent-core/src/harness/env/kill-tree.ts
 packages/agent-core/src/harness/messages.ts
 packages/agent-core/src/harness/session/tool-result-pairing.ts
 packages/agent-core/src/operator-messages.ts
+packages/ai/src/internal/retry-after.ts
 packages/gateway-client/package.json
 packages/gateway-client/src/timeouts.ts
 packages/gateway-protocol/package.json
@@ -171,6 +172,7 @@ scripts/lib/extension-test-plan.mts
 scripts/lib/failed-trailer.mts
 scripts/lib/format-duration.mts
 scripts/lib/gateway-server-test-plan.mts
+scripts/lib/github-command-quota.mjs
 scripts/lib/list-test-files.mts
 scripts/lib/local-check-runtime.mts
 scripts/lib/managed-child-process.mts
@@ -216,6 +218,7 @@ scripts/lib/vitest-worker-cache-policy.mts
 scripts/lib/vitest-worker-declarations.mts
 scripts/lib/vitest-worker-run.mts
 scripts/lib/tooling-dependencies.mjs
+scripts/lib/watch-pr-ci-github.mts
 scripts/lib/watch-pr-ci-rollup.mts
 scripts/lib/windows-taskkill.mjs
 scripts/pnpm-runner.mts
@@ -888,7 +891,10 @@ src/infra/home-display.ts
 src/infra/host-env-security-policy.js
 src/infra/host-env-security-policy.json
 src/infra/host-env-security.ts
+src/infra/http-api-quota.ts
+src/infra/http-api-read-store.ts
 src/infra/http-body.ts
+src/infra/http-command-response.ts
 src/infra/http-request-lifecycle.ts
 src/infra/http-response-body-timeout.ts
 src/infra/http-response-body.ts
@@ -961,6 +967,7 @@ src/infra/private-mode.ts
 src/infra/process-env.ts
 src/infra/prototype-keys.ts
 src/infra/restart-stale-pids.ts
+src/infra/retry-after.ts
 src/infra/retry-attempt-errors.ts
 src/infra/retry.ts
 src/infra/root-walk.ts

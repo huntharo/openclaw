@@ -149,6 +149,18 @@ Clear or reset each assertion's owned mock actions explicitly as needed.
 Name patterns spanning suites use `suite > test`; native JSON retains its
 space-joined `fullName`, so evidence readers match `ancestorTitles` plus `title`.
 
+The shared Node test setup blocks GitHub HTTP connections and native `gh` execution, including
+Node subprocesses with a replaced environment. Mock HTTP transports or put a
+synthetic `gh` script in a temporary fixture directory. Shell PATH lookup also
+stops before the developer's installed CLI. Both public and Enterprise GitHub
+token variables are removed from the isolated test environment. The real-home flag
+and values loaded from profiles do not permit GitHub requests by themselves.
+Explicit live test selections retain their existing network and credential policy.
+Native Git checks configured remotes and submodule URLs. Use direct argument
+arrays for native Git network fixtures. Shell Git network operations, recursive
+clones, submodule updates, and Git network operations in repositories with populated
+submodules require a mocked command transport.
+
 Filesystem transform caching uses `test.fsModuleCache` and
 `test.fsModuleCachePath`; the existing `OPENCLAW_VITEST_FS_MODULE_CACHE` and
 `OPENCLAW_VITEST_FS_MODULE_CACHE_PATH` controls retain their ownership and

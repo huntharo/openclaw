@@ -29,4 +29,5 @@ export type {
 } from "./src/preview.js";
 export type { ControlUiGitHubPreview } from "./src/preview-contract.js";
 export { loadGitHubDetail } from "./src/detail.js";
-export { parseGitHubTarget } from "./src/targets.js";
+export { parseGitHubTarget, parseGitHubLinkParams } from "./src/targets.js";
+export { getGitHubPullRequestStore } from "./src/pull-request-store.js";

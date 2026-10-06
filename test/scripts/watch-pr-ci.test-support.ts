@@ -8,6 +8,10 @@ import { createIndependentPrFixtureEnv } from "./pr-wrapper.test-support.js";
 
 export const sha = "a".repeat(40);
 
+export function isRunStatusRead(args: readonly string[]) {
+  return args[0] === "api" && /\/actions\/runs\/(?:201|202|33155056361)$/u.test(args[1] ?? "");
+}
+
 export function runWatcher(
   ghScript: string,
   headSha = sha,
@@ -20,7 +24,13 @@ export function runWatcher(
   const nodeExecPath = requireNodeTool("node");
   return withTempDir("openclaw-watch-pr-ci-", async (binDir) => {
     const ghPath = join(binDir, "gh");
-    writeFileSync(ghPath, ghScript);
+    const selectedScript = ghScript.replace(/^#!\/usr\/bin\/env node\b/u, `#!${nodeExecPath}`);
+    writeFileSync(
+      ghPath,
+      selectedScript.startsWith(`#!${nodeExecPath}`)
+        ? selectedScript.replace("\n", `\nconst isRunStatusRead = ${isRunStatusRead.toString()};\n`)
+        : selectedScript,
+    );
     chmodSync(ghPath, 0o755);
     const clockPath = join(binDir, "poll-clock.mjs");
     // Evidence fixtures advance polling only, independent of fake gh startup cost.
@@ -33,15 +43,26 @@ import { syncBuiltinESMExports } from "node:module";
 import timers from "node:timers/promises";
 if (process.argv[1] === ${JSON.stringify(fileURLToPath(new URL("../../scripts/watch-pr-ci.mts", import.meta.url)))}) {
   process.env.NODE_OPTIONS = ${JSON.stringify(parentEnv.NODE_OPTIONS ?? "")};
+  const { createGitHubAsyncCommandQuota } = await import(${JSON.stringify(new URL("../../scripts/lib/github-command-quota.mjs", import.meta.url).href)});
+  await createGitHubAsyncCommandQuota({ runGhAsync: async () => "", env: { GH_TOKEN: "watcher-fixture-token" } });
   const now = ${typeof clock === "object" ? `() => Number(readFileSync(${JSON.stringify(clock.readClock)}, "utf8"))` : clock === "wall" ? "Date.now" : "() => 0"};
   const nextTurn = timers.setImmediate;
   let waitedMs = 0;
   Date.now = () => now() + waitedMs;
   timers.setTimeout = async (milliseconds, value, options) => {
-    const result = await nextTurn(value, options);
+    const result = await nextTurn(value, { ...options, ref: true });
     waitedMs += milliseconds;
     return result;
   };
+  ${
+    clock === "wall"
+      ? ""
+      : `const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, milliseconds, ...args) => {
+    if (typeof milliseconds !== "number" || milliseconds > 3_000) return realSetTimeout(callback, milliseconds, ...args);
+    return setImmediate(() => { waitedMs += milliseconds; callback(...args); });
+  };`
+  }
   syncBuiltinESMExports();
 }
 `,
@@ -75,6 +96,9 @@ if (process.argv[1] === ${JSON.stringify(fileURLToPath(new URL("../../scripts/wa
             encoding: "utf8",
             env: {
               ...createIndependentPrFixtureEnv(parentEnv),
+              GH_TOKEN: "watcher-fixture-token",
+              GH_ENTERPRISE_TOKEN: "watcher-enterprise-fixture-token",
+              TSX_DISABLE_CACHE: "1",
               ...envOverrides,
               NODE_OPTIONS: `${parentEnv.NODE_OPTIONS ?? ""} --import=${pathToFileURL(clockPath).href}`,
               PATH: `${binDir}${delimiter}${parentEnv.PATH ?? ""}`,

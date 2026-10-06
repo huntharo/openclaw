@@ -1,6 +1,8 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { apiStoreRequestKey, getSharedApiStore } from "openclaw/plugin-sdk/retry-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadGitHubDetail } from "./detail.js";
+import { fetchGitHubApi, fetchGitHubJson } from "./github-api.js";
 import type { ControlUiGitHubPreviewIdentity } from "./preview.js";
 import type { GitHubTarget } from "./targets.js";
 import { parseGitHubTarget } from "./targets.js";
@@ -125,9 +127,93 @@ describe("GitHub detail selected read identity", () => {
     vi.restoreAllMocks();
   });
 
+  it("rereads public visibility after another caller caches repository metadata", async () => {
+    const input = target();
+    const selected = identity();
+    const repositoryUrl = `https://api.github.com/repos/${input.owner}/${input.repo}`;
+    let isPrivate = false;
+    const fetchMock = vi.fn<typeof fetch>(async (url) =>
+      json(
+        requestUrl(url) === repositoryUrl
+          ? { id: 123, private: isPrivate, visibility: isPrivate ? "private" : "public" }
+          : item({ body: "Private issue body" }),
+      ),
+    );
+    const store = getSharedApiStore({
+      apiBaseUrl: "https://api.github.com",
+      token: selected.token,
+      fetchImpl: fetchMock,
+    });
+    await store.responses.read(apiStoreRequestKey(repositoryUrl), () => fetchMock(repositoryUrl), {
+      freshnessMs: 30_000,
+    });
+    isPrivate = true;
+    await expect(loadGitHubDetail(input, selected, fetchMock)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect(fetchMock.mock.calls.map(([url]) => requestUrl(url))).toEqual([
+      repositoryUrl,
+      repositoryUrl,
+    ]);
+  });
+
+  it("reloads files and coauthor commits after another reader observes a new PR head", async () => {
+    const input = target("pull");
+    const selected = identity();
+    const repositoryUrl = `https://api.github.com/repos/${input.owner}/${input.repo}`;
+    const pullUrl = `${repositoryUrl}/pulls/1`;
+    const commitsUrl = `${pullUrl}/commits?per_page=30`;
+    let head = sha;
+    const nextHead = "c".repeat(40);
+    const upstream = authenticatedFetch();
+    const fetchMock = vi.fn<typeof fetch>(async (url, options) => {
+      const pathname = new URL(requestUrl(url)).pathname;
+      if (pathname.endsWith("/pulls/1")) {
+        return json(item({ changed_files: 1, head: { sha: head, ref: "feature" } }));
+      }
+      if (pathname.endsWith("/files")) {
+        return json([file({ patch: head === sha ? "Old patch" : "New patch" })]);
+      }
+      if (pathname.endsWith("/commits")) {
+        return json([{ sha: head, author: { login: head === sha ? "old-author" : "new-author" } }]);
+      }
+      return upstream(url, options);
+    });
+    expect(await loadGitHubDetail(input, selected, fetchMock)).toMatchObject({
+      files: [{ patch: "Old patch" }],
+    });
+    expect(await fetchGitHubJson(commitsUrl, fetchMock, selected.token)).toMatchObject([
+      { author: { login: "old-author" } },
+    ]);
+    head = nextHead;
+    await fetchGitHubApi(
+      pullUrl,
+      fetchMock,
+      selected.token,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "https://api.github.com",
+      { refresh: true },
+    );
+    expect(await loadGitHubDetail(input, selected, fetchMock)).toMatchObject({
+      checks: { commit: nextHead },
+      files: [{ patch: "New patch" }],
+    });
+    expect(await fetchGitHubJson(commitsUrl, fetchMock, selected.token)).toMatchObject([
+      { author: { login: "new-author" } },
+    ]);
+    expect(
+      fetchMock.mock.calls.filter(([url]) => new URL(requestUrl(url)).pathname.endsWith("/files")),
+    ).toHaveLength(2);
+  });
+
   it.each(["pull", "commit"] as const)(
     "uses the prepared credential for the entire %s document and refresh",
     async (kind) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
       const selected = identity();
       const input = target(kind);
       const payload =
@@ -156,7 +242,14 @@ describe("GitHub detail selected read identity", () => {
         ]);
       }
       const cached = await loadGitHubDetail(input, selected, fetchMock);
-      expect(cached).toBe(first);
+      expect(cached).toEqual(first);
+      expect(cached).not.toBe(first);
+      first.comments.splice(0);
+      expect((await loadGitHubDetail(input, selected, fetchMock)).comments).toEqual(
+        cached.comments,
+      );
+      clock.mockReturnValue(1_800_000_031_000);
+      await loadGitHubDetail(input, selected, fetchMock);
       await loadGitHubDetail(input, selected, fetchMock, true);
       for (const [, options] of fetchMock.mock.calls) {
         expect(options?.headers).toHaveProperty("Authorization", "Bearer " + selected.token);
@@ -166,7 +259,7 @@ describe("GitHub detail selected read identity", () => {
         fetchMock.mock.calls.filter(([url]) =>
           new URL(requestUrl(url)).pathname.endsWith(itemPath),
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(kind === "pull" ? 3 : 2);
       expect(selected.revalidate).toHaveBeenCalled();
     },
   );
@@ -188,7 +281,7 @@ describe("GitHub detail selected read identity", () => {
     expect(authorized).toHaveBeenCalledTimes(3);
   });
 
-  it.each([401, 403, 429])(
+  it.each([401, 403])(
     "retries optional credentials anonymously after HTTP %s, including cached delivery",
     async (status) => {
       for (const cached of [false, true]) {
@@ -223,6 +316,36 @@ describe("GitHub detail selected read identity", () => {
     },
   );
 
+  it.each([false, true])(
+    "stops optional authenticated reads during a shared 429 cooldown (cached=%s)",
+    async (cached) => {
+      const input = target();
+      const selected = { ...identity(), optionalAuth: true as const };
+      const upstream = authenticatedFetch();
+      let limited = !cached;
+      const fetchMock = vi.fn<typeof fetch>(async (url, options) =>
+        limited ? json({}, 429, { "Retry-After": "60" }) : upstream(url, options),
+      );
+      if (cached) {
+        await loadGitHubDetail(input, selected, fetchMock);
+        limited = true;
+      }
+      await expect(loadGitHubDetail(input, selected, fetchMock)).rejects.toMatchObject({
+        statusCode: 429,
+      });
+      const calls = fetchMock.mock.calls.length;
+      await expect(loadGitHubDetail(input, selected, fetchMock)).rejects.toMatchObject({
+        statusCode: 429,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(calls);
+      expect(
+        fetchMock.mock.calls.every(([, options]) =>
+          new Headers(options?.headers).has("Authorization"),
+        ),
+      ).toBe(true);
+    },
+  );
+
   it("does not bypass a managed identity after an authentication failure", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(json({}, 401));
     await expect(loadGitHubDetail(target(), identity(), fetchMock)).rejects.toMatchObject({
@@ -236,7 +359,6 @@ describe("GitHub detail selected read identity", () => {
     { name: "private", repository: { id: 123, private: true, visibility: "private" } },
     { name: "internal", repository: { id: 123, private: false, visibility: "internal" } },
     { name: "missing-visibility", repository: { id: 123, private: false } },
-    { name: "replacement", repository: { id: 456, private: false, visibility: "public" } },
   ])(
     "does not deliver freshly read or cached content from a $name repository",
     async ({ repository }) => {
@@ -264,6 +386,64 @@ describe("GitHub detail selected read identity", () => {
           statusCode: 404,
         });
       }
+    },
+  );
+
+  it("rejects a repository replacement while reading its content", async () => {
+    const input = target();
+    const upstream = authenticatedFetch();
+    let changed = false;
+    const fetchMock = vi.fn<typeof fetch>(async (url, options) => {
+      const isRepository = /^\/repos\/[^/]+\/[^/]+$/u.test(new URL(requestUrl(url)).pathname);
+      if (changed && isRepository) {
+        return json({ id: 456, private: false, visibility: "public" });
+      }
+      const response = await upstream(url, options);
+      if (!isRepository) {
+        changed = true;
+      }
+      return response;
+    });
+    await expect(loadGitHubDetail(input, identity(), fetchMock)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+
+  it.each(["issue", "pull"] as const)(
+    "rereads %s content after the admitted repository ID changes",
+    async (kind) => {
+      const input = target(kind);
+      const selected = identity();
+      let changed = false;
+      const original = authenticatedFetch(
+        item({ title: "Original repository", body: "Old body", additions: 7 }),
+      );
+      const replaced = authenticatedFetch(
+        item({ title: "Replacement repository", body: "New body" }),
+      );
+      const fetchMock = vi.fn<typeof fetch>(async (url, options) => {
+        if (/^\/repos\/[^/]+\/[^/]+$/u.test(new URL(requestUrl(url)).pathname)) {
+          return json({ id: changed ? 456 : 123, private: false, visibility: "public" });
+        }
+        return (changed ? replaced : original)(url, options);
+      });
+      expect(await loadGitHubDetail(input, selected, fetchMock)).toMatchObject({
+        title: "Original repository",
+        body: "Old body",
+      });
+      changed = true;
+      const replacement = await loadGitHubDetail(input, selected, fetchMock);
+      expect(replacement).toMatchObject({ title: "Replacement repository", body: "New body" });
+      expect(replacement.metadata).not.toContainEqual({
+        label: "Additions",
+        value: "+7",
+        tone: "positive",
+      });
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          new URL(requestUrl(url)).pathname.endsWith(`/${kind === "pull" ? "pulls" : "issues"}/1`),
+        ),
+      ).toHaveLength(2);
     },
   );
 
@@ -419,12 +599,12 @@ describe("GitHub detail selected read identity", () => {
       .mockImplementation(upstream);
     const first = loadGitHubDetail(input, selected, fetchMock);
     await started.promise;
-    await expect(loadGitHubDetail(input, identity(), fetchMock)).resolves.toMatchObject({
-      title: "Read me",
-    });
+    const second = loadGitHubDetail(input, identity(), fetchMock);
+    const rejected = expect(first).rejects.toThrow("identity changed");
     active = false;
     pending.resolve(json({ id: 123, private: false, visibility: "public" }));
-    await expect(first).rejects.toThrow("identity changed");
+    await rejected;
+    await expect(second).resolves.toMatchObject({ title: "Read me" });
     await expect(loadGitHubDetail(input, identity(), fetchMock)).resolves.toMatchObject({
       title: "Read me",
     });
@@ -491,18 +671,18 @@ describe("GitHub detail public read boundary", () => {
     { status: 503, headers: {}, expected: 502 },
   ];
   it.each(failures)(
-    "normalizes $status/$expected failures and caches repeated opens",
+    "normalizes $status/$expected failures and rechecks admission outside quota cooldowns",
     async ({ status, headers, expected }) => {
       const fetchMock = vi
         .fn<typeof fetch>()
-        .mockResolvedValueOnce(json({ message: "upstream" }, status, headers));
+        .mockImplementation(async () => json({ message: "upstream" }, status, headers));
       const input = target();
       for (let attempt = 0; attempt < 2; attempt++) {
         await expect(loadGitHubDetail(input, undefined, fetchMock)).rejects.toMatchObject({
           statusCode: expected,
         });
       }
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(expected === 429 ? 1 : 2);
     },
   );
 

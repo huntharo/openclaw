@@ -8,6 +8,7 @@ import { z } from "zod";
 import { isRetryableGhJsonErrorMessage } from "./ci-run-timings.mjs";
 import { refitTestTimings, type CiTimingRun } from "./lib/ci-test-timings-refit.mts";
 import { ciTestTimingsSchema } from "./lib/ci-test-timings-schema.mts";
+import { createGitHubCommandQuota } from "./lib/github-command-quota.mjs";
 import { parsePositiveInt } from "./lib/numeric-options.mjs";
 import { execPlainGh } from "./lib/plain-gh.mjs";
 
@@ -33,15 +34,24 @@ type TimingJob = z.infer<typeof jobPageSchema>["jobs"][number] & {
   kind: CiTimingRun["logs"][number]["kind"];
 };
 
+const executeGithubCommand = await createGitHubCommandQuota({
+  runGh: (args) =>
+    execPlainGh(args, {
+      encoding: "utf8",
+      timeout: 120_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+});
+
 async function readGh(args: string[]): Promise<string> {
   const retryDelays = [1000, 3000, 6000];
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return execPlainGh(args, {
-        encoding: "utf8",
-        timeout: 120_000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const { body, error } = executeGithubCommand(args);
+      if (error) {
+        throw error;
+      }
+      return body;
     } catch (error) {
       if (
         attempt === retryDelays.length ||

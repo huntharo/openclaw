@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const transport = vi.hoisted(() => ({ read: vi.fn(), sleep: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => {
@@ -16,12 +16,25 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 vi.mock("node:timers/promises", () => ({ setTimeout: transport.sleep }));
 
+import { createGitHubAsyncCommandQuota } from "../../scripts/lib/github-command-quota.mjs";
 import { createReleaseEvidenceClient, runReleaseCiGh } from "../../scripts/release-ci-summary.mjs";
+
+beforeAll(async () => {
+  // Load the owner before retry fixtures replace Atomics.wait used by the TS loader.
+  await createGitHubAsyncCommandQuota({ runGhAsync: async () => "", env: {} });
+});
+
+beforeEach(() => {
+  vi.stubEnv("GH_TOKEN", "synthetic-release-evidence");
+  vi.stubGlobal("fetch", vi.fn());
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
   transport.read.mockReset();
   transport.sleep.mockReset();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("release evidence API reads", () => {
@@ -80,6 +93,11 @@ describe("release evidence API reads", () => {
     ["GraphQL", ["api", "graphql"], "HTTP 502"],
     ["forbidden", ["api", "repos/openclaw/openclaw/actions/runs/42"], "HTTP 403"],
     ["rate limited", ["api", "repos/openclaw/openclaw/actions/runs/42"], "HTTP 429"],
+    [
+      "headerless secondary limit",
+      ["api", "repos/openclaw/openclaw/actions/runs/42"],
+      "gh: You have exceeded a secondary rate limit.",
+    ],
   ])("does not retry %s", (_label, args, stderr) => {
     const wait = vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
     const failure = Object.assign(new Error("gh failed"), { stderr });
@@ -89,6 +107,22 @@ describe("release evidence API reads", () => {
     expect(() => runReleaseCiGh(args)).toThrow(failure);
     expect(transport.read).toHaveBeenCalledOnce();
     expect(wait).not.toHaveBeenCalled();
+  });
+
+  it("opens shared admission after a headerless secondary limit without retrying", async () => {
+    vi.stubEnv("GH_TOKEN", "synthetic-release-evidence-secondary");
+    vi.stubGlobal("fetch", vi.fn());
+    const failure = Object.assign(new Error("gh failed"), {
+      stderr: "gh: You have exceeded a secondary rate limit.",
+    });
+    transport.read.mockImplementation(() => {
+      throw failure;
+    });
+    const client = createReleaseEvidenceClient("openclaw/openclaw");
+    await expect(client.getRun("42")).rejects.toMatchObject({ reason: "upstream" });
+    await expect(client.getRun("43")).rejects.toMatchObject({ reason: "upstream" });
+    expect(transport.read).toHaveBeenCalledOnce();
+    expect(transport.sleep).not.toHaveBeenCalled();
   });
 
   it("does not retry a malformed successful response", () => {
