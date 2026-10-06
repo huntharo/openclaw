@@ -21,6 +21,173 @@ function scopedRequests(
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("shared GitHub admission", () => {
+  it("bounds concurrent REST and GraphQL dispatches and refills without bypassing the bucket", async () => {
+    const api = await import("./github-api.js");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("{}"));
+    const request = scopedRequests(api, fetchImpl, api.GITHUB_API_BASE_URL);
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        request(`${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls/${i + 1}`, "synthetic-token"),
+      ),
+    );
+    await expect(
+      request(api.GITHUB_GRAPHQL_URL, "synthetic-token", {
+        query: "query { viewer { login } }",
+        variables: {},
+      }),
+    ).rejects.toMatchObject({ statusCode: 429, retryAfterMs: 3_000 });
+    expect(fetchImpl).toHaveBeenCalledTimes(20);
+    clock.mockReturnValue(1_800_000_003_000);
+    await request(`${api.GITHUB_API_BASE_URL}/search/issues?q=repo:acme/repo`, "synthetic-token");
+    expect(fetchImpl).toHaveBeenCalledTimes(21);
+  });
+
+  it("reserves the remaining primary quota before concurrent reads and honors its reset", async () => {
+    const api = await import("./github-api.js");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response("{}", {
+          headers: {
+            "x-ratelimit-remaining": "1",
+            "x-ratelimit-reset": "1800000090",
+            "x-ratelimit-resource": "core",
+          },
+        }),
+    );
+    const request = scopedRequests(api, fetchImpl, api.GITHUB_API_BASE_URL);
+    const url = `${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls`;
+    await request(url, "synthetic-token");
+    const results = await Promise.allSettled([
+      request(url, "synthetic-token"),
+      request(url, "synthetic-token"),
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    clock.mockReturnValue(1_800_000_090_000);
+    await request(url, "synthetic-token");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("reserves a cold primary window for requests still awaiting their response", async () => {
+    const api = await import("./github-api.js");
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const first = Promise.withResolvers<Response>();
+    const second = Promise.withResolvers<Response>();
+    const fetchImpl = vi
+      .fn<typeof fetch>(async () => new Response("{}"))
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const request = scopedRequests(api, fetchImpl, api.GITHUB_API_BASE_URL);
+    const url = `${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls`;
+    const a = request(url, "synthetic-cold-primary");
+    const b = request(url, "synthetic-cold-primary");
+    first.resolve(
+      new Response("{}", {
+        headers: { "x-ratelimit-remaining": "1", "x-ratelimit-reset": "1800000090" },
+      }),
+    );
+    await a;
+    await expect(request(url, "synthetic-cold-primary")).rejects.toMatchObject({ statusCode: 429 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    second.resolve(
+      new Response("{}", {
+        headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1800000090" },
+      }),
+    );
+    await b;
+  });
+
+  it("applies header cooldowns while a secondary-limit body is still pending", async () => {
+    const api = await import("./github-api.js");
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const started = Promise.withResolvers<void>();
+    const bodyController = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController.resolve(controller);
+        },
+      }),
+      { status: 403, headers: { "retry-after": "120" } },
+    );
+    const clone = response.clone.bind(response);
+    vi.spyOn(response, "clone").mockImplementation(() => {
+      started.resolve();
+      return clone();
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("{}"));
+    fetchImpl.mockResolvedValueOnce(response);
+    const request = scopedRequests(api, fetchImpl, api.GITHUB_API_BASE_URL);
+    const pending = request(`${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls`, "synthetic-slow");
+    const outcome = expect(pending).rejects.toMatchObject({
+      statusCode: 429,
+      retryAfterMs: 120_000,
+    });
+    const controller = await bodyController.promise;
+    await started.promise;
+    try {
+      await expect(
+        request(`${api.GITHUB_API_BASE_URL}/search/issues?q=test`, "synthetic-slow"),
+      ).rejects.toMatchObject({ statusCode: 429 });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      controller.enqueue(
+        new TextEncoder().encode('{"message":"You have exceeded a secondary rate limit."}'),
+      );
+      controller.close();
+      await outcome;
+    }
+  });
+
+  it.each([
+    { status: 403, headers: new Headers(), delay: 60_000 },
+    {
+      status: 403,
+      headers: new Headers({
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1800000030",
+        "x-ratelimit-resource": "core",
+      }),
+      delay: 60_000,
+    },
+    { status: 429, headers: new Headers({ "retry-after": "120" }), delay: 120_000 },
+  ])(
+    "fails closed across callers after HTTP $status without anonymous retries",
+    async ({ status, headers, delay }) => {
+      const api = await import("./github-api.js");
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ message: "You have exceeded a secondary rate limit." }), {
+            status,
+            headers,
+          }),
+        )
+        .mockImplementation(async () => new Response("{}"));
+      const url = `${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls`;
+      await expect(api.fetchGitHubJson(url, fetchImpl, "synthetic-token")).rejects.toMatchObject({
+        statusCode: 429,
+        retryAfterMs: delay,
+      });
+      await expect(
+        api.fetchGitHubJson(
+          `${api.GITHUB_API_BASE_URL}/search/issues?q=test`,
+          fetchImpl,
+          "synthetic-token",
+        ),
+      ).rejects.toMatchObject({ statusCode: 429 });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(1_800_000_000_000 + delay);
+      await api.fetchGitHubJson(url, fetchImpl, "synthetic-token");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    },
+  );
+});
+
 describe("GitHub API base URL", () => {
   it("defaults to public GitHub", async () => {
     const { GITHUB_API_BASE_URL, GITHUB_API_ORIGIN } = await import("../api.js");

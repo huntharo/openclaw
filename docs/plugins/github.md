@@ -114,6 +114,12 @@ hovercard, and GitHub links open externally.
   including GitHub's retry delay when available. Cached preview details stay visible
   with the failure notice. Use the reader's **Retry** action or **Open on GitHub**;
   the server's API quota is separate from your signed-in browser session.
+- API reads share a credential and API-host budget with GitHub identity checks,
+  publication, and team reports: a burst of 20 requests, refilling at 20 per
+  minute. Remaining primary quota is reserved before dispatch. Secondary limits
+  pause all API resources for that credential; the server honors `Retry-After`
+  and quota reset times. Rate-limited reads retain cached content and do not
+  switch to anonymous requests to bypass the cooldown.
 
 ## Plugin author integration
 

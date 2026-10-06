@@ -260,6 +260,32 @@ describe("GitHub OAuth client", () => {
   );
 
   it.each([
+    { headers: new Headers({ "retry-after": "90" }), delayMs: 90_000 },
+    { headers: new Headers(), delayMs: 60_000 },
+  ])(
+    "retains secondary-limit cooldowns across credential probes ($delayMs ms)",
+    async ({ headers, delayMs }) => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      const probe = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ message: "You have exceeded a secondary rate limit." }), {
+            status: 403,
+            headers,
+          }),
+        )
+        .mockResolvedValue(jsonResponse({ id: 202, login: "after-cooldown" }));
+      const token = "synthetic-secondary-verification-" + delayMs;
+      expect(await verifyGitHubCredential(token)).toEqual({ status: "rate_limited" });
+      expect(await verifyGitHubCredential(token)).toEqual({ status: "rate_limited" });
+      expect(probe).toHaveBeenCalledOnce();
+      now.mockReturnValue(1_800_000_000_000 + delayMs);
+      expect(await verifyGitHubCredential(token)).toMatchObject({ status: "available" });
+      expect(probe).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
     ["invalid-json", "not-json synthetic-token"],
     ["long-login", JSON.stringify({ id: 202, login: "x".repeat(101) })],
     ["invalid-id", JSON.stringify({ id: "202", login: "managed-user" })],

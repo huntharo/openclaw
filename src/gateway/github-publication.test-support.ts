@@ -13,6 +13,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { ApiRequestQuota } from "../infra/http-api-quota.js";
 import type { GitHubPublicationRequesterSnapshot } from "../state/github-publication-requester.js";
 import { insertGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.js";
 import {
@@ -110,7 +111,27 @@ vi.mock("./session-utils-store-worker.js", async (importOriginal) => ({
 
 vi.mock("../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/exec.js")>()),
-  runCommandBuffered: mocks.runCommand,
+  runCommandBuffered: async (
+    argv: string[],
+    options: Parameters<typeof import("../process/exec.js").runCommandBuffered>[1],
+  ) => {
+    const result = await mocks.runCommand(
+      argv.filter((arg) => arg !== "--include"),
+      options,
+    );
+    return argv[0] === "gh" &&
+      argv[1] === "api" &&
+      argv.includes("--include") &&
+      !result.stdout.toString("utf8").startsWith("HTTP/")
+      ? {
+          ...result,
+          stdout: Buffer.concat([
+            Buffer.from(`HTTP/2.0 ${result.code === 0 ? 200 : 500}\r\n\r\n`),
+            result.stdout,
+          ]),
+        }
+      : result;
+  },
 }));
 
 vi.mock("../secrets/runtime-state.js", () => ({
@@ -388,6 +409,10 @@ export function installGitHubPublicationTestHarness(
     }),
   );
   beforeEach(async () => {
+    // Receipt tests use synthetic API dispatches while preserving real lease time.
+    // Admission and cooldown behavior are exercised by the transport suite.
+    const admission = vi.spyOn(ApiRequestQuota.prototype, "admit").mockReturnValue(() => {});
+    onTestFinished(() => admission.mockRestore());
     root = tempDirs.make("openclaw-publication-");
     vi.stubEnv("OPENCLAW_STATE_DIR", root);
     realWorktree = harnessOptions.realWorktree ?? false;
@@ -474,7 +499,7 @@ export function installGitHubPublicationTestHarness(
       account: { accountId: 42, login: "roboclaw-bot", avatarUrl: null },
       env: {
         GH_CONFIG_DIR: "/private/github-profile",
-        GH_TOKEN: undefined,
+        GH_TOKEN: "synthetic-publication-" + randomUUID(),
         GITHUB_TOKEN: undefined,
       },
     });

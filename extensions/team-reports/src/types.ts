@@ -1,4 +1,5 @@
 import type { RuntimeLogger } from "openclaw/plugin-sdk/core";
+import type { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import type { z } from "zod";
 import type { TeamReportsConfig } from "./config.js";
 import type { reportDocumentSchema, summaryDocumentSchema } from "./store-schema.js";
@@ -58,6 +59,15 @@ export type SourceRuntime = {
   signal?: AbortSignal;
   /** Test seam; production uses the SDK guarded fetch. */
   fetchImpl?: FetchLike;
+  /** Worker collection shares quota with host readers through its task channel. */
+  githubQuota?: {
+    admit(resource: string): Promise<() => void | Promise<void>>;
+    observe(
+      response: Response,
+      resource: string,
+      rateLimited: boolean | "secondary",
+    ): Promise<ApiQuotaError | undefined>;
+  };
 };
 
 /** Resolved (secret already materialized) GitHub source configuration. */

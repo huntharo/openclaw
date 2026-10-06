@@ -19,6 +19,7 @@ import {
   execPlainGh,
   plainGhAuthenticatedEnv,
   resolvePlainGhBin,
+  resolvePlainGhHost,
 } from "../../scripts/lib/plain-gh.mjs";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -314,6 +315,61 @@ if (JSON.stringify(process.env) !== before) throw new Error("parent environment 
 });
 
 describe("plain gh subprocess contracts", () => {
+  it.each([
+    {
+      name: "sole configured Enterprise host",
+      hosts: "ghe.example.test:\n  user: fixture\n",
+      expected: "ghe.example.test",
+    },
+    {
+      name: "GH_HOST override",
+      host: "override.example.test",
+      hosts: "ghe.example.test:\n  user: fixture\n",
+      config: "hosts: [malformed",
+      expected: "override.example.test",
+    },
+    {
+      name: "general config fallback",
+      config: "hosts:\n  fallback.example.test:\n    user: fixture\n",
+      expected: "fallback.example.test",
+    },
+    {
+      name: "nonempty hosts.yml precedence",
+      hosts: "ghe.example.test:\n  user: fixture\n",
+      config: "hosts:\n  fallback.example.test:\n    user: fixture\n",
+      expected: "ghe.example.test",
+    },
+    {
+      name: "malformed general config",
+      hosts: "ghe.example.test:\n  user: fixture\n",
+      config: "hosts: [malformed",
+      expected: "github.com",
+    },
+    {
+      name: "malformed hosts config",
+      hosts: "ghe.example.test: [malformed",
+      config: "hosts:\n  fallback.example.test:\n    user: fixture\n",
+      expected: "github.com",
+    },
+    {
+      name: "multiple configured hosts",
+      hosts: "ghe.example.test: {}\ngithub.com: {}\n",
+      expected: "github.com",
+    },
+  ])("selects the native API host for $name without a credential probe", async (scenario) => {
+    const fixture = makeFixture();
+    fixture.env.GH_CONFIG_DIR = fixture.root;
+    fixture.env.GH_HOST = scenario.host;
+    if (scenario.hosts !== undefined) {
+      writeFileSync(path.join(fixture.root, "hosts.yml"), scenario.hosts);
+    }
+    if (scenario.config !== undefined) {
+      writeFileSync(path.join(fixture.root, "config.yml"), scenario.config);
+    }
+    await expect(resolvePlainGhHost(fixture.env)).resolves.toBe(scenario.expected);
+    expect(fixture.calls()).toEqual([]);
+  });
+
   it("ignores a shell function shadowing the external PATH executable", () => {
     const fixture = makeFixture();
     const output = execFileSync(

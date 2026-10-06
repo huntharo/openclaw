@@ -245,7 +245,7 @@ describe("Control UI GitHub failures", () => {
     [60, 120],
     [120, 60],
   ])(
-    "reports the first recovering credential when reset times are %j",
+    "keeps exhausted credentials closed when reset times are %j",
     async (authSeconds, anonymousSeconds) => {
       vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
       const fetchMock = vi.fn<typeof fetch>().mockImplementation(
@@ -266,15 +266,15 @@ describe("Control UI GitHub failures", () => {
       );
       await expect(
         gitHubPublicApi.fetchGitHubJson("https://api.github.com/user/1", fetchMock, "quota-token"),
-      ).rejects.toMatchObject({ statusCode: 429, retryAfterMs: 60_000 });
+      ).rejects.toMatchObject({ statusCode: 429, retryAfterMs: authSeconds * 1000 });
       await expect(
         gitHubPublicApi.fetchGitHubJson(
           "https://api.github.com/repos/owner/repo",
           fetchMock,
           "quota-token",
         ),
-      ).rejects.toMatchObject({ statusCode: 429, retryAfterMs: 60_000 });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      ).rejects.toMatchObject({ statusCode: 429, retryAfterMs: authSeconds * 1000 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     },
   );
 

@@ -1149,16 +1149,23 @@ function withSamplerFixture(
     writeFileSync(
       clock,
       `const OriginalDate = Date;
+let admissionElapsedMs = 0;
 global.Date = class extends OriginalDate {
   constructor(...args) { super(...(args.length ? args : [${JSON.stringify(sampleNow)}])); }
-  static now() { return OriginalDate.parse(${JSON.stringify(fixture.observedAt ?? sampleNow)}); }
+  static now() { return OriginalDate.parse(${JSON.stringify(fixture.observedAt ?? sampleNow)}) + admissionElapsedMs; }
+};
+const wait = Atomics.wait;
+Atomics.wait = (array, index, value, timeout) => {
+  if (!(timeout > 0 && timeout <= 3000)) return wait(array, index, value, timeout);
+  admissionElapsedMs += timeout;
+  return "timed-out";
 };\n`,
     );
     writeFileSync(
       fakeGh,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 const fs = require("node:fs");
-const args = process.argv.slice(2);
+const args = process.argv.slice(2).filter(arg => arg !== "--include");
 fs.appendFileSync(${JSON.stringify(requests)}, JSON.stringify(args) + "\\n");
 const fixture = ${JSON.stringify(fixture)};
 const endpoint = new URL(args[1], "https://api.github.com/");

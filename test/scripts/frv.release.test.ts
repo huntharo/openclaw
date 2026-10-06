@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -67,6 +68,42 @@ describe("FRV protected gh evidence reads", () => {
     },
   );
 
+  it("stops a throttled status read before scheduling a rapid retry", () => {
+    const result = runProtectedFrv("getRun", ["101"], "actions/runs/101", "rate-limited");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("API request quota unavailable");
+    expect(result.stderr).not.toContain("scheduled a rapid throttle retry");
+    expect(result.calls).toHaveLength(1);
+  });
+
+  it("expires its read deadline while waiting for shared admission without launching gh", () => {
+    const result = runProtectedFrv(
+      "getRun",
+      ["101", { operationDeadline: 10_500 }],
+      "actions/runs/101",
+      "admission-deadline",
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("FRV operation timed out");
+    expect(result.stderr).not.toContain("admission waited beyond the FRV deadline");
+    expect(result.calls).toEqual([]);
+  });
+
+  it.each(["paged", "enterprise-paged"] as const)(
+    "collects filtered jobs across individually admitted CLI pages (%s)",
+    (failure) => {
+      const result = runProtectedFrv(
+        "getAttemptJobs",
+        ["101", 2],
+        "actions/runs/101/attempts/2/jobs?per_page=100",
+        failure,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([{ id: 1 }, { id: 2 }]);
+      expect(result.calls).toHaveLength(2);
+    },
+  );
+
   it.each([
     ["legacy-flag", 0, ""],
     ["unrelated", 23, "unrelated log failure"],
@@ -100,34 +137,57 @@ function runProtectedFrv(
   method: string,
   args: Array<string | number | Record<string, unknown>>,
   endpoint: string,
-  failure: "none" | "legacy-flag" | "protected" | "unrelated" | "transient-deadline" = "none",
+  failure:
+    | "none"
+    | "legacy-flag"
+    | "protected"
+    | "unrelated"
+    | "transient-deadline"
+    | "rate-limited"
+    | "admission-deadline"
+    | "paged"
+    | "enterprise-paged" = "none",
 ) {
   const root = mkdtempSync(join(tmpdir(), "frv-protected-"));
   const gh = join(root, "gh");
+  const enterprise = failure === "enterprise-paged";
+  if (enterprise) {
+    writeFileSync(join(root, "hosts.yml"), "ghe.example.test:\n  user: fixture\n");
+  }
   writeFileSync(
     gh,
     `#!${process.execPath}
 const fs = require("node:fs");
-const args = process.argv.slice(2);
+const include = process.argv.includes("--include");
+const args = process.argv.slice(2).filter(arg => arg !== "--include");
 fs.appendFileSync("calls.jsonl", JSON.stringify(args) + "\\n");
 const fail = (message, code) => { console.error(message); process.exit(code); };
 const failure = ${JSON.stringify(failure)};
 if (failure === "protected") fail("protected refusal", 19);
 if (failure === "transient-deadline") fail("HTTP 502: transient fixture failure", 1);
-if (args[0] !== "api" || !args.includes(${JSON.stringify(`repos/${REPOSITORY}/${endpoint}`)})) fail("unexpected request", 17);
+if (failure === "rate-limited") {
+  process.stdout.write(${JSON.stringify('HTTP/2.0 429 Too Many Requests\r\nRetry-After: 90\r\n\r\n{"message":"secondary rate limit"}')});
+  fail("HTTP 429: secondary rate limit", 1);
+}
+const next = ${JSON.stringify(`${enterprise ? "https://ghe.example.test/api/v3" : "https://api.github.com"}/repos/${REPOSITORY}/${endpoint}&page=2`)};
+const paged = failure === "paged" || failure === "enterprise-paged";
+const pageTwo = paged && args.includes(next);
+if (args[0] !== "api" || (!args.includes(${JSON.stringify(`repos/${REPOSITORY}/${endpoint}`)}) && !pageTwo)) fail("unexpected request", 17);
 if (!args.some((arg, i) => ["-H", "--header"].includes(arg) && args[i+1] === "Cache-Control: max-age=0")) fail("missing live header", 18);
 if (${endpoint.endsWith("/logs")} && failure === "legacy-flag" && args.includes("--allow-escape-sequences")) fail("unknown flag: --allow-escape-sequences", 1);
 if (${endpoint.endsWith("/logs")} && failure === "unrelated") fail("unrelated log failure", 23);
 if (${endpoint.endsWith("/logs")} && failure === "none" && !args.includes("--allow-escape-sequences")) fail("missing escape-sequence flag", 20);
+if (include) process.stdout.write("HTTP/2.0 200 OK\\r\\n" + (paged && !pageTwo ? "Link: <" + next + ">; rel=\\"next\\"\\r\\n" : "") + "\\r\\n");
 if (${endpoint.includes("/jobs?")}) {
-  if (!args.includes("--paginate") || !args.includes(".jobs[] | @json")) fail("missing pagination", 17);
-  console.log('{"id":1}\\n{"id":2}');
+  if (!args.includes(".jobs[] | @json")) fail("missing job filter", 17);
+  console.log(paged && !args.includes("--paginate") ? (pageTwo ? '{"id":2}' : '{"id":1}') : '{"id":1}\\n{"id":2}');
 } else console.log(${endpoint.endsWith("/logs") ? JSON.stringify("job evidence") : JSON.stringify('{"run_attempt":2}')});
 `,
   );
   chmodSync(gh, 0o755);
   try {
     const moduleUrl = pathToFileURL(join(process.cwd(), "scripts/frv.mjs")).href;
+    const tsxUrl = pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href;
     const result = spawnSync(
       process.execPath,
       [
@@ -136,6 +196,33 @@ if (${endpoint.includes("/jobs?")}) {
         `
       import {createClient} from ${JSON.stringify(moduleUrl)};
       import {existsSync} from "node:fs";
+      // Load the shared owner before clock/timer traps, which are about FRV retries.
+      const {tsImport} = await import(${JSON.stringify(tsxUrl)});
+      const quotaOwner = await tsImport(${JSON.stringify(pathToFileURL(join(process.cwd(), "src/infra/http-api-quota.ts")).href)}, ${JSON.stringify(moduleUrl)});
+      await tsImport(${JSON.stringify(pathToFileURL(join(process.cwd(), "src/infra/http-command-response.ts")).href)}, ${JSON.stringify(moduleUrl)});
+      if (${JSON.stringify(failure)} === "rate-limited") {
+        const nativeSetTimeout = globalThis.setTimeout;
+        globalThis.setTimeout = (...args) => {
+          if (args[1] < 60_000) throw new Error("scheduled a rapid throttle retry");
+          return nativeSetTimeout(...args);
+        };
+      }
+      if (${JSON.stringify(failure)} === "admission-deadline") {
+        let now = 10_000;
+        Date.now = () => now;
+        const quota = quotaOwner.getSharedApiQuota({apiBaseUrl:"https://api.github.com",token:process.env.GH_TOKEN});
+        for (let count = 0; count < 20; count++) quota.admit()();
+        const nativeSetTimeout = globalThis.setTimeout;
+        globalThis.setTimeout = (callback, delay, ...args) => {
+          if (delay < 60_000) {
+            if (delay > 500) throw new Error("admission waited beyond the FRV deadline");
+            now += delay;
+            callback(...args);
+            return 0;
+          }
+          return nativeSetTimeout(callback, delay, ...args);
+        };
+      }
       if (${JSON.stringify(failure)} === "transient-deadline") {
         Date.now = () => existsSync("calls.jsonl") ? 20_000 : 10_000;
         const nativeSetTimeout = globalThis.setTimeout;
@@ -152,15 +239,24 @@ if (${endpoint.includes("/jobs?")}) {
       {
         cwd: root,
         encoding: "utf8",
-        env: { HOME: root, PATH: `${root}${delimiter}${process.env.PATH ?? ""}` },
+        env: {
+          HOME: root,
+          PATH: `${root}${delimiter}${process.env.PATH ?? ""}`,
+          GH_TOKEN: "synthetic-frv-fixture-token",
+          ...(enterprise
+            ? { GH_CONFIG_DIR: root, GH_ENTERPRISE_TOKEN: "synthetic-frv-enterprise-token" }
+            : {}),
+        },
       },
     );
     return {
       ...result,
-      calls: readFileSync(join(root, "calls.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line)),
+      calls: existsSync(join(root, "calls.jsonl"))
+        ? readFileSync(join(root, "calls.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line))
+        : [],
     };
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -428,6 +524,13 @@ async function runPublicationCli(
     join(directory, "no-network.mjs"),
     `import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
+${
+  legacy
+    ? `const {tsImport} = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)});
+await tsImport(${JSON.stringify(pathToFileURL(join(process.cwd(), "src/infra/http-api-quota.ts")).href)}, ${JSON.stringify(pathToFileURL(join(process.cwd(), "scripts/frv.mjs")).href)});
+await tsImport(${JSON.stringify(pathToFileURL(join(process.cwd(), "src/infra/http-command-response.ts")).href)}, ${JSON.stringify(pathToFileURL(join(process.cwd(), "scripts/frv.mjs")).href)});`
+    : ""
+}
 globalThis.fetch = () => { throw new Error('unplanned Node fetch'); };
 for (const name of ["execFileSync", "execFile", "spawn", "spawnSync"]) {
   const original = childProcess[name];
@@ -448,7 +551,8 @@ ${clockStep ? `let ticks = 0; const now = Date.now(); Date.now = () => now + tic
     gh,
     `#!${process.execPath}
 const fs = require("node:fs");
-const args = process.argv.slice(2);
+const include = process.argv.includes("--include");
+const args = process.argv.slice(2).filter(arg => arg !== "--include");
 fs.appendFileSync("calls.jsonl", JSON.stringify(args) + "\\n");
 const reject = () => { console.error("unplanned or mutating request"); process.exit(23); };
 const legacy = ${legacy};
@@ -457,7 +561,7 @@ if (legacy && args[0] === "run" && args[1] === "download" && args[2] === "77" &&
   process.exit(0);
 }
 if (args[0] !== "api" || (!legacy && (!args.includes("GET") || !args.includes("github.com"))) || !args.includes("Cache-Control: max-age=0")) reject();
-if (args.includes("--include") || (!legacy && args.includes("--paginate"))) reject();
+if ((!legacy && include) || (!legacy && args.includes("--paginate"))) reject();
 let path = args.find(a => a.startsWith("repos/"));
 if (legacy && path.endsWith("/jobs?per_page=100")) path += "&page=1";
 const table = JSON.parse(fs.readFileSync("responses.json", "utf8"));
@@ -468,6 +572,7 @@ if (value.sequence) {
   value = value.sequence[Math.min(reads - 1, value.sequence.length - 1)];
 }
 if (value.failure) { console.error(value.failure); process.exit(1); }
+if (include) process.stdout.write(${JSON.stringify("HTTP/2.0 200 OK\r\n\r\n")});
 if (legacy && value.jobs) process.stdout.write(value.jobs.map(job => JSON.stringify(job)).join("\\n"));
 else if (value.binary) process.stdout.write(Buffer.from(value.binary, "base64"));
 else if (value.raw) process.stdout.write(value.raw);
@@ -491,6 +596,7 @@ else process.stdout.write(JSON.stringify(value));
         env: {
           HOME: directory,
           PATH: directory,
+          ...(legacy ? { GH_TOKEN: "synthetic-frv-fixture-token" } : {}),
           ...(explicitBinary ? { OPENCLAW_GH_BIN: gh, GH_TOKEN: "synthetic-fixture-token" } : {}),
         },
       },

@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   collectRunJobsFromPages,
   isRetryableGhJsonErrorMessage,
@@ -12,6 +12,9 @@ import {
   selectLatestMainPushCiRun,
   summarizeRunTimings,
 } from "../../scripts/ci-run-timings.mjs";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("scripts/ci-run-timings.mjs", () => {
   it("separates start delay from job duration without mislabeling dependency wait", () => {
@@ -158,8 +161,6 @@ describe("scripts/ci-run-timings.mjs", () => {
 
   it("retries transient GitHub API failures while preserving auth failures", () => {
     for (const message of [
-      "gh: API secondary rate limit exceeded (HTTP 403)",
-      "gh: HTTP 429: too many requests",
       "Command failed: gh api repos/openclaw/openclaw/actions/runs/1/jobs\nHTTP 502",
       "read ECONNRESET",
     ]) {
@@ -169,6 +170,97 @@ describe("scripts/ci-run-timings.mjs", () => {
     expect(
       isRetryableGhJsonErrorMessage("gh: Resource not accessible by integration (HTTP 403)"),
     ).toBe(false);
+    for (const message of [
+      "gh: API secondary rate limit exceeded (HTTP 403)",
+      "gh: HTTP 429: too many requests",
+      "gh: abuse detection mechanism",
+    ]) {
+      expect(isRetryableGhJsonErrorMessage(message)).toBe(false);
+    }
+  });
+
+  it.each([
+    ["HTTP 429 with a non-JSON error body", "api-429"],
+    ["a secondary limit without Retry-After", "api-secondary"],
+    ["a throttled run lookup", "run-limit"],
+    ["primary quota exhaustion before the next job page", "primary"],
+  ])("stops further gh dispatches after %s", (_name, mode) => {
+    const fixtureDir = tempDirs.make("openclaw-ci-timings-quota-");
+    const fakeGhPath = path.join(fixtureDir, "gh");
+    const callsPath = path.join(fixtureDir, "calls.jsonl");
+    const waitsPath = path.join(fixtureDir, "waits.jsonl");
+    const clockPath = path.join(fixtureDir, "clock.mjs");
+    writeFileSync(waitsPath, "");
+    writeFileSync(
+      clockPath,
+      `import { appendFileSync } from "node:fs";
+const wait = Atomics.wait;
+Atomics.wait = (array, index, value, timeout) => {
+  if (![1000, 3000, 6000].includes(timeout)) return wait(array, index, value, timeout);
+  appendFileSync(${JSON.stringify(waitsPath)}, JSON.stringify(timeout) + "\\n");
+  return wait(array, index, value, 0);
+};
+`,
+    );
+    writeFileSync(
+      fakeGhPath,
+      `#!${process.execPath}
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+const mode = ${JSON.stringify(mode)};
+const endpoint = args.find(arg => arg.startsWith("repos/")) ?? "";
+appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");
+if (args[0] === "api" && endpoint.endsWith("/actions/runs/123")) {
+  if (mode === "run-limit") {
+    console.error("gh: abuse detection mechanism (HTTP 403)");
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ status: "completed", conclusion: "success", createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:01:00Z" }));
+} else if (args[0] === "api") {
+  if (mode === "primary") {
+    if (args.includes("--include")) console.log("HTTP/2.0 200 OK\\nx-ratelimit-remaining: 0\\nx-ratelimit-reset: " + (Math.floor(Date.now() / 1000) + 7200) + "\\n");
+    console.log(JSON.stringify({ total_count: 2, jobs: [{ id: 1, name: "checks", status: "completed", conclusion: "success", started_at: "2026-09-01T00:00:10Z", completed_at: "2026-09-01T00:00:40Z" }] }));
+  } else {
+    const status = mode === "api-429" ? 429 : 403;
+    if (args.includes("--include")) console.log("HTTP/2.0 " + status + " Forbidden\\n" + (status === 429 ? "retry-after: 7200\\n" : "") + "\\n");
+    console.log(status === 429 ? "<html>Too many requests</html>" : JSON.stringify({ message: "You have exceeded a secondary rate limit." }));
+    console.error(status === 429 ? "gh: too many requests (HTTP 429)" : "gh: secondary rate limit (HTTP 403)");
+    process.exit(1);
+  }
+} else {
+  process.exit(2);
+}
+`,
+    );
+    chmodSync(fakeGhPath, 0o755);
+    const result = spawnSync(
+      process.execPath,
+      ["--import", pathToFileURL(clockPath).href, "scripts/ci-run-timings.mjs", "123"],
+      {
+        cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GH_TOKEN: "fixture-ci-quota-token",
+          GH_HOST: "github.com",
+          OPENCLAW_GH_BIN: fakeGhPath,
+        },
+      },
+    );
+    const calls: string[][] = readFileSync(callsPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      calls.filter((args) =>
+        args.some((arg) =>
+          mode === "run-limit" ? arg.endsWith("/runs/123") : arg.includes("/jobs?"),
+        ),
+      ),
+    ).toHaveLength(1);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("API request quota unavailable");
+    expect(readFileSync(waitsPath, "utf8")).toBe("");
   });
 
   it("falls back to the newest push CI run when the exact SHA has not appeared yet", () => {
@@ -318,6 +410,7 @@ describe("scripts/ci-run-timings.mjs", () => {
       `import { appendFileSync } from "node:fs";
 const wait = Atomics.wait;
 Atomics.wait = (array, index, value, timeout) => {
+  if (timeout !== 1000) return wait(array, index, value, timeout);
   appendFileSync(${JSON.stringify(retryWaitsPath)}, String(timeout) + "\\n");
   return wait(array, index, value, 0);
 };
@@ -325,7 +418,7 @@ Atomics.wait = (array, index, value, timeout) => {
     );
     writeFileSync(
       fakeGhPath,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 const { existsSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 const endpoint = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -449,19 +542,20 @@ if (endpoint.includes("actions/workflows/ci.yml/runs?")) {
     const callsPath = path.join(fixtureDir, "calls.jsonl");
     writeFileSync(
       fakeGhPath,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2);
+const endpoint = args.find(arg => arg.startsWith("repos/")) ?? "";
 appendFileSync(process.env.FIXTURE_CALLS_PATH, JSON.stringify(args) + "\\n");
-if (args[0] === "run" && args[1] === "list") {
-  console.log(JSON.stringify([
-    { databaseId: 201, event: "workflow_dispatch", headSha: "manual", status: "completed", conclusion: "success" },
-    { databaseId: 202, event: "push", headSha: "failed", status: "completed", conclusion: "failure" },
-    { databaseId: 203, event: "push", headSha: "running", status: "in_progress", conclusion: "" },
-    { databaseId: 204, event: "push", headSha: "first", status: "completed", conclusion: "success" },
-    { databaseId: 205, event: "push", headSha: "second", status: "completed", conclusion: "success" }
-  ]));
-} else if (args[0] === "run" && args[1] === "view") {
+if (args[0] === "api" && endpoint.includes("/workflows/ci.yml/runs?")) {
+  console.log(JSON.stringify({ workflow_runs: [
+    { id: 201, event: "workflow_dispatch", head_sha: "manual", status: "completed", conclusion: "success" },
+    { id: 202, event: "push", head_sha: "failed", status: "completed", conclusion: "failure" },
+    { id: 203, event: "push", head_sha: "running", status: "in_progress", conclusion: "" },
+    { id: 204, event: "push", head_sha: "first", status: "completed", conclusion: "success" },
+    { id: 205, event: "push", head_sha: "second", status: "completed", conclusion: "success" }
+  ] }));
+} else if (args[0] === "api" && new RegExp("/actions/runs/[0-9]+$").test(endpoint)) {
   console.log(JSON.stringify({ status: "completed", conclusion: "success", createdAt: "2026-08-31T00:00:00Z", updatedAt: "2026-08-31T00:01:00Z" }));
 } else if (args[0] === "api" && args.some((arg) => arg.includes("/jobs?"))) {
   console.log(JSON.stringify({ total_count: 1, jobs: [{ id: 1, name: "checks", status: "completed", conclusion: "success", started_at: "2026-08-31T00:00:10Z", completed_at: "2026-08-31T00:00:40Z" }] }));
@@ -488,12 +582,16 @@ if (args[0] === "run" && args[1] === "list") {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
-      expect(calls[0]?.slice(calls[0].indexOf("--event"), calls[0].indexOf("--event") + 2)).toEqual(
-        ["--event", "push"],
+      const listEndpoint = calls[0]?.find((arg) => arg.startsWith("repos/"));
+      expect(new URL(listEndpoint!, "https://api.github.com").searchParams.get("event")).toBe(
+        "push",
       );
       expect(
-        calls.filter((args) => args[0] === "run" && args[1] === "view").map((args) => args[2]),
+        calls.flatMap((args) =>
+          args.flatMap((arg) => /\/actions\/runs\/(\d+)$/u.exec(arg)?.[1] ?? []),
+        ),
       ).toEqual(["204", "205"]);
+      expect(calls.every((args) => args[0] === "api" && args.includes("--include"))).toBe(true);
     } finally {
       rmSync(fixtureDir, { force: true, recursive: true });
     }

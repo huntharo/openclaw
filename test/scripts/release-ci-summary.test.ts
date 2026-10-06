@@ -1211,7 +1211,7 @@ describe("GitHub API commands", () => {
       );
       writeFileSync(
         shimGh,
-        `#!/usr/bin/env node
+        `#!${process.execPath}
 import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
@@ -1235,7 +1235,7 @@ process.stdout.write(typeof output === "string" ? output : JSON.stringify(output
       );
       writeFileSync(
         plainGh,
-        `#!/usr/bin/env node
+        `#!${process.execPath}
 import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.PLAIN_LOG, JSON.stringify(args) + "\\n");
@@ -1277,7 +1277,7 @@ process.stdout.write(readFileSync(process.env.ARCHIVE));
           ],
           { encoding: "utf8", env },
         );
-        expect(lineageResult.status).toBe(0);
+        expect(lineageResult.status, lineageResult.stderr || lineageResult.stdout).toBe(0);
         expect(JSON.parse(lineageResult.stdout)).toEqual({
           merge_base_commit: { sha: workflowSha },
           status: "ahead",
@@ -1304,6 +1304,7 @@ process.stdout.write(readFileSync(process.env.ARCHIVE));
             "api",
             `repos/openclaw/openclaw/actions/jobs/${fixture.parentJob.id}/logs`,
             "--allow-escape-sequences",
+            "--include",
           ]),
         );
         expect(shimCalls).not.toContain(`/actions/artifacts/${artifactId}/zip`);
@@ -1323,7 +1324,7 @@ function runParentJobLogProbe(shimBody: string) {
   const shimGh = join(root, "gh");
   writeFileSync(
     shimGh,
-    `#!/usr/bin/env node
+    `#!${process.execPath}
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + "\\n");
@@ -1355,11 +1356,21 @@ ${shimBody}
         encoding: "utf8",
         env: {
           ...process.env,
+          GH_TOKEN: "synthetic-release-job-log",
           PATH: `${root}:${process.env.PATH ?? ""}`,
           SHIM_LOG: shimLog,
         },
       },
     );
+    if (!existsSync(shimLog)) {
+      throw new Error(
+        `Job log fixture failed before gh dispatch: ${JSON.stringify({
+          status: result.status,
+          stderr: result.stderr,
+          stdout: result.stdout,
+        })}`,
+      );
+    }
     return {
       calls: readFileSync(shimLog, "utf8")
         .trim()
@@ -1373,8 +1384,13 @@ ${shimBody}
 }
 
 describe("parent job log compatibility", () => {
-  const flaggedArgs = ["api", "repos/owner/repo/actions/jobs/123/logs", "--allow-escape-sequences"];
-  const legacyArgs = ["api", "repos/owner/repo/actions/jobs/123/logs"];
+  const flaggedArgs = [
+    "api",
+    "repos/owner/repo/actions/jobs/123/logs",
+    "--allow-escape-sequences",
+    "--include",
+  ];
+  const legacyArgs = ["api", "repos/owner/repo/actions/jobs/123/logs", "--include"];
 
   it("retries once without the flag for the exact legacy gh error", () => {
     const { calls, result } = runParentJobLogProbe(`
@@ -1720,7 +1736,7 @@ function trustedMainChildReuseFixture() {
   return { ...fixture, client, origin, selection, run, artifact, github };
 }
 
-function createReleaseCiWatchFixture(states: ReleaseCiWatchState[]) {
+function createReleaseCiWatchFixture(states: ReleaseCiWatchState[], throttle = false) {
   const root = mkdtempSync(join(tmpdir(), "release-ci-watch-"));
   const callsPath = join(root, "calls.jsonl");
   const ghPath = join(root, "gh");
@@ -1743,6 +1759,10 @@ const states = ${JSON.stringify(states)};
 let output;
 if (args[0] === "run" && args[1] === "view") {
   if (args[args.indexOf("--json") + 1] === "status,conclusion,attempt,headSha,jobs") {
+    if (${JSON.stringify(throttle)}) {
+      process.stderr.write("gh: You have exceeded a secondary rate limit.\\n");
+      process.exit(1);
+    }
     const index = Number(readFileSync(process.env.RELEASE_CI_WATCH_INDEX, "utf8"));
     output = { headSha: ${JSON.stringify(fixture.workflowSha)}, ...states[Math.min(index, states.length - 1)] };
     writeFileSync(process.env.RELEASE_CI_WATCH_INDEX, String(index + 1));
@@ -1773,19 +1793,40 @@ if (args[0] === "run" && args[1] === "view") {
   }));
   process.exit(0);
 } else if (endpoint === "rate_limit") output = { resources: { core: { limit: 5000, remaining: 4999, reset: 2_000_000_000 } } };
-else if (endpoint === "repos/openclaw/openclaw/actions/runs/${runId}") output = ${JSON.stringify(parent)};
+else if (endpoint === "repos/openclaw/openclaw/actions/runs/${runId}") {
+  if (args.includes("--include")) {
+    if (${JSON.stringify(throttle)}) {
+      process.stdout.write('HTTP/2.0 429 Too Many Requests\\r\\nRetry-After: 90\\r\\n\\r\\n{"message":"secondary rate limit"}');
+      process.stderr.write("gh: You have exceeded a secondary rate limit.\\n");
+      process.exit(1);
+    }
+    const index = Number(readFileSync(process.env.RELEASE_CI_WATCH_INDEX, "utf8"));
+    const state = states[Math.min(index, states.length - 1)];
+    output = {...${JSON.stringify(parent)}, status:state.status, conclusion:state.conclusion, run_attempt:state.attempt};
+    writeFileSync(process.env.RELEASE_CI_WATCH_INDEX, String(index + 1));
+  } else output = ${JSON.stringify(parent)};
+}
+else if (endpoint.startsWith("repos/openclaw/openclaw/actions/runs/${runId}/attempts/")) {
+  const index = Math.max(0, Number(readFileSync(process.env.RELEASE_CI_WATCH_INDEX, "utf8")) - 1);
+  const jobs = states[Math.min(index, states.length - 1)].jobs;
+  output = {total_count:jobs.length,jobs};
+}
 else if (endpoint.startsWith("repos/openclaw/openclaw/actions/runs/${runId}/artifacts?")) output = { artifacts: [] };
 else { console.error("unexpected gh call: " + args.join(" ")); process.exit(43); }
+if (args.includes("--include")) process.stdout.write("HTTP/2.0 200 OK\\r\\n\\r\\n");
 process.stdout.write(JSON.stringify(output));
 `,
   );
   writeFileSync(
     preloadPath,
-    "globalThis.setTimeout = (callback, _delay, ...args) => { queueMicrotask(() => callback(...args)); return 0; };\n",
+    `const { createGitHubAsyncCommandQuota } = await import(${JSON.stringify(pathToFileURL(resolve("scripts/lib/github-command-quota.mjs")).href)});
+await createGitHubAsyncCommandQuota({env:{},runGhAsync:async()=>""});
+globalThis.setTimeout = (callback, _delay, ...args) => { queueMicrotask(() => callback(...args)); return 0; };\n`,
   );
   chmodSync(ghPath, 0o755);
   const env = {
     ...process.env,
+    GH_TOKEN: "synthetic-release-ci-watch",
     PATH: `${root}:${process.env.PATH ?? ""}`,
     RELEASE_CI_WATCH_CALLS: callsPath,
     RELEASE_CI_WATCH_INDEX: indexPath,
@@ -1809,6 +1850,23 @@ process.stdout.write(JSON.stringify(output));
 }
 
 describe("release CI summary child correlation", () => {
+  it("stops its admitted watch poll on a secondary limit before reading more status", () => {
+    const fixture = createReleaseCiWatchFixture(
+      [{ attempt: 1, conclusion: "", jobs: [], status: "in_progress" }],
+      true,
+    );
+    try {
+      const result = fixture.run();
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain("API request quota unavailable");
+      expect(fixture.readCalls()).toEqual([
+        ["api", `repos/openclaw/openclaw/actions/runs/${fixture.runId}`, "--include"],
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it("reports an early release blocker once while the diagnostic drain continues", () => {
     const fixture = createReleaseCiWatchFixture([
       {
@@ -1830,8 +1888,9 @@ describe("release CI summary child correlation", () => {
       expect(
         calls.filter(
           (args) =>
-            args[0] === "run" &&
-            args[args.indexOf("--json") + 1] === "status,conclusion,attempt,headSha,jobs",
+            args[0] === "api" &&
+            args[1] === `repos/openclaw/openclaw/actions/runs/${fixture.runId}` &&
+            args.includes("--include"),
         ),
       ).toHaveLength(1);
       expect(calls.filter((args) => args[0] === "api" && args[1] === "rate_limit")).toHaveLength(1);

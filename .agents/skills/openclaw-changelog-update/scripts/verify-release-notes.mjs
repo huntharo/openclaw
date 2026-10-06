@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { createGitHubCommandQuota } from "../../../../scripts/lib/github-command-quota.mjs";
 import {
   findReleaseChangelog,
   loadChangelogCollection,
@@ -253,15 +254,12 @@ function gitCommit(ref, required = false) {
   );
 }
 
+let executeGithubCommand;
+
 function fetchGithubApi(args) {
-  try {
-    return JSON.parse(run("gh", ["api", ...args]).replace(ansiEscapePattern, ""));
-  } catch (error) {
-    if (typeof error.stdout === "string" && error.stdout.trim() !== "") {
-      return JSON.parse(error.stdout.replace(ansiEscapePattern, ""));
-    }
-    throw error;
-  }
+  const { body, error } = executeGithubCommand(["api", ...args]);
+  if (error && !body.trim()) throw error;
+  return JSON.parse(body.replace(ansiEscapePattern, ""));
 }
 
 export function createGithubSnapshotState({
@@ -1513,7 +1511,7 @@ function graphql(query) {
       const message = [error?.message, error?.stdout, error?.stderr].filter(Boolean).join("\n");
       // Historical ranges batch hundreds of objects; only retry transient transport failures.
       if (
-        !/(?:operation timed out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|TLS handshake timeout|stream error: .*CANCEL|unexpected end of JSON input|unexpected EOF|upstream connect error|connection termination|connection reset by peer|error connecting to api\.github\.com|Unexpected token '<'|something went wrong|temporarily unavailable|internal server error|rate limit)/i.test(
+        !/(?:operation timed out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|TLS handshake timeout|stream error: .*CANCEL|unexpected end of JSON input|unexpected EOF|upstream connect error|connection termination|connection reset by peer|error connecting to api\.github\.com|Unexpected token '<'|something went wrong|temporarily unavailable|internal server error)/i.test(
           message,
         )
       ) {
@@ -2946,5 +2944,9 @@ function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  executeGithubCommand = await createGitHubCommandQuota({
+    hostname: "github.com",
+    runGh: (args) => run("gh", args),
+  });
   main();
 }

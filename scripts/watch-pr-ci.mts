@@ -3,16 +3,19 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs as parseNodeArgs } from "node:util";
 import { z } from "zod";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
-import { execGhJson, workflowRunsApiArgs } from "./lib/plain-gh.mjs";
+import { workflowRunsApiArgs } from "./lib/plain-gh.mjs";
+import {
+  createWatcherGitHubReads,
+  WatcherQuotaError,
+  type WatcherJsonReader,
+} from "./lib/watch-pr-ci-github.mts";
 import {
   createPrRollupReader,
   FAILURE_CONCLUSIONS,
-  RollupPageSchema,
   type RollupCheck,
   type RollupPayload,
   type RollupPage,
 } from "./lib/watch-pr-ci-rollup.mts";
-import { createPrMetadataReader } from "./pr-lib/github.mjs";
 
 const USAGE =
   "Usage: node scripts/watch-pr-ci.mjs <pr-number> <head-sha> [--repo owner/repo] [--after run-id] [--attach-timeout 900] [--timeout 3600] [--interval 120] [--completion rollup|ci-run]";
@@ -92,10 +95,6 @@ type RunStatus = z.infer<typeof RunStatusSchema>;
 type JobIdentity = { runId: number; checkId: number };
 type PrRunReplacement = { workflowId: number; checkSuites: ReadonlyMap<number, number> };
 const MAX_EVIDENCE_READS_PER_POLL = 32;
-const GH_READ_OPTIONS = {
-  stdio: ["ignore", "pipe", "pipe"],
-  timeout: 60_000,
-} satisfies Parameters<typeof execGhJson>[1];
 // Adapted from Node's MIT-licensed util.stripVTControlCharacters implementation.
 const ANSI_ESCAPE_SEQUENCE = new RegExp(
   "[\\u001B\\u009B][[\\]()#;?]*" +
@@ -341,34 +340,19 @@ export function classifyRollup(
   return { verdict: "PENDING", pendingCount, failingNames: [], supersededCount };
 }
 
-function ghReadOptions(deadline?: number) {
-  if (deadline === undefined) {
-    return GH_READ_OPTIONS;
-  }
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) {
-    throw new Error("watcher evidence deadline elapsed");
-  }
-  return { ...GH_READ_OPTIONS, timeout: Math.min(GH_READ_OPTIONS.timeout, remaining) };
-}
-
-function readPr(
-  pr: number,
-  readMetadata: ReturnType<typeof createPrMetadataReader>,
-  deadline?: number,
-) {
-  // Repository resolution and metadata share one read budget, including diagnostics.
-  const readDeadline = Date.now() + ghReadOptions(deadline).timeout;
-  return RollupPageSchema.parse(
-    readMetadata(pr, ["state", "mergeable", "headRefOid"], () => ghReadOptions(readDeadline)),
-  );
-}
 export const buildFindRunArgs = (repo: string, sha: string) =>
   workflowRunsApiArgs(repo, sha, "pull_request", 20);
 export const selectRunAfter = (runs: RunListItem[], after?: number) =>
   runs.find((run) => run.conclusion !== "skipped" && (after === undefined || run.id > after));
-function findRun(repo: string, sha: string, after?: number, pr?: number) {
-  const runs = RunListSchema.parse(execGhJson(buildFindRunArgs(repo, sha), GH_READ_OPTIONS));
+async function findRun(
+  readJson: WatcherJsonReader,
+  repo: string,
+  sha: string,
+  deadline: number,
+  after?: number,
+  pr?: number,
+) {
+  const runs = RunListSchema.parse(await readJson(buildFindRunArgs(repo, sha), deadline));
   const candidates =
     pr === undefined
       ? runs
@@ -383,19 +367,52 @@ function findRun(repo: string, sha: string, after?: number, pr?: number) {
   }
   return { run, runs: new Map(runs.map((item) => [item.id, item])) };
 }
-const readRun = (repo: string, runId: number, deadline?: number, includeJobs = false) =>
-  RunStatusSchema.parse(
-    execGhJson(
-      `run view ${runId} --repo ${repo} --json status,conclusion${includeJobs ? ",jobs" : ""}`.split(
-        " ",
+async function readRun(
+  readJson: WatcherJsonReader,
+  repo: string,
+  runId: number,
+  deadline: number,
+  includeJobs = false,
+) {
+  const path = `repos/${repo}/actions/runs/${runId}`;
+  const run = RunStatusSchema.parse(await readJson(["api", path], deadline, true));
+  if (!includeJobs) {
+    return run;
+  }
+  const jobs: unknown[] = [];
+  let total: number | undefined;
+  const pageSchema = z.object({
+    total_count: z.number().int().nonnegative().max(1_000),
+    jobs: z.array(z.unknown()).max(100),
+  });
+  for (let page = 1; page <= 10; page += 1) {
+    const response = pageSchema.safeParse(
+      await readJson(
+        ["api", `${path}/jobs?filter=latest&per_page=100&page=${page}`],
+        deadline,
+        true,
       ),
-      {
-        ...ghReadOptions(deadline),
-        // Revalidate changing run status instead of reusing a cached snapshot.
-        env: { ...process.env, OCTOPOOL_FRESH: "1" },
-      },
-    ),
-  );
+    );
+    if (!response.success) {
+      return run;
+    }
+    total ??= response.data.total_count;
+    if (response.data.total_count !== total) {
+      throw new Error("run job count changed during pagination");
+    }
+    jobs.push(...response.data.jobs);
+    if (jobs.length >= total) {
+      if (jobs.length !== total) {
+        throw new Error("run job pages have an inconsistent count");
+      }
+      return RunStatusSchema.parse({ ...run, jobs });
+    }
+    if (response.data.jobs.length === 0) {
+      break;
+    }
+  }
+  throw new Error("run job pagination is incomplete");
+}
 
 function formatRunJobs(run: RunStatus) {
   if (!run.jobs) {
@@ -411,7 +428,8 @@ function formatRunJobs(run: RunStatus) {
   return `jobs=${run.jobs.length} running=${running} queued=${queued} completed=${completed} other=${run.jobs.length - running - queued - completed} failing=${failing.length} failed=${JSON.stringify(names)}`;
 }
 
-function readQueuedPlaceholderEvidence(
+async function readQueuedPlaceholderEvidence(
+  readJson: WatcherJsonReader,
   repo: string,
   headSha: string,
   attached: RunListItem,
@@ -446,9 +464,9 @@ function readQueuedPlaceholderEvidence(
   // Request current evidence through the shared gh seam; the final run read must
   // not deliberately reuse the snapshot from before job collection.
   const readEvidence = (endpoint: string) =>
-    execGhJson(["api", endpoint, "-H", "Cache-Control: max-age=0"], ghReadOptions(deadline));
-  const readCompletedRun = () => CompletedRunSchema.parse(readEvidence(runPath));
-  const run = readCompletedRun();
+    readJson(["api", endpoint, "-H", "Cache-Control: max-age=0"], deadline);
+  const readCompletedRun = async () => CompletedRunSchema.parse(await readEvidence(runPath));
+  const run = await readCompletedRun();
   if (
     run.id !== attached.id ||
     run.head_sha !== headSha ||
@@ -462,7 +480,7 @@ function readQueuedPlaceholderEvidence(
   // pages cannot establish that no active/failed same-name sibling exists.
   for (let page = 1; page <= 10; page += 1) {
     const response = AttemptJobsPageSchema.parse(
-      readEvidence(`${runPath}/attempts/${run.run_attempt}/jobs?per_page=100&page=${page}`),
+      await readEvidence(`${runPath}/attempts/${run.run_attempt}/jobs?per_page=100&page=${page}`),
     );
     totalCount ??= response.total_count;
     if (response.total_count !== totalCount || response.jobs.length === 0) {
@@ -512,17 +530,25 @@ function readQueuedPlaceholderEvidence(
     }
     // The list can copy executed steps onto queued aliases, including ones absent
     // from GraphQL. Prove the entire group unexecuted before dropping any visible ID.
-    const unexecuted = aliases.every((alias) => {
+    let unexecuted = true;
+    for (const alias of aliases) {
       remainingAliasReads -= 1;
-      const direct = AttemptJobSchema.parse(readEvidence(`repos/${repo}/actions/jobs/${alias.id}`));
-      return (
-        direct.id === alias.id &&
-        direct.name === name &&
-        sameAttempt(direct) &&
-        unassignedQueued(direct) &&
-        direct.steps.length === 0
+      const direct = AttemptJobSchema.parse(
+        await readEvidence(`repos/${repo}/actions/jobs/${alias.id}`),
       );
-    });
+      if (
+        !(
+          direct.id === alias.id &&
+          direct.name === name &&
+          sameAttempt(direct) &&
+          unassignedQueued(direct) &&
+          direct.steps.length === 0
+        )
+      ) {
+        unexecuted = false;
+        break;
+      }
+    }
     if (unexecuted) {
       // The refreshed rollup can reveal an alias omitted from the first snapshot.
       for (const alias of aliases) {
@@ -532,7 +558,7 @@ function readQueuedPlaceholderEvidence(
   }
   // Reruns reuse a run ID. Evidence from the completed attempt cannot authorize
   // completion after a newer attempt starts while the job pages are being read.
-  const current = readCompletedRun();
+  const current = await readCompletedRun();
   if (JSON.stringify(current) !== JSON.stringify(run)) {
     return new Map<number, string>();
   }
@@ -573,9 +599,10 @@ function githubPendingCount(rollup: RollupPayload | null | undefined) {
     .reduce((total, { count }) => total + count, 0);
 }
 
-function readPrRollup(
+async function readPrRollup(
+  readJson: WatcherJsonReader,
   args: ReturnType<typeof parseArgs>,
-  attachment: NonNullable<ReturnType<typeof findRun>>,
+  attachment: NonNullable<Awaited<ReturnType<typeof findRun>>>,
   deadline: number,
   reads: { remaining: number },
   readRollup: ReturnType<typeof createPrRollupReader>,
@@ -597,7 +624,7 @@ function readPrRollup(
       : undefined;
   let nextPage = initial;
   while (true) {
-    const pr = nextPage ?? readRollup(deadline).page;
+    const pr = nextPage ?? (await readRollup(deadline)).page;
     // Any metadata work below requires a new observation on the next iteration.
     nextPage = undefined;
     const blocked = precheck(pr, args.headSha, true);
@@ -633,10 +660,7 @@ function readPrRollup(
         }
         reads.remaining -= 1;
         previous = RunListItemSchema.parse(
-          execGhJson(
-            ["api", `repos/${args.repo}/actions/runs/${identity.runId}`],
-            ghReadOptions(deadline),
-          ),
+          await readJson(["api", `repos/${args.repo}/actions/runs/${identity.runId}`], deadline),
         );
         runs.set(identity.runId, previous);
       }
@@ -693,6 +717,9 @@ export async function pollUntilDeadline<T>({
   }
 }
 function retry(phase: string, error: unknown) {
+  if (error instanceof WatcherQuotaError) {
+    throw error;
+  }
   const message = (error instanceof Error ? error.message : String(error)).replaceAll(/\s+/gu, " ");
   // Revoked proxy credentials cannot recover while this process keeps polling.
   if (/\bProxy Authentication Required\b/iu.test(message)) {
@@ -725,33 +752,35 @@ function precheck(pr: RollupPage, sha: string, midWait = false) {
 
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  const readMetadata = createPrMetadataReader(args.repo);
+  const { readJson, readPr } = createWatcherGitHubReads(args.repo);
   const readRollup = createPrRollupReader(
     args.pr,
     args.repo,
-    (deadline) => readPr(args.pr, readMetadata, deadline),
-    ghReadOptions,
+    (deadline) => readPr(args.pr, deadline),
+    readJson,
   );
   const attachDeadline = Date.now() + args.attachTimeout * 1000;
   const attachment = await pollUntilDeadline({
     deadline: attachDeadline,
     interval: args.interval,
-    poll: () => {
+    poll: async () => {
       try {
-        const blocked = precheck(readPr(args.pr, readMetadata), args.headSha);
+        const blocked = precheck(await readPr(args.pr, attachDeadline), args.headSha);
         if (blocked !== null) {
           return { exitCode: blocked };
         }
-        const candidate = findRun(
+        const candidate = await findRun(
+          readJson,
           args.repo,
           args.headSha,
+          attachDeadline,
           args.after,
           args.completion === "rollup" ? args.pr : undefined,
         );
         if (candidate) {
           const classification = classifyRunAttachment(
             candidate.run.id,
-            readRun(args.repo, candidate.run.id),
+            await readRun(readJson, args.repo, candidate.run.id, attachDeadline),
             args.after,
           );
           if (classification.attach) {
@@ -789,18 +818,14 @@ async function main(argv = process.argv.slice(2)) {
   const watchResult = await pollUntilDeadline({
     deadline: watchDeadline,
     interval: args.interval,
-    poll: () => {
+    poll: async () => {
       try {
         if (args.completion === "ci-run") {
-          const blocked = precheck(
-            readPr(args.pr, readMetadata, watchDeadline),
-            args.headSha,
-            true,
-          );
+          const blocked = precheck(await readPr(args.pr, watchDeadline), args.headSha, true);
           if (blocked !== null) {
             return blocked;
           }
-          const run = readRun(args.repo, runId, watchDeadline, true);
+          const run = await readRun(readJson, args.repo, runId, watchDeadline, true);
           const result = classifyAttachedCiRun(run);
           const runStatus = run.status ?? "undefined";
           const runConclusion = run.conclusion ?? "pending";
@@ -813,7 +838,7 @@ async function main(argv = process.argv.slice(2)) {
           }
           return undefined;
         }
-        const initial = readRollup(watchDeadline, detailedPoll);
+        const initial = await readRollup(watchDeadline, detailedPoll);
         const summary = initial.page;
         const blocked = precheck(summary, args.headSha, true);
         if (blocked !== null) {
@@ -823,7 +848,7 @@ async function main(argv = process.argv.slice(2)) {
         const detailedObservation =
           initial.details && ["FAILURE", "ERROR", "PENDING"].includes(lastState);
         if (!detailedObservation && !["FAILURE", "ERROR"].includes(lastState)) {
-          const run = readRun(args.repo, runId, watchDeadline);
+          const run = await readRun(readJson, args.repo, runId, watchDeadline);
           if (run.status === "completed" && run.conclusion !== "success") {
             return emit(`FAILING checks=CI workflow (${run.conclusion ?? "unknown"})`, 15);
           }
@@ -840,7 +865,7 @@ async function main(argv = process.argv.slice(2)) {
             );
             if (lastState === "SUCCESS" && run.status === "completed") {
               // The run read can span a push or newly published checks on the same head.
-              const current = readRollup(watchDeadline, false).page;
+              const current = (await readRollup(watchDeadline, false)).page;
               const moved = precheck(current, args.headSha, true);
               if (moved !== null) {
                 return moved;
@@ -856,7 +881,8 @@ async function main(argv = process.argv.slice(2)) {
         }
         detailedPoll = true;
         const reads = { remaining: MAX_EVIDENCE_READS_PER_POLL };
-        let observed = readPrRollup(
+        let observed = await readPrRollup(
+          readJson,
           args,
           attachment,
           watchDeadline,
@@ -873,7 +899,9 @@ async function main(argv = process.argv.slice(2)) {
         lastPending = result.pendingCount;
         pendingLabel = "pending";
         let run =
-          result.verdict === "FAILING" ? undefined : readRun(args.repo, runId, watchDeadline);
+          result.verdict === "FAILING"
+            ? undefined
+            : await readRun(readJson, args.repo, runId, watchDeadline);
         if (
           result.verdict === "PENDING" &&
           result.pendingCount > 0 &&
@@ -881,7 +909,8 @@ async function main(argv = process.argv.slice(2)) {
           run.conclusion === "success" &&
           pr.statusCheckRollup
         ) {
-          const reconciled = readQueuedPlaceholderEvidence(
+          const reconciled = await readQueuedPlaceholderEvidence(
+            readJson,
             args.repo,
             args.headSha,
             attached,
@@ -891,13 +920,23 @@ async function main(argv = process.argv.slice(2)) {
           if (reconciled.size > 0) {
             // The evidence scan may span pushes or new checks. Reobserve the PR
             // before applying proof, then retain the ordinary final CI-run check.
-            observed = readPrRollup(args, attachment, watchDeadline, reads, readRollup, reconciled);
+            observed = await readPrRollup(
+              readJson,
+              args,
+              attachment,
+              watchDeadline,
+              reads,
+              readRollup,
+              reconciled,
+            );
             if ("exitCode" in observed) {
               return observed.exitCode;
             }
             ({ pr, result } = observed);
             run =
-              result.verdict === "FAILING" ? undefined : readRun(args.repo, runId, watchDeadline);
+              result.verdict === "FAILING"
+                ? undefined
+                : await readRun(readJson, args.repo, runId, watchDeadline);
           }
         }
         lastState = pr.statusCheckRollup?.state ?? "NONE";
@@ -919,7 +958,7 @@ async function main(argv = process.argv.slice(2)) {
           run?.status === "completed" &&
           run.conclusion === "success"
         ) {
-          const moved = precheck(readPr(args.pr, readMetadata, watchDeadline), args.headSha, true);
+          const moved = precheck(await readPr(args.pr, watchDeadline), args.headSha, true);
           if (moved !== null) {
             return moved;
           }

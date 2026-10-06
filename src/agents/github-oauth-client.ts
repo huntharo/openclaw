@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { ApiQuotaError, getSharedApiQuota, apiRateLimitHint } from "../infra/http-api-quota.js";
 import { readResponseWithLimit } from "../infra/http-body.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
@@ -321,30 +322,48 @@ export async function verifyGitHubCredential(
     }
     cache.delete(key);
     const create = async (): Promise<GitHubCredentialVerificationResult> => {
+      const quota = getSharedApiQuota({ apiBaseUrl, token });
       const timeoutMs = resolveTimerTimeoutMs(
         options.timeoutMs,
         GITHUB_OAUTH_REQUEST_TIMEOUT_MS,
         1,
       );
       const timeout = AbortSignal.timeout(timeoutMs);
-      const response = await fetch(`${apiBaseUrl}/user`, {
-        method: "GET",
-        redirect: "error",
-        headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
-        signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
-      });
+      const release = quota.admit();
+      let response: Response;
+      try {
+        response = await fetch(`${apiBaseUrl}/user`, {
+          method: "GET",
+          redirect: "error",
+          headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
+          signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+        });
+      } finally {
+        release();
+      }
       if (response.status !== 200) {
-        void response.body?.cancel().catch(() => undefined);
-        const rateLimited =
-          response.status === 429 ||
-          (response.status === 403 &&
-            (response.headers.get("x-ratelimit-remaining") === "0" ||
-              response.headers.has("retry-after")));
+        let quotaError = quota.observe(response);
+        let bodyHint: ReturnType<typeof apiRateLimitHint> = false;
+        if (response.status === 403 && (!quotaError || quotaError.resource !== undefined)) {
+          try {
+            bodyHint = apiRateLimitHint(
+              (await readGitHubResponse(response, "account", timeoutMs)).message,
+            );
+          } catch {
+            // Malformed diagnostics do not establish a body-reported throttle.
+          }
+        } else {
+          void response.body?.cancel().catch(() => undefined);
+        }
+        if (bodyHint && (!quotaError || bodyHint === "secondary")) {
+          quotaError = quota.observe(response, "core", bodyHint);
+        }
         return {
           status:
-            response.status === 401 ? "unavailable" : rateLimited ? "rate_limited" : "unverified",
+            response.status === 401 ? "unavailable" : quotaError ? "rate_limited" : "unverified",
         };
       }
+      quota.observe(response);
       const body = await readGitHubResponse(response, "account", timeoutMs);
       const accountId = readPositiveInteger(body.id, "account", Number.MAX_SAFE_INTEGER);
       const login = readBoundedString(body.login, "account", 100);
@@ -366,9 +385,9 @@ export async function verifyGitHubCredential(
     return await (options.signal || options.timeoutMs !== undefined
       ? create()
       : getOrCreatePromise(pending, key, create, { evictOnSettled: true }));
-  } catch {
+  } catch (error) {
     // Network errors, response bodies, and abort reasons can contain credentials.
-    return { status: "unverified" };
+    return { status: error instanceof ApiQuotaError ? "rate_limited" : "unverified" };
   }
 }
 
