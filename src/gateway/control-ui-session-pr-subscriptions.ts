@@ -1,5 +1,4 @@
 import pLimit from "p-limit";
-import { CHAT_SEND_SESSION_KEY_MAX_LENGTH } from "../../packages/gateway-protocol/src/schema/primitives.js";
 import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
@@ -7,10 +6,7 @@ import type {
   ControlUiSessionPullRequestSnapshot,
   ControlUiSessionPullRequestsChanged,
 } from "./control-ui-contract.js";
-import {
-  CONTROL_UI_SESSION_PULL_REQUESTS_CHANGED_EVENT,
-  CONTROL_UI_SESSION_PULL_REQUESTS_MAX_KEYS,
-} from "./control-ui-contract.js";
+import { CONTROL_UI_SESSION_PULL_REQUESTS_CHANGED_EVENT } from "./control-ui-contract.js";
 import {
   createControlUiSessionPrPreparedRead,
   type PreparedSessionPrState,
@@ -24,9 +20,11 @@ import type {
   ControlUiSessionPrTarget,
 } from "./control-ui-session-pr-read.js";
 import { withControlUiSessionPrSource } from "./control-ui-session-pr-source.js";
+import { createSessionPrStoreNotifications } from "./control-ui-session-pr-store-notifications.js";
 import type { ControlUiSessionPullRequestsParams } from "./control-ui-session-prs.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
+export { parseControlUiSessionPullRequestsSubscribeParams } from "./control-ui-session-pr-subscribe-params.js";
 
 const CONTROL_UI_SESSION_PR_POLL_INTERVAL_MS = 60_000;
 const CONTROL_UI_SESSION_PR_REFRESH_INTERVAL_MS = 10_000;
@@ -51,46 +49,6 @@ type SubscriptionDeps = {
   scheduler: GatewayScheduler;
   getSessionRowProjection?: () => SessionRowProjection | undefined;
 };
-
-function parseSessionKeys(value: unknown): string[] | null {
-  if (!Array.isArray(value) || value.length > CONTROL_UI_SESSION_PULL_REQUESTS_MAX_KEYS) {
-    return null;
-  }
-  const keys = new Set<string>();
-  for (const entry of value) {
-    if (typeof entry !== "string") {
-      return null;
-    }
-    const key = entry.trim();
-    if (!key || key.length > CHAT_SEND_SESSION_KEY_MAX_LENGTH) {
-      return null;
-    }
-    keys.add(key);
-  }
-  return [...keys];
-}
-
-export function parseControlUiSessionPullRequestsSubscribeParams(
-  value: unknown,
-): { sessionKeys: string[]; refreshSessionKeys: string[] } | null {
-  if (!value || typeof value !== "object" || !("sessionKeys" in value)) {
-    return null;
-  }
-  const raw = value as { sessionKeys?: unknown; refreshSessionKeys?: unknown };
-  const sessionKeys = parseSessionKeys(raw.sessionKeys);
-  const refreshSessionKeys =
-    raw.refreshSessionKeys === undefined ? [] : parseSessionKeys(raw.refreshSessionKeys);
-  if (!sessionKeys || !refreshSessionKeys) {
-    return null;
-  }
-  const watched = new Set(sessionKeys);
-  for (const key of refreshSessionKeys) {
-    if (!watched.has(key)) {
-      return null;
-    }
-  }
-  return { sessionKeys, refreshSessionKeys };
-}
 
 /**
  * Owns the union of connection replace-sets. Only this union drives GitHub
@@ -473,6 +431,12 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
     state.delivery = stateDelivery;
     return stateDelivery;
   };
+  const notifications = createSessionPrStoreNotifications({
+    states: keyStates,
+    scope,
+    pending: (key) => inflight.get(key)?.promise,
+    reload: (key, state) => loadSnapshot(key, () => keyStates.get(key) === state),
+  });
 
   const schedulePoll = () => {
     if (scope.isClosing || pollJob || subscriptions.size === 0) {
@@ -505,7 +469,7 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
           );
         }
       }
-      await Promise.all([Promise.allSettled(replacements), prepared.settle(), ...loads]);
+      await notifications.settle([Promise.allSettled(replacements), prepared.settle(), ...loads]);
     });
   };
 
@@ -682,7 +646,7 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
       }
     };
     void replacement.then(releaseReplacement, releaseReplacement);
-    return replacement;
+    return replacement.then(() => notifications.settle());
   };
 
   const unsubscribe = (connId: string) => {
@@ -710,6 +674,7 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
     scope.beginClose();
     scheduler.beginClose();
     prepared.stop();
+    notifications.stop();
     subscriptions.clear();
     replacementGenerations.clear();
     replacements.clear();

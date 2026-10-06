@@ -4,14 +4,16 @@ import {
   ApiQuotaError,
   apiQuotaErrorForResponse,
   getSharedApiQuota,
+  getSharedApiStore,
+  apiStoreRequestKey,
   apiRateLimitHint,
-  type ApiRequestQuota,
 } from "openclaw/plugin-sdk/retry-runtime";
 import {
   asFiniteNumber,
   isRecord,
   readNonBlankString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { getGitHubPullRequestStore } from "./pull-request-store.js";
 
 export { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
@@ -56,7 +58,8 @@ export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
 const GITHUB_API_VERSION = "2022-11-28";
 const GITHUB_API_MAX_REDIRECTS = 3;
 // Body-reported quotas belong to the admitted request even after API configuration changes.
-const responseQuotas = new WeakMap<Response, ApiRequestQuota>();
+const responseQuotas = new WeakMap<Response, ReturnType<typeof getSharedApiStore>>();
+const responseRequests = new WeakMap<Response, string>();
 
 export class ControlUiGitHubError extends Error {
   readonly retryAtMs: number | undefined;
@@ -238,6 +241,95 @@ export async function fetchGitHubApi(
   callerSignal?: AbortSignal,
   graphql?: { query: string; variables: Record<string, string> },
   apiBaseUrl = GITHUB_API_BASE_URL,
+  readOptions: { refresh?: boolean; freshnessMs?: number } = {},
+): Promise<Response> {
+  const baseUrl = resolveGitHubApiBaseUrl(apiBaseUrl);
+  const initial = safeGitHubApiUrl(rawUrl, new URL(baseUrl), githubGraphqlUrl(baseUrl));
+  if (!initial || (graphql && (initial.href !== githubGraphqlUrl(baseUrl) || !token || etag))) {
+    throw new ControlUiGitHubError(502, "Invalid GitHub API request");
+  }
+  const store = getSharedApiStore({ apiBaseUrl: baseUrl, token, fetchImpl });
+  getGitHubPullRequestStore(store);
+  const authorize = async (redirect?: URL) => {
+    callerSignal?.throwIfAborted();
+    await identity?.revalidate();
+    identity?.assertSelected();
+    if (redirect) {
+      await beforeRedirect?.(redirect);
+    }
+  };
+  const key = apiStoreRequestKey(
+    initial.href,
+    graphql ? "POST" : "GET",
+    graphql ? JSON.stringify(graphql) : etag,
+  );
+  const mutation = graphql && /^\s*(?:#[^\n]*\n\s*)*mutation\b/.test(graphql.query);
+  let response: Response;
+  if (mutation) {
+    await authorize();
+    response = await dispatchGitHubApi(
+      initial.href,
+      fetchImpl,
+      token,
+      beforeRedirect,
+      identity,
+      etag,
+      callerSignal,
+      graphql,
+      baseUrl,
+    );
+    if (response.ok) {
+      store.responses.invalidate(() => true);
+      await store.responses.remember(key, response.clone());
+    }
+    await authorize();
+  } else {
+    response = await store.responses.read(
+      key,
+      (signal, authorizeReaders, assertReaders) =>
+        dispatchGitHubApi(
+          initial.href,
+          fetchImpl,
+          token,
+          (redirect) => authorizeReaders(redirect),
+          { revalidate: () => authorizeReaders(), assertSelected: assertReaders },
+          etag,
+          signal,
+          graphql,
+          baseUrl,
+        ),
+      {
+        // Visibility and account admission facts are always reread; content shares a short TTL.
+        freshnessMs:
+          /^\/repos\/[^/]+\/[^/]+$/.test(githubRestApiPath(initial, baseUrl)) ||
+          githubRestApiPath(initial, baseUrl) === "/user"
+            ? 0
+            : 30_000,
+        ...readOptions,
+        signal: callerSignal,
+        authorize,
+        assertCurrent: () => {
+          callerSignal?.throwIfAborted();
+          identity?.assertSelected();
+        },
+      },
+    );
+  }
+  responseQuotas.set(response, store);
+  responseRequests.set(response, initial.href);
+  return response;
+}
+
+async function dispatchGitHubApi(
+  rawUrl: string,
+  fetchImpl: typeof fetch,
+  token?: string,
+  beforeRedirect?: (url: URL) => Promise<void>,
+  identity?: { revalidate: () => Promise<void>; assertSelected: () => void },
+  etag?: string,
+  callerSignal?: AbortSignal,
+  graphql?: { query: string; variables: Record<string, string> },
+  apiBaseUrl = GITHUB_API_BASE_URL,
 ): Promise<Response> {
   callerSignal?.throwIfAborted();
   const baseUrl = resolveGitHubApiBaseUrl(apiBaseUrl);
@@ -265,52 +357,28 @@ export async function fetchGitHubApi(
     }
     callerSignal?.throwIfAborted();
     const resource = githubApiResource(url, baseUrl, graphqlUrl);
-    let releaseQuota: () => void;
+    let response: Response;
     try {
-      releaseQuota = quota.admit(resource);
+      response = await quota.dispatch(resource, () =>
+        fetchImpl(url.href, {
+          headers: {
+            ...githubApiHeaders(token),
+            ...(etag ? { "If-None-Match": etag } : {}),
+            ...(graphql ? { "Content-Type": "application/json" } : {}),
+          },
+          ...(graphql ? { method: "POST", body: JSON.stringify(graphql) } : {}),
+          redirect: "manual",
+          signal,
+        }),
+      );
     } catch (error) {
       if (error instanceof ApiQuotaError) {
         throw githubQuotaError(error);
       }
-      throw error;
-    }
-    let response: Response;
-    try {
-      response = await fetchImpl(url.href, {
-        headers: {
-          ...githubApiHeaders(token),
-          ...(etag ? { "If-None-Match": etag } : {}),
-          ...(graphql ? { "Content-Type": "application/json" } : {}),
-        },
-        ...(graphql ? { method: "POST", body: JSON.stringify(graphql) } : {}),
-        redirect: "manual",
-        signal,
-      });
-    } catch (error) {
       const timedOut = signal.aborted || (error instanceof Error && error.name === "TimeoutError");
       throw new ControlUiGitHubTransportError(
         timedOut ? "GitHub request timed out" : "Could not reach GitHub",
       );
-    } finally {
-      releaseQuota();
-    }
-    // Apply header-established cooldowns before waiting for a possibly slow error body.
-    // GraphQL's HTTP 200 reserves quota without confirming that its query succeeded.
-    let quotaError = quota.observe(response, resource, false, !graphql);
-    if (response.status === 403) {
-      // GitHub can report secondary limits in the body without quota headers.
-      const value = await readGitHubJsonBody(response.clone()).catch(() => undefined);
-      const limited = isRecord(value) && apiRateLimitHint(value.message);
-      if (
-        limited &&
-        (!quotaError || (limited === "secondary" && quotaError.resource !== undefined))
-      ) {
-        quotaError = quota.observe(response, resource, limited, false);
-      }
-    }
-    if (quotaError) {
-      await discardResponse(response);
-      throw githubQuotaError(quotaError);
     }
     if (!isGitHubApiRedirect(response.status)) {
       responseQuotas.set(response, quota);
@@ -497,7 +565,13 @@ export async function readGitHubJsonResponse(
     await discardResponse(response);
     throw githubResponseError(response);
   }
-  return readGitHubJsonBody(response, maxBytes);
+  const value = await readGitHubJsonBody(response, maxBytes);
+  const store = responseQuotas.get(response);
+  const url = responseRequests.get(response);
+  const target = url && /\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/.exec(new URL(url).pathname);
+  return store && target?.[1] && target[2] && target[3] && isRecord(value)
+    ? getGitHubPullRequestStore(store).project(target[1], target[2], Number(target[3]), value)
+    : value;
 }
 
 async function readGitHubJsonBody(

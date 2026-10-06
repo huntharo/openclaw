@@ -84,7 +84,12 @@ export function createWatcherGitHubReads(repository: string) {
     fresh = revalidate;
     command ??= initialize();
     try {
-      const result = await (await command)(args);
+      // Monitoring decisions require a new observation; concurrent readers still share that work.
+      const requestArgs =
+        args[0] === "api" && !args.includes("Cache-Control: max-age=0")
+          ? [...args, "-H", "Cache-Control: no-cache"]
+          : args;
+      const result = await (await command)(requestArgs);
       if (result.error) {
         throw result.error;
       }

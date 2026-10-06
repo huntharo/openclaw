@@ -3,7 +3,16 @@ import { stripVTControlCharacters } from "node:util";
 /** Separate HTTP headers emitted by CLI transports from their existing body output. */
 export function parseHttpCommandResponse(
   output: string,
+  { lastResponse = false }: { lastResponse?: boolean } = {},
 ): { response: Response; body: string } | undefined {
+  if (lastResponse) {
+    // A failed CLI command can retain successful pages before its final response.
+    let frameStart = 0;
+    for (const match of output.matchAll(/^HTTP\/[\d.]+ [2-5]\d{2}\b/gmu)) {
+      frameStart = match.index;
+    }
+    output = output.slice(frameStart);
+  }
   const boundary = /\r?\n\r?\n/u.exec(output);
   if (!boundary) {
     return undefined;

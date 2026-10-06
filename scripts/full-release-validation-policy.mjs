@@ -23,6 +23,7 @@ import {
   buildReleaseValidationManifest,
   releaseManifestChildEvidence,
 } from "./lib/full-release-manifest.mjs";
+import { isGitHubCommandQuotaError } from "./lib/github-command-quota.mjs";
 import { changelogEntryPath, isReleaseChangelogPath } from "./lib/release-changelog.mjs";
 import { validateQualificationBaselines } from "./lib/release-upgrade-baseline.mjs";
 import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version.mjs";
@@ -385,6 +386,9 @@ function releaseGhTransportErrorText(error) {
 }
 
 export function releaseGhRateLimitRetryAt(error, now = Date.now(), failures = 0) {
+  if (isGitHubCommandQuotaError(error)) {
+    return error.retryAtMs;
+  }
   // gh retains successful pages before the failed response. Its final frame owns
   // the throttle deadline; earlier quota headers must not override that failure.
   const output = String(error?.stdout ?? "");

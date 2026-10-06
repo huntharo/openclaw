@@ -787,33 +787,26 @@ describe("GitHub reports source", () => {
   });
 
   it.each([403, 429])(
-    "retains HTTP %s header cooldowns while its body stalls and fails",
+    "retains HTTP %s header cooldowns when its unread body fails",
     async (code) => {
       vi.spyOn(Date, "now").mockReturnValue(sinceMs);
-      const started = Promise.withResolvers<void>();
-      const body = Promise.withResolvers<string>();
-      const response = json({}, { "Retry-After": "120" }, code);
-      vi.spyOn(response, "text").mockImplementation(() => {
-        started.resolve();
-        return body.promise;
-      });
+      const response = new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("synthetic response body failure"));
+          },
+        }),
+        { status: code, headers: { "Retry-After": "120" } },
+      );
       let calls = 0;
       const { api, fetchImpl } = source(() =>
         ++calls === 1 ? response : json([{ login: "builder" }]),
       );
-      const pending = api.loadRoster(config);
-      await started.promise;
-      try {
-        const other = await api.loadRoster(config);
-        expect(other.status.ok).toBe(false);
-        expect(other.status.warnings).toContainEqual(
-          expect.stringContaining("retry in 120 seconds"),
-        );
-        expect(fetchImpl).toHaveBeenCalledOnce();
-      } finally {
-        body.reject(new Error("synthetic response body failure"));
-        await pending;
-      }
+      const limited = await api.loadRoster(config);
+      expect(limited.status.ok).toBe(false);
+      expect(limited.status.warnings).toContainEqual(
+        expect.stringContaining("retry in 120 seconds"),
+      );
       await api.loadRoster(config);
       expect(fetchImpl).toHaveBeenCalledOnce();
     },

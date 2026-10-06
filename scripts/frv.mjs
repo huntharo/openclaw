@@ -337,22 +337,15 @@ async function execGhRead(args, options = {}) {
 async function readGhApi(repository, path, args = [], options = {}, fresh = true) {
   // Rerun decisions require current attempts and jobs, not a relay's earlier snapshot.
   // Polling watchers keep the relay's own freshness policy.
-  const include = !path.endsWith("/logs");
-  const output = await execGhRead(
+  return execGhRead(
     [
       "api",
-      ...(include ? ["--include"] : []),
       `repos/${repository}/${path}`,
       ...(fresh ? ["-H", "Cache-Control: max-age=0"] : []),
       ...args,
     ],
     options,
   );
-  // gh emits a header block for each paginated response, even with --jq.
-  // Keep successful JSON rows intact while retaining failed-response retry headers.
-  return include
-    ? output.replace(/^HTTP\/\d+(?:\.\d+)? [^\r\n]+\r?\n(?:[^\r\n]+\r?\n)*\r?\n/gmu, "").trim()
-    : output.trim();
 }
 
 async function ghJson(repository, path, options, fresh) {

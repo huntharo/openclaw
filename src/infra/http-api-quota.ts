@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { parseStrictNonNegativeInteger } from "../../packages/normalization-core/src/number-coercion.js";
+import { asOptionalRecord } from "../../packages/normalization-core/src/record-coerce.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { ApiResponseStore } from "./http-api-read-store.js";
+import { readResponseWithLimit } from "./http-response-body.js";
 import { parseRetryAfterHeaderSeconds } from "./retry-after.js";
+export { apiStoreRequestKey } from "./http-api-read-store.js";
 
 const CAPACITY = 20;
 const REFILL_INTERVAL_MS = 3_000;
@@ -37,6 +41,10 @@ export function apiRateLimitHint(message: unknown): boolean | "secondary" {
     : /rate limit/i.test(message);
 }
 
+function isValidQuotaTimestamp(value: number): boolean {
+  return Number.isSafeInteger(value) && Number.isFinite(new Date(value).getTime());
+}
+
 /** Normalize conventional HTTP quota headers without returning upstream diagnostics. */
 export function apiQuotaErrorForResponse(
   response: Response,
@@ -61,8 +69,8 @@ export function apiQuotaErrorForResponse(
   const retryAt = retry === undefined ? 0 : now + retry * 1_000;
   const resetAt = reset === undefined ? 0 : reset * 1_000;
   const proposed = Math.max(
-    Number.isSafeInteger(retryAt) ? retryAt : 0,
-    Number.isSafeInteger(resetAt) ? resetAt : 0,
+    isValidQuotaTimestamp(retryAt) ? retryAt : 0,
+    isValidQuotaTimestamp(resetAt) ? resetAt : 0,
   );
   return new ApiQuotaError(
     "upstream",
@@ -135,7 +143,7 @@ export class ApiRequestQuota {
     const remaining = parseStrictNonNegativeInteger(response.headers.get("x-ratelimit-remaining"));
     const reset = parseStrictNonNegativeInteger(response.headers.get("x-ratelimit-reset"));
     const resetAt = reset === undefined ? 0 : reset * 1_000;
-    if (remaining !== undefined && Number.isSafeInteger(resetAt) && resetAt > now) {
+    if (remaining !== undefined && isValidQuotaTimestamp(resetAt) && resetAt > now) {
       const previous = this.primary.get(key);
       const available = Math.max(0, remaining - (this.pending.get(resource) ?? 0));
       // Out-of-order responses cannot replenish reservations in the same primary window.
@@ -181,23 +189,83 @@ export class ApiRequestQuota {
   }
 }
 
+/** One instance owns admission and every response used to derive API projections. */
+export class ApiRequestStore extends ApiRequestQuota {
+  readonly responses = new ApiResponseStore();
+
+  async dispatch(resource: string, load: () => Promise<Response>): Promise<Response> {
+    const release = this.admit(resource);
+    let response: Response;
+    try {
+      response = await load();
+    } finally {
+      release();
+    }
+    let error = this.observe(response, resource, false, resource !== "graphql");
+    if (error && error.resource === undefined) {
+      void response.body?.cancel().catch(() => {});
+      throw error;
+    }
+    if (response.status === 403 || resource === "graphql") {
+      try {
+        const value = asOptionalRecord(
+          JSON.parse((await readResponseWithLimit(response.clone(), 256 * 1024)).toString("utf8")),
+        );
+        const errors = Array.isArray(value?.errors) ? value.errors : [];
+        const limited =
+          apiRateLimitHint(value?.message) ||
+          errors
+            .map((item: unknown) => {
+              const candidate = asOptionalRecord(item);
+              return (
+                apiRateLimitHint(candidate?.message) ||
+                candidate?.type === "RATE_LIMITED" ||
+                candidate?.type === "RATE_LIMIT"
+              );
+            })
+            .find(Boolean);
+        if (limited && (!error || (limited === "secondary" && error.resource !== undefined))) {
+          error = this.observe(response, resource, limited, false);
+        }
+        if (resource === "graphql" && !errors.length) {
+          this.observe(response, resource);
+        }
+      } catch {
+        // Malformed diagnostics cannot establish a body-reported limit; header facts still apply.
+      }
+    }
+    if (error) {
+      await response.body?.cancel().catch(() => {});
+      throw error;
+    }
+    return response;
+  }
+}
+
 const shared = resolveGlobalSingleton(
   Symbol.for("openclaw.sharedHttpApiQuota"),
-  () => ({ transports: new WeakMap<object, Map<string, ApiRequestQuota>>() }),
+  () => ({
+    transports: new WeakMap<object, Map<string, ApiRequestStore>>(),
+    stores: new Set<ApiRequestStore>(),
+  }),
   (state) => {
+    for (const store of state.stores) {
+      store.responses.close();
+    }
+    state.stores.clear();
     state.transports = new WeakMap();
   },
   "close-only",
 );
 
 /** Credential values stay out of keys and errors; injected transports represent separate API environments. */
-export function getSharedApiQuota(options: {
+export function getSharedApiStore(options: {
   apiBaseUrl: string;
   token?: string;
   fetchImpl?: object;
-}): ApiRequestQuota {
+}): ApiRequestStore {
   const transport = options.fetchImpl ?? globalThis.fetch;
-  const scopes = shared.transports.get(transport) ?? new Map<string, ApiRequestQuota>();
+  const scopes = shared.transports.get(transport) ?? new Map<string, ApiRequestStore>();
   shared.transports.set(transport, scopes);
   const credential = options.token
     ? createHash("sha256").update(options.token).digest("hex")
@@ -208,7 +276,10 @@ export function getSharedApiQuota(options: {
   if (existing) {
     return existing;
   }
-  const quota = new ApiRequestQuota();
+  const quota = new ApiRequestStore();
   scopes.set(scope, quota);
+  shared.stores.add(quota);
   return quota;
 }
+
+export const getSharedApiQuota = getSharedApiStore;

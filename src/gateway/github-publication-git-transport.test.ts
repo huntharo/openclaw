@@ -33,6 +33,91 @@ afterEach(() => {
 });
 
 describe("GitHub publication API transport", () => {
+  it("isolates native gh profiles and pins their resolved credentials at dispatch", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const command = vi.mocked(runCommandBuffered).mockImplementation(async (argv, options) => {
+      const profile = options?.env?.GH_CONFIG_DIR;
+      const token = `synthetic-native-publication-${profile}`;
+      if (argv[1] === "auth") {
+        return { ...response(""), stdout: Buffer.from(token + "\n") };
+      }
+      return response(JSON.stringify({ profile }));
+    });
+    const args = githubPublicationApiArgs("repos/owner/repo/pulls/1");
+    const results = await Promise.all(
+      ["first", "second"].map((profile) =>
+        runPublicationCommand(args, { env: { GH_CONFIG_DIR: profile } }),
+      ),
+    );
+    expect(results.map((result) => JSON.parse(result.stdout.toString()))).toEqual([
+      { profile: "first" },
+      { profile: "second" },
+    ]);
+    const apiCalls = command.mock.calls.filter(([argv]) => argv[1] === "api");
+    expect(apiCalls).toHaveLength(2);
+    for (const [, options] of apiCalls) {
+      expect(options?.env?.GH_TOKEN).toBe(
+        `synthetic-native-publication-${options?.env?.GH_CONFIG_DIR}`,
+      );
+    }
+    expect(command.mock.calls.filter(([argv]) => argv[1] === "auth")).toEqual([
+      [
+        ["gh", "auth", "token", "--hostname", "github.com"],
+        expect.objectContaining({ env: expect.objectContaining({ GH_CONFIG_DIR: "first" }) }),
+      ],
+      [
+        ["gh", "auth", "token", "--hostname", "github.com"],
+        expect.objectContaining({ env: expect.objectContaining({ GH_CONFIG_DIR: "second" }) }),
+      ],
+    ]);
+  });
+
+  it("refuses API dispatch when the native gh credential cannot be resolved", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const command = vi.mocked(runCommandBuffered).mockResolvedValue({
+      ...response("", "", 1),
+      stdout: Buffer.alloc(0),
+    });
+    await expect(
+      runPublicationCommand(githubPublicationApiArgs("repos/owner/repo/pulls/1"), {
+        env: { GH_CONFIG_DIR: "synthetic-missing-native-profile" },
+      }),
+    ).rejects.toThrow("GitHub CLI authentication is unavailable");
+    expect(command).toHaveBeenCalledOnce();
+    expect(command.mock.calls[0]?.[0]).toEqual(["gh", "auth", "token", "--hostname", "github.com"]);
+  });
+
+  it("keeps a shared GET alive when its first caller retires before dispatch", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const command = vi.mocked(runCommandBuffered).mockResolvedValue(response('{"number":1}'));
+    const args = githubPublicationApiArgs("repos/owner/repo/pulls/1");
+    const env = { GH_TOKEN: "synthetic-publication-surviving-reader" };
+    let firstCurrent = true;
+    let checks = 0;
+    const first = runPublicationCommand(args, {
+      env,
+      beforeRun: () => {
+        if (!firstCurrent) {
+          throw new Error("First reader retired");
+        }
+      },
+    });
+    const second = runPublicationCommand(args, {
+      env,
+      beforeRun: () => {
+        if (++checks === 3) {
+          firstCurrent = false;
+        }
+      },
+    });
+    const results = await Promise.allSettled([first, second]);
+    expect(results[0]).toMatchObject({
+      status: "rejected",
+      reason: new Error("First reader retired"),
+    });
+    expect(results[1]).toMatchObject({ status: "fulfilled", value: { code: 0 } });
+    expect(command).toHaveBeenCalledOnce();
+  });
   it("shares ghe.com cloud admission with the token gh actually uses", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const host = "tenant.ghe.com";

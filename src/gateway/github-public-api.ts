@@ -4,6 +4,7 @@ import {
 } from "../agents/github-host.js";
 import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { ApiRequestStore } from "../infra/http-api-quota.js";
 import {
   createLazyFacadeObjectValue,
   loadBundledPluginPublicSurfaceModuleSyncCore,
@@ -46,6 +47,22 @@ type GitHubDetailTarget =
 
 /** Host consumers depend on this public read contract, not the plugin's source graph. */
 type GitHubPublicApi = {
+  getGitHubPullRequestStore: (store: ApiRequestStore) => {
+    subscribe: (
+      listener: (change: {
+        owner: string;
+        repo: string;
+        number: number;
+        observation: number;
+      }) => void,
+    ) => () => void;
+    project: (
+      owner: string,
+      repo: string,
+      number: number,
+      value: Record<string, unknown>,
+    ) => Record<string, unknown>;
+  };
   resolveGitHubApiUrls: (apiBaseUrl: string | undefined) => { baseUrl: string; graphqlUrl: string };
   GITHUB_API_ORIGIN: string;
   GITHUB_API_BASE_URL: string;
@@ -85,6 +102,7 @@ type GitHubPublicApi = {
     signal?: AbortSignal,
     graphql?: { query: string; variables: Record<string, string> },
     apiBaseUrl?: string,
+    readOptions?: { refresh?: boolean; freshnessMs?: number },
   ) => Promise<Response>;
   discardResponse: (response: Response) => Promise<void>;
   readBoundedResponse: (response: Response, maxBytes: number) => Promise<Buffer>;
@@ -108,6 +126,13 @@ type GitHubPublicApi = {
   ) => Promise<unknown>;
   parseControlUiGitHubPreviewTarget: (params: unknown) => ControlUiGitHubPreviewTarget | null;
   parseGitHubTarget: (params: unknown) => GitHubDetailTarget | null;
+  parseGitHubLinkParams: (params: unknown) => {
+    target: GitHubDetailTarget;
+    url: string;
+    agentId?: string;
+    refresh: boolean;
+    filesExpanded: boolean;
+  } | null;
   loadGitHubDetail: (
     target: GitHubDetailTarget,
     identity?: ControlUiGitHubPreviewIdentity,
