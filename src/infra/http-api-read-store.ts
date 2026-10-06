@@ -35,7 +35,8 @@ type Entry = {
   readers: Set<Reader>;
   promise: Promise<StoredResponse>;
   settled: boolean;
-  expiresAt: number;
+  storedAt: number;
+  invalidated: boolean;
   version: number;
   observation: number;
   refresh: boolean;
@@ -43,6 +44,11 @@ type Entry = {
 };
 const MAX_ENTRIES = 256;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+function isFresh(entry: Entry, freshnessMs = 30_000): boolean {
+  const now = Date.now();
+  return !entry.invalidated && entry.storedAt <= now && now - entry.storedAt < freshnessMs;
+}
 
 /** Request identity excludes transport headers; the containing owner pins host and credential. */
 export function apiStoreRequestKey(url: string, method = "GET", body?: string): string {
@@ -122,7 +128,7 @@ export class ApiResponseStore {
     // Concurrent forced reads join the same observation. A settled forced read starts a new one.
     if (
       entry?.controller.signal.aborted ||
-      (entry?.settled && (options.refresh || entry.expiresAt <= Date.now()))
+      (entry?.settled && (options.refresh || !isFresh(entry, options.freshnessMs)))
     ) {
       entry = undefined;
     }
@@ -140,7 +146,8 @@ export class ApiResponseStore {
         controller,
         readers,
         settled: false,
-        expiresAt: 0,
+        storedAt: 0,
+        invalidated: false,
         version: previous?.version ?? 0,
         observation: this.beginObservation(),
         refresh: options.refresh === true,
@@ -225,8 +232,9 @@ export class ApiResponseStore {
             redirects,
           };
           current.settled = true;
+          current.storedAt = Date.now();
           current.value = stored;
-          current.expiresAt = response.ok ? Date.now() + (options.freshnessMs ?? 30_000) : 0;
+          current.invalidated = !response.ok;
           if (this.entries.get(key) === current && response.ok) {
             const old = previous?.value;
             const changed = !old || !Buffer.from(old.body).equals(body);
@@ -309,7 +317,8 @@ export class ApiResponseStore {
       readers: new Set(),
       promise: Promise.resolve(stored),
       settled: true,
-      expiresAt: Date.now() + 30_000,
+      storedAt: Date.now(),
+      invalidated: false,
       version: previous?.version ?? 0,
       observation,
       refresh: false,
@@ -334,7 +343,7 @@ export class ApiResponseStore {
     if (previous && !previous.settled) {
       throw new Error("API read is already in progress; retry after it finishes");
     }
-    if (previous?.value && !options.refresh && previous.expiresAt > Date.now()) {
+    if (previous?.value && !options.refresh && isFresh(previous, options.freshnessMs)) {
       return { body: previous.value.body.slice(), response: this.response(previous.value) };
     }
     const observation = this.beginObservation();
@@ -360,7 +369,8 @@ export class ApiResponseStore {
       readers: new Set(),
       promise: Promise.resolve(stored),
       settled: true,
-      expiresAt: Date.now() + (options.freshnessMs ?? 30_000),
+      storedAt: Date.now(),
+      invalidated: false,
       version: changed ? ++this.version : (previous?.version ?? 0),
       observation,
       refresh: false,
@@ -375,7 +385,7 @@ export class ApiResponseStore {
     for (const [key, entry] of this.entries) {
       const url = requestUrl(key);
       if (predicate(key, url)) {
-        entry.expiresAt = 0;
+        entry.invalidated = true;
         entry.version = ++this.version;
         // A mutation retires pre-mutation work as well as settled facts.
         if (!entry.settled) {

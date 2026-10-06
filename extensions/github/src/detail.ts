@@ -441,7 +441,7 @@ async function loadGitHubDetailWithIdentity(
         undefined,
         undefined,
         GITHUB_API_ORIGIN,
-        { refresh },
+        { refresh, freshnessMs: parsed.kind === "pull" ? 30_000 : 5 * 60_000 },
       );
       return {
         hasNextPage: /;\s*rel="next"/u.test(response.headers.get("link") ?? ""),
