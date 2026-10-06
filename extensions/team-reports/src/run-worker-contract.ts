@@ -1,3 +1,4 @@
+import type { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import type { SqliteWorkerCommand } from "openclaw/plugin-sdk/sqlite-runtime";
 import type { generateReportPeriods } from "./run.js";
 import type { TeamReportsOperations } from "./store-contract.js";
@@ -17,10 +18,25 @@ export type ReportWorkerLog = {
 export type ReportWorkerOperation =
   | { kind: "store"; command: SqliteWorkerCommand<TeamReportsOperations> }
   | { kind: "llm"; params: Parameters<SummaryLlm["complete"]>[0] & { signal?: never } }
+  | {
+      kind: "github-quota";
+      resource: string;
+      release?: false;
+      observation?: {
+        status: number;
+        headers: Record<string, string>;
+        rateLimited: boolean | "secondary";
+      };
+    }
+  | { kind: "github-quota"; resource: string; release: true; observation?: never }
   | { kind: "flush" };
 export type ReportWorkerRequest = ReportWorkerOperation & {
   logs: ReportWorkerLog[];
   roster?: Person[];
 };
 export type ReportWorkerResponse = { ok: true; value: unknown } | { ok: false; error: string };
+export type ReportQuotaFailure = Pick<
+  ApiQuotaError,
+  "reason" | "retryAtMs" | "upstreamStatus" | "resource"
+>;
 export const REPORT_RUN_TIMEOUT_MS = 45 * 60_000;

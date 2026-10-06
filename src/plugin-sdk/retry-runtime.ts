@@ -49,3 +49,10 @@ export {
   type RetryRunner,
 } from "../infra/retry-policy.js";
 export { parseRetryAfterHeaderSeconds } from "../infra/retry-after.js";
+export {
+  ApiQuotaError,
+  ApiRequestQuota,
+  apiQuotaErrorForResponse,
+  getSharedApiQuota,
+  apiRateLimitHint,
+} from "../infra/http-api-quota.js";

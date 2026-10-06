@@ -755,14 +755,6 @@ function readPr(repo, pr, fields, route, options = {}) {
   );
 }
 
-export function createPrMetadataReader(repository) {
-  let repo;
-  return (pr, fields, readOptions = () => ({})) => {
-    repo ??= repositoryLocator(repository, "read", readOptions);
-    return readPr(repo, String(pr), fields, "read", { readOptions });
-  };
-}
-
 function commitAuthor(author, account, changesTree) {
   if (
     typeof author?.name !== "string" ||

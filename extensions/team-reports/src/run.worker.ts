@@ -1,3 +1,4 @@
+import { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import type { SqliteWorkerCommand } from "openclaw/plugin-sdk/sqlite-runtime";
 import { serveWorkerTasks } from "openclaw/plugin-sdk/worker-task-server";
 import type {
@@ -5,6 +6,7 @@ import type {
   ReportWorkerLog,
   ReportWorkerOperation,
   ReportWorkerResponse,
+  ReportQuotaFailure,
 } from "./run-worker-contract.js";
 import { createReportSources, generateReportPeriods } from "./run.js";
 import type { TeamReportsOperations } from "./store-contract.js";
@@ -38,6 +40,63 @@ serveWorkerTasks(async (value, channel, control) => {
     warn: (message, meta) => logs.push({ level: "warn", message, meta }),
     error: (message, meta) => logs.push({ level: "error", message, meta }),
   };
+  const githubQuota: NonNullable<SourceRuntime["githubQuota"]> = {
+    async admit(resource) {
+      const decision = await request({
+        kind: "github-quota",
+        resource,
+      });
+      // SAFETY: The paired host response contains only the shared quota decision.
+      const failure = decision as ReportQuotaFailure | null;
+      if (failure) {
+        throw new ApiQuotaError(
+          failure.reason,
+          failure.retryAtMs,
+          failure.upstreamStatus,
+          failure.resource,
+        );
+      }
+      let released = false;
+      return async () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        await request({ kind: "github-quota", resource, release: true });
+      };
+    },
+    async observe(response, resource, rateLimited) {
+      const decision = await request({
+        kind: "github-quota",
+        resource,
+        observation: {
+          status: response.status,
+          headers: Object.fromEntries(
+            [
+              "retry-after",
+              "x-ratelimit-remaining",
+              "x-ratelimit-reset",
+              "x-ratelimit-resource",
+            ].flatMap((name) => {
+              const header = response.headers.get(name);
+              return header === null ? [] : [[name, header]];
+            }),
+          ),
+          rateLimited,
+        },
+      });
+      // SAFETY: The paired host response contains only the shared quota decision.
+      const failure = decision as ReportQuotaFailure | null;
+      return failure
+        ? new ApiQuotaError(
+            failure.reason,
+            failure.retryAtMs,
+            failure.upstreamStatus,
+            failure.resource,
+          )
+        : undefined;
+    },
+  };
   const signal = new AbortController().signal;
   const store = new TeamReportsStore({
     async execute<Key extends keyof TeamReportsOperations>(command: {
@@ -58,7 +117,7 @@ serveWorkerTasks(async (value, channel, control) => {
     return await generateReportPeriods({
       ...input,
       store,
-      runtime: { logger, signal },
+      runtime: { logger, signal, githubQuota },
       sources: (runtime) => createReportSources(runtime, Boolean(input.resolved.discord)),
       llm: {
         complete: async ({ signal: _signal, ...params }) => {

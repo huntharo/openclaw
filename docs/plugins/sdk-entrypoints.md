@@ -343,3 +343,31 @@ plugin transport effects and disclosure; pass its assertion into the plugin's
 database writer and file publication boundaries too. Versioned owner-bound RPC
 names let CLI callers require updated plugin handlers without assuming that an
 updated Gateway also upgraded an independently installed plugin.
+
+## Shared HTTP API quotas
+
+`getSharedApiQuota` from `openclaw/plugin-sdk/retry-runtime` provides process-wide
+admission keyed by API base URL and credential hash. Call `admit(resource)` before
+each dispatch, including redirects and pagination. Call its returned release function
+after the attempt finishes, before `observe(response, resource)`, including on transport
+failure. Outstanding attempts reserve newly learned primary quota. The bucket allows
+20 requests initially and refills at 20 per minute.
+Successful `x-ratelimit-remaining`, `x-ratelimit-reset`, and
+`x-ratelimit-resource` headers reserve primary quota across concurrent callers.
+HTTP 429, quota-related 403, and explicitly reported body limits open a shared
+cooldown honoring `Retry-After` and exhausted primary reset times.
+
+`ApiQuotaError` carries `reason`, `retryAtMs`, `retryAfterMs`, and `upstreamStatus`.
+Its optional `resource` identifies an established primary resource block. HTTP 429,
+secondary limits, and `Retry-After` keep the circuit global. Pass the `"primary"`
+observation hint only with verified primary-limit evidence; ambiguous failures stay global.
+Background work may wait for local admission; upstream cooldowns must fail closed.
+Pass `apiRateLimitHint` for body-reported limits without exposing diagnostics;
+its `"secondary"` hint closes all resources even when primary quota is also exhausted.
+Injected transports isolate separate API environments. Workers must forward quota
+decisions through their host channel to share the host's budget. Independent
+processes have independent budgets.
+
+CLI adapters admit each explicit command and pagination page. Redirect hops
+inside `gh api` use GitHub CLI's HTTP client; the CLI exposes only the final
+response and does not offer a redirect admission hook.

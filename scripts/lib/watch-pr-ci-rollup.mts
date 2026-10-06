@@ -1,8 +1,5 @@
 import { z } from "zod";
-import { isGraphqlQuotaExhausted } from "../pr-lib/gh-api-preflight.mjs";
-import { execGhJson } from "./plain-gh.mjs";
-
-type ReadOptions = (deadline: number) => NonNullable<Parameters<typeof execGhJson>[1]>;
+import { WatcherQuotaError, type WatcherJsonReader } from "./watch-pr-ci-github.mts";
 
 export const FAILURE_CONCLUSIONS: ReadonlySet<string> = new Set([
   "ACTION_REQUIRED",
@@ -63,7 +60,7 @@ const RollupPayloadSchema = z.object({
     }),
   ),
 });
-export const RollupPageSchema = z
+const RollupPageSchema = z
   .object({
     state: optionalString,
     mergeable: optional(z.union([z.boolean(), z.string()])),
@@ -84,10 +81,12 @@ export type RollupPage = z.infer<typeof RollupPageSchema>;
 const ROLLUP_QUERY = `query($owner:String!,$name:String!,$pr:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){state mergeable headRefOid statusCheckRollup{state contexts(first:100,after:$cursor){totalCount pageInfo{hasNextPage endCursor} nodes{kind:__typename ... on CheckRun{name status conclusion databaseId checkSuite{databaseId workflowRun{databaseId event workflow{databaseId}}}} ... on StatusContext{context state}}}}}}}`;
 const SUMMARY_QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){state mergeable headRefOid statusCheckRollup{state contexts(first:1){checkRunCountsByState{state count} statusContextCountsByState{state count}}}}}}`;
 
-export function collectRollupContexts(
-  fetchPage: (cursor: string | null) => RollupPage | null | undefined,
+export async function collectRollupContexts(
+  fetchPage: (
+    cursor: string | null,
+  ) => RollupPage | null | undefined | Promise<RollupPage | null | undefined>,
 ) {
-  const firstPage = fetchPage(null);
+  const firstPage = await fetchPage(null);
   const firstContexts = firstPage?.statusCheckRollup?.contexts;
   if (!firstContexts) {
     return firstPage;
@@ -102,7 +101,7 @@ export function collectRollupContexts(
     if (typeof pageInfo.endCursor !== "string") {
       throw new Error("rollup page advertised a next page without a cursor");
     }
-    const page = fetchPage(pageInfo.endCursor);
+    const page = await fetchPage(pageInfo.endCursor);
     const contexts = page?.statusCheckRollup?.contexts;
     pageCount += 1;
     // Losing an advertised page (head moved, transient API gap) or reading a changed snapshot
@@ -131,15 +130,15 @@ export function collectRollupContexts(
   };
 }
 
-function readGraphqlRollup(
+async function readGraphqlRollup(
   pr: number,
   repo: string,
   deadline: number,
   details: boolean,
-  readOptions: ReadOptions,
+  readJson: WatcherJsonReader,
 ) {
   const [owner, name] = repo.split("/");
-  const fetchPage = (cursor: string | null) => {
+  const fetchPage = async (cursor: string | null) => {
     const queryArgs = [
       "api",
       "graphql",
@@ -155,10 +154,10 @@ function readGraphqlRollup(
     if (cursor !== null) {
       queryArgs.push("-f", `cursor=${cursor}`);
     }
-    const response = RollupResponseSchema.safeParse(execGhJson(queryArgs, readOptions(deadline)));
+    const response = RollupResponseSchema.safeParse(await readJson(queryArgs, deadline));
     return response.success ? response.data.data.repository?.pullRequest : undefined;
   };
-  const page = (details ? collectRollupContexts(fetchPage) : fetchPage(null)) ?? {};
+  const page = (await (details ? collectRollupContexts(fetchPage) : fetchPage(null))) ?? {};
   const contexts = page.statusCheckRollup?.contexts;
   if (
     details &&
@@ -205,24 +204,21 @@ const RestSuiteSchema = z.object({
 const successful = (status: string | undefined, conclusion: string | null | undefined) =>
   status === "COMPLETED" && ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(conclusion ?? "");
 
-function readRestRollup(
+async function readRestRollup(
   repo: string,
   deadline: number,
   requestedDetails: boolean,
-  readPr: (deadline: number) => RollupPage,
-  readOptions: ReadOptions,
+  readPr: (deadline: number) => Promise<RollupPage>,
+  readJson: WatcherJsonReader,
 ) {
-  const before = readPr(deadline);
+  const before = await readPr(deadline);
   if (before.state !== "OPEN" || !/^[0-9a-f]{40}$/.test(before.headRefOid ?? "")) {
     return { page: before, details: requestedDetails };
   }
   const sha = before.headRefOid;
   const read = (endpoint: string) =>
-    execGhJson(
-      ["api", `repos/${repo}/${endpoint}`, "-H", "Cache-Control: max-age=0"],
-      readOptions(deadline),
-    );
-  function pages<T>(endpoint: string, key: string, item: z.ZodType<T>) {
+    readJson(["api", `repos/${repo}/${endpoint}`, "-H", "Cache-Control: max-age=0"], deadline);
+  async function pages<T>(endpoint: string, key: string, item: z.ZodType<T>) {
     const schema = z
       .object({
         total_count: z.number().int().nonnegative().max(1_000),
@@ -234,7 +230,7 @@ function readRestRollup(
     let snapshot: string | undefined;
     for (let page = 1; page <= 10; page += 1) {
       const separator = endpoint.includes("?") ? "&" : "?";
-      const response = schema.parse(read(`${endpoint}${separator}per_page=100&page=${page}`));
+      const response = schema.parse(await read(`${endpoint}${separator}per_page=100&page=${page}`));
       const count = response.total_count;
       const items = z.array(item).max(100).parse(response[key]);
       const current = JSON.stringify([count, response.sha, response.state]);
@@ -258,12 +254,12 @@ function readRestRollup(
     }
     throw new Error("REST check evidence pagination is incomplete");
   }
-  const { items: checks } = pages(
+  const { items: checks } = await pages(
     `commits/${sha}/check-runs?filter=latest`,
     "check_runs",
     RestCheckSchema,
   );
-  const { items: statuses, state: statusState } = pages(
+  const { items: statuses, state: statusState } = await pages(
     `commits/${sha}/status`,
     "statuses",
     RestStatusSchema,
@@ -287,10 +283,12 @@ function readRestRollup(
   // REST already collected the check rows; finish failure analysis in this snapshot.
   const details = requestedDetails || failed;
   const runs = details
-    ? pages(
-        `actions/runs?head_sha=${sha}&exclude_pull_requests=true`,
-        "workflow_runs",
-        RestRunSchema,
+    ? (
+        await pages(
+          `actions/runs?head_sha=${sha}&exclude_pull_requests=true`,
+          "workflow_runs",
+          RestRunSchema,
+        )
       ).items
     : [];
   if (
@@ -340,7 +338,7 @@ function readRestRollup(
     );
   // GitHub silently restricts commit check-runs to the most recent 1,000 suites.
   // Fresh suite outcomes also catch reruns while successful check pages were read.
-  const { items: currentSuites } = pages(
+  const { items: currentSuites } = await pages(
     `commits/${sha}/check-suites`,
     "check_suites",
     RestSuiteSchema,
@@ -374,7 +372,7 @@ function readRestRollup(
       throw new Error("REST check-suite outcome changed during collection");
     }
   }
-  const current = readPr(deadline);
+  const current = await readPr(deadline);
   if (JSON.stringify(current) !== JSON.stringify(before)) {
     return { page: current, details };
   }
@@ -413,22 +411,22 @@ function readRestRollup(
 export function createPrRollupReader(
   pr: number,
   repo: string,
-  readPr: (deadline: number) => RollupPage,
-  readOptions: ReadOptions,
+  readPr: (deadline: number) => Promise<RollupPage>,
+  readJson: WatcherJsonReader,
 ) {
   let rest = false;
-  return (deadline: number, details = true) => {
+  return async (deadline: number, details = true) => {
     if (!rest) {
       try {
-        return { page: readGraphqlRollup(pr, repo, deadline, details, readOptions), details };
+        return { page: await readGraphqlRollup(pr, repo, deadline, details, readJson), details };
       } catch (error) {
-        if (!isGraphqlQuotaExhausted(error)) {
+        if (!(error instanceof WatcherQuotaError) || error.primaryResource !== "graphql") {
           throw error;
         }
         rest = true;
         console.log("WARN GraphQL quota exhausted; using REST check evidence for this watcher");
       }
     }
-    return readRestRollup(repo, deadline, details, readPr, readOptions);
+    return readRestRollup(repo, deadline, details, readPr, readJson);
   };
 }
