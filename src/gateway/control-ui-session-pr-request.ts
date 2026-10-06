@@ -1,3 +1,4 @@
+import { getSharedApiStore, type ApiRequestStore } from "../infra/http-api-quota.js";
 import { gitHubPublicApi } from "./github-public-api.js";
 
 /** Shared I/O survives one reader's retirement while each reader owns its delivery. */
@@ -24,6 +25,10 @@ export function createGitHubReadGroup() {
   return {
     signal: abort.signal,
     assertCurrent,
+    abort: () => {
+      readers.clear();
+      abort.abort(new Error("GitHub read owner closed"));
+    },
     add(assertReader: () => void, signal?: AbortSignal) {
       const reader = () => {
         signal?.throwIfAborted();
@@ -54,7 +59,13 @@ export function prepareSessionPullRequestGitHubRead(
   host: string,
   fetchImpl: typeof fetch,
   assertAccess: () => void,
-  options: { optionalAuth?: boolean; signal?: AbortSignal } = {},
+  options: {
+    optionalAuth?: boolean;
+    signal?: AbortSignal;
+    refresh?: boolean;
+    onRequest?: (url: string, store: ApiRequestStore) => void;
+    onResponse?: (url: string, store: ApiRequestStore, observation: number) => void;
+  } = {},
 ) {
   const optionalAuth = options.optionalAuth !== false;
   const selected = gitHubPublicApi.resolveGitHubApiCredentialScope(undefined, host);
@@ -71,9 +82,18 @@ export function prepareSessionPullRequestGitHubRead(
     }
   };
   const identity = { assertSelected: assertCurrent, revalidate: async () => assertCurrent() };
+  const store = getSharedApiStore({
+    apiBaseUrl: selected.apiBaseUrl,
+    token: selected.token,
+    fetchImpl,
+  });
+  let responseStore = store;
   return {
     ...selected,
     host,
+    get store() {
+      return responseStore;
+    },
     assertCurrent,
     async request(
       this: void,
@@ -88,21 +108,31 @@ export function prepareSessionPullRequestGitHubRead(
       );
       const requestSignal =
         sourceSignals.length > 1 ? AbortSignal.any(sourceSignals) : sourceSignals[0];
-      const readJson = async (token: string | undefined) =>
-        gitHubPublicApi.readGitHubJsonResponse(
-          await gitHubPublicApi.fetchGitHubApi(
-            url,
-            fetchImpl,
-            token,
-            beforeRedirect,
-            identity,
-            undefined,
-            requestSignal,
-            undefined,
-            selected.apiBaseUrl,
-          ),
-          maxBytes,
+      const readJson = async (token: string | undefined) => {
+        const requestStore = getSharedApiStore({
+          apiBaseUrl: selected.apiBaseUrl,
+          token,
+          fetchImpl,
+        });
+        // Failed observations remain dependencies so another reader's recovery wakes this view.
+        options.onRequest?.(url, requestStore);
+        const response = await gitHubPublicApi.fetchGitHubApi(
+          url,
+          fetchImpl,
+          token,
+          beforeRedirect,
+          identity,
+          undefined,
+          requestSignal,
+          undefined,
+          selected.apiBaseUrl,
+          { refresh: options.refresh },
         );
+        const value = await gitHubPublicApi.readGitHubJsonResponse(response, maxBytes);
+        responseStore = requestStore;
+        options.onResponse?.(url, requestStore, requestStore.responses.observationOf(response));
+        return value;
+      };
       const value = optionalAuth
         ? await gitHubPublicApi.withOptionalGitHubAuth(selected.token, readJson)
         : await readJson(selected.token);

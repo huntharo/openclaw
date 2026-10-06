@@ -1,5 +1,5 @@
 import { WorkerTaskPool } from "openclaw/plugin-sdk/process-runtime";
-import { ApiQuotaError, getSharedApiQuota } from "openclaw/plugin-sdk/retry-runtime";
+import { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import {
   REPORT_RUN_TIMEOUT_MS,
   type ReportRunRequest,
@@ -7,7 +7,8 @@ import {
   type ReportWorkerRequest,
   type ReportWorkerResponse,
 } from "./run-worker-contract.js";
-import type { SourceStatus } from "./types.js";
+import { createGithubApiReader } from "./sources/github/api-reader.js";
+import type { GithubReadStats, SourceStatus } from "./types.js";
 
 export class TeamReportsRunner {
   private readonly pool;
@@ -24,11 +25,7 @@ export class TeamReportsRunner {
 
   async run(params: ReportRunRequest): Promise<Record<string, SourceStatus>> {
     const deadline = Date.now() + REPORT_RUN_TIMEOUT_MS;
-    const githubQuota = getSharedApiQuota({
-      apiBaseUrl: params.resolved.github.apiBaseUrl,
-      token: params.resolved.github.token,
-    });
-    const githubAdmissions = new Map<string, Set<() => void>>();
+    const githubRead = createGithubApiReader(params.resolved.github, params.runtime);
     try {
       return await this.pool.run(
         {
@@ -52,46 +49,23 @@ export class TeamReportsRunner {
                 params.onRoster(request.roster);
               }
               let response: ReportWorkerResponse;
+              let githubStats: GithubReadStats | undefined;
               try {
-                if (request.kind === "github-quota") {
-                  let failure: ApiQuotaError | undefined;
-                  try {
-                    if (request.release) {
-                      const admissions = githubAdmissions.get(request.resource);
-                      const release = admissions?.values().next().value;
-                      if (release) {
-                        release();
-                        admissions?.delete(release);
-                      }
-                    } else if (request.observation) {
-                      const { status, headers, rateLimited } = request.observation;
-                      failure = githubQuota.observe(
-                        new Response(null, { status, headers }),
-                        request.resource,
-                        rateLimited,
-                      );
-                    } else {
-                      const release = githubQuota.admit(request.resource);
-                      const admissions = githubAdmissions.get(request.resource) ?? new Set();
-                      admissions.add(release);
-                      githubAdmissions.set(request.resource, admissions);
-                    }
-                  } catch (error) {
-                    if (!(error instanceof ApiQuotaError)) {
-                      throw error;
-                    }
-                    failure = error;
-                  }
+                if (request.kind === "github-read") {
+                  const result = await githubRead(request.path, {
+                    signal,
+                    recordStats: (stats) => {
+                      githubStats = stats;
+                    },
+                  });
                   response = {
                     ok: true,
-                    value: failure
-                      ? {
-                          reason: failure.reason,
-                          retryAtMs: failure.retryAtMs,
-                          upstreamStatus: failure.upstreamStatus,
-                          resource: failure.resource,
-                        }
-                      : null,
+                    value: {
+                      status: result.status,
+                      statusText: result.statusText,
+                      headers: [...result.headers],
+                      body: await result.text(),
+                    },
                   };
                 } else {
                   const result =
@@ -107,8 +81,26 @@ export class TeamReportsRunner {
               } catch (error) {
                 response = {
                   ok: false,
-                  error: error instanceof Error ? error.message : String(error),
+                  error:
+                    request.kind === "github-read"
+                      ? "GitHub API request failed"
+                      : error instanceof Error
+                        ? error.message
+                        : String(error),
+                  ...(error instanceof ApiQuotaError
+                    ? {
+                        quota: {
+                          reason: error.reason,
+                          retryAtMs: error.retryAtMs,
+                          upstreamStatus: error.upstreamStatus,
+                          resource: error.resource,
+                        },
+                      }
+                    : {}),
                 };
+              }
+              if (githubStats) {
+                response.githubStats = githubStats;
               }
               signal.throwIfAborted();
               return { input: response, timeoutMs: Math.max(1, deadline - Date.now()) };
@@ -122,11 +114,6 @@ export class TeamReportsRunner {
     } finally {
       // Pool retirement joins the isolate; accepted host writes and LLM cleanup also need settlement.
       await Promise.allSettled(this.requests);
-      for (const admissions of githubAdmissions.values()) {
-        for (const release of admissions) {
-          release();
-        }
-      }
     }
   }
 

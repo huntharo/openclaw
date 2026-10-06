@@ -227,6 +227,7 @@ console.log(JSON.stringify(value));
       calls: readFileSync(callsPath, "utf8")
         .trim()
         .split("\n")
+        .filter(Boolean)
         .map((line) => JSON.parse(line) as string[]),
     };
   });
@@ -2002,6 +2003,11 @@ console.log(JSON.stringify(value));
             (call) => isRunStatusRead(call) && !call.includes("Cache-Control: max-age=0"),
           ),
         ).toBeGreaterThan(finalRollupRead);
+        expect(
+          calls
+            .filter((call) => isRunStatusRead(call) && !call.includes("Cache-Control: max-age=0"))
+            .every((call) => call.includes("Cache-Control: no-cache")),
+        ).toBe(true);
         if (rest) {
           expect(calls.filter((call) => call[1] === "graphql")).toHaveLength(1);
         }

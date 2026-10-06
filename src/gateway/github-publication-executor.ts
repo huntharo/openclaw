@@ -3,6 +3,7 @@ import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 import type { SessionGitHubPublicationResult } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import { githubRepositoryUrl } from "../agents/github-host.js";
 import { gitNullConfigPath } from "../infra/git-exec.js";
+import { invalidateGitReads } from "../infra/git-read-cache.js";
 import type { GitHubPublicationExecutionRow } from "../state/github-publication-read.types.js";
 import {
   readLocalGitHubPublicationWorktreeOwner,
@@ -544,6 +545,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       run: custodyCommands.require,
       ...(updateBranchRef ? { updateRef: updateBranchRef } : {}),
     });
+    invalidateGitReads(worktree.path);
     row = params.updatePublishingFacts({
       row,
       repository,

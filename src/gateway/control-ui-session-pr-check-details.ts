@@ -1,3 +1,5 @@
+import type { ApiRequestStore } from "../infra/http-api-quota.js";
+import { apiStoreRequestKey } from "../infra/http-api-read-store.js";
 import { createRetainedCache } from "../infra/retained-cache.js";
 import type {
   ControlUiSessionPullRequestCheckDetails,
@@ -24,6 +26,8 @@ const checkDetailsCache = createRetainedCache<{
   promise: Promise<ControlUiSessionPullRequestCheckDetails>;
   lastGood?: ControlUiSessionPullRequestCheckDetails;
   access: ReturnType<typeof createGitHubReadGroup>;
+  store: ApiRequestStore;
+  dependencies: Map<string, { store: ApiRequestStore; revision: number }>;
 }>();
 let activeCheckDetails = 0;
 const CHECK_DETAILS_CACHE_MS = 30_000;
@@ -87,7 +91,6 @@ export async function loadControlUiSessionPullRequestChecks(
   const assertCurrent = read.assertCurrent;
   const checkTarget = { ...target, host, apiBaseUrl: read.apiBaseUrl };
   const key = JSON.stringify([
-    deps.sessionScope,
     host,
     read.apiBaseUrl,
     owner.toLowerCase(),
@@ -98,23 +101,44 @@ export async function loadControlUiSessionPullRequestChecks(
   ]);
   let entry = checkDetailsCache.get(key);
   let releaseReader: (() => void) | undefined;
-  if (!entry || entry.expiresAt <= Date.now() || entry.access.signal.aborted) {
+  if (
+    !entry ||
+    entry.store !== read.store ||
+    entry.expiresAt <= Date.now() ||
+    entry.access.signal.aborted ||
+    [...entry.dependencies].some(([requestKey, dependency]) => {
+      const revision = dependency.store.responses.revision(requestKey);
+      return revision !== 0 && revision !== dependency.revision;
+    })
+  ) {
     if (activeCheckDetails >= MAX_CHECK_DETAIL_REQUESTS) {
       return { ...unavailable("CI details are busy; retry shortly"), retryAfterMs: 5_000 };
     }
-    const previous = entry?.lastGood;
+    const previous = entry?.store === read.store ? entry.lastGood : undefined;
     const pending = {
       expiresAt: Infinity,
       promise: Promise.resolve(unavailable("CI details are loading")),
       lastGood: previous,
       access: createGitHubReadGroup(),
+      store: read.store,
+      dependencies: new Map<string, { store: ApiRequestStore; revision: number }>(),
     };
     releaseReader = pending.access.add(deps.assertCurrent);
     const transportRead = prepareSessionPullRequestGitHubRead(
       host,
       deps.fetchImpl ?? fetch,
       pending.access.assertCurrent,
-      { signal: pending.access.signal },
+      {
+        signal: pending.access.signal,
+        refresh: true,
+        onRequest: (url, store) => {
+          const requestKey = apiStoreRequestKey(url);
+          pending.dependencies.set(requestKey, {
+            store,
+            revision: store.responses.revision(requestKey),
+          });
+        },
+      },
     );
     activeCheckDetails += 1;
     const load = async (): Promise<ControlUiSessionPullRequestCheckDetails> => {
@@ -217,6 +241,9 @@ export async function loadControlUiSessionPullRequestChecks(
     };
     pending.promise = load()
       .then((result) => {
+        for (const [requestKey, dependency] of pending.dependencies) {
+          dependency.revision = dependency.store.responses.revision(requestKey);
+        }
         pending.expiresAt = Date.now() + Math.max(CHECK_DETAILS_CACHE_MS, result.retryAfterMs ?? 0);
         return result;
       })

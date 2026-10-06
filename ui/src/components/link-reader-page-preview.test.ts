@@ -28,7 +28,13 @@ function fixture(shadow = false) {
   const request = vi
     .fn()
     .mockResolvedValue({ title: "Field guide", description: "A practical introduction" });
-  const client = { request, connected: true, connectionGeneration: 1, recoveryScope: "first" };
+  const client = {
+    addEventListener: () => () => {},
+    request,
+    connected: true,
+    connectionGeneration: 1,
+    recoveryScope: "first",
+  };
   const listeners = new Set<() => void>();
   const subscribe = (listener: () => void) => {
     listeners.add(listener);

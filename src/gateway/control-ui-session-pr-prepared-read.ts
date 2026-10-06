@@ -117,7 +117,7 @@ export function createControlUiSessionPrPreparedRead<State extends PreparedSessi
           };
           assertReadCurrent();
           try {
-            const result = await load(target.params, undefined, {
+            const result = await load(target.params, state?.cacheLifetime.signal, {
               target,
               sourceIdentity,
               projection,

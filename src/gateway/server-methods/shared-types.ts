@@ -386,6 +386,9 @@ type GatewayTransportContext = {
 
 /** Resident-owned services bridged into request handling by the server lifecycle. */
 type GatewayResidentBridgeContext = {
+  controlUiLinkReaderNotifications?: ReturnType<
+    typeof import("../control-ui-link-reader-notifications.js").createControlUiLinkReaderNotifications
+  >;
   getGatewayMethodRegistry?: () => import("../methods/registry.js").GatewayMethodRegistry;
   controlUiSessionPullRequests?: ReturnType<
     typeof import("../control-ui-session-pr-subscriptions.js").createControlUiSessionPullRequestSubscriptions

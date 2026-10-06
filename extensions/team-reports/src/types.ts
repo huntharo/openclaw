@@ -1,5 +1,4 @@
 import type { RuntimeLogger } from "openclaw/plugin-sdk/core";
-import type { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import type { z } from "zod";
 import type { resolveTeamReportsConfig, TeamReportsConfig } from "./config.js";
 import type { reportDocumentSchema, summaryDocumentSchema } from "./store-schema.js";
@@ -53,21 +52,20 @@ export type SummaryDocument = z.infer<typeof summaryDocumentSchema>;
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
+export type GithubReadStats = { apiCalls: number; rateLimitRemaining?: number };
+export type GithubApiRead = (
+  path: string,
+  options?: { signal?: AbortSignal; recordStats?: (stats: GithubReadStats) => void },
+) => Promise<Response>;
+
 /** Per-run context handed to sources. Sources must honor `signal` and never log credentials. */
 export type SourceRuntime = {
   logger: RuntimeLogger;
   signal?: AbortSignal;
   /** Test seam; production uses the SDK guarded fetch. */
   fetchImpl?: FetchLike;
-  /** Worker collection shares quota with host readers through its task channel. */
-  githubQuota?: {
-    admit(resource: string): Promise<() => void | Promise<void>>;
-    observe(
-      response: Response,
-      resource: string,
-      rateLimited: boolean | "secondary",
-    ): Promise<ApiQuotaError | undefined>;
-  };
+  /** Worker collection uses the host's credential-bound request and response owner. */
+  githubRead?: GithubApiRead;
 };
 
 /** Resolved (secret already materialized) GitHub source configuration. */

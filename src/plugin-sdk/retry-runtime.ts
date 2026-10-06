@@ -52,7 +52,10 @@ export { parseRetryAfterHeaderSeconds } from "../infra/retry-after.js";
 export {
   ApiQuotaError,
   ApiRequestQuota,
+  ApiRequestStore,
   apiQuotaErrorForResponse,
   getSharedApiQuota,
+  getSharedApiStore,
   apiRateLimitHint,
 } from "../infra/http-api-quota.js";
+export { apiStoreRequestKey, type ApiStoreChange } from "../infra/http-api-read-store.js";

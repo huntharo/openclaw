@@ -4,16 +4,40 @@ import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const guardKey = Symbol.for("openclaw.test.githubNetworkGuard");
-const preload = import.meta.url;
+function resolveGuardSource() {
+  const source = import.meta.url.startsWith("file:")
+    ? fileURLToPath(import.meta.url)
+    : import.meta.filename;
+  const ownsFixtures = (file) =>
+    typeof file === "string" &&
+    path.isAbsolute(file) &&
+    existsSync(file) &&
+    existsSync(path.resolve(path.dirname(file), "../fixtures/forbid-github/gh"));
+  if (ownsFixtures(source)) {
+    return source;
+  }
+  // JSDOM's Vite runtime presents an HTTP module URL; child preloads still need the source file.
+  for (let directory = process.cwd(); ; directory = path.dirname(directory)) {
+    const candidate = path.join(directory, "test/helpers/github-network-guard.mjs");
+    if (ownsFixtures(candidate)) {
+      return candidate;
+    }
+    if (path.dirname(directory) === directory) {
+      throw new Error("GitHub test guard source and command fixtures could not be resolved");
+    }
+  }
+}
+const guardSource = resolveGuardSource();
+const preload = pathToFileURL(guardSource).href;
 const marker = "OPENCLAW_TEST_GITHUB_NETWORK_GUARD";
 const tempRootKey = "OPENCLAW_TEST_GITHUB_FIXTURE_ROOT";
 const hostsKey = "OPENCLAW_TEST_GITHUB_HOSTS";
 const fixtureRoot = process.env[tempRootKey] || tmpdir();
 const inheritedHosts = (process.env[hostsKey] ?? "").split(",").filter(Boolean);
-const blockedCommands = fileURLToPath(new URL("../fixtures/forbid-github/", import.meta.url));
+const blockedCommands = path.resolve(path.dirname(guardSource), "../fixtures/forbid-github");
 const transportCommands = new Set([
   "gh",
   "curl",
@@ -228,9 +252,15 @@ export function installGitHubNetworkGuard() {
           forbidden();
         }
         // Recursive/remote updates can select destinations inside not-yet-loaded repositories.
+        const recursionDisabled =
+          ["push", "fetch", "pull"].includes(operation) &&
+          operationArgs.includes("--recurse-submodules=no");
         if (
           operationArgs.some(
-            (arg) => arg === "--recursive" || /^--recurse-submodules(?:=|$)/u.test(arg),
+            (arg) =>
+              arg === "--recursive" ||
+              (/^--recurse-submodules(?:=|$)/u.test(arg) &&
+                !(recursionDisabled && arg === "--recurse-submodules=no")),
           ) ||
           (submodule && operationArgs.includes("--remote"))
         ) {

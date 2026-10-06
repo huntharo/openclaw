@@ -486,6 +486,16 @@ Preview and detail requests include the selected `agentId` when available; detai
 requests also accept `refresh: true`. The receiving owner must authorize identity
 selection rather than treating this hint as access authority.
 
+Gateway-owned readers can receive `controlUi.linkReader.changed` with
+`{ url, agentId }` when their shared source owner observes new facts. Delivery
+is targeted to live connections that successfully read that exact resource,
+with the current identity selected again before publication. The event carries
+an invalidation, not document data or a broader resource inventory. The UI
+invalidates matching document tabs and hover previews; visible consumers reread
+through their normal authorized methods, while background tabs refresh when
+selected. Removing the connection retires its interests. These notifications
+do not add a browser polling loop.
+
 Method names are bounded to 128 characters. Credentials in URLs and non-HTTPS
 URLs are never intercepted. A descriptor is a routing hint, not authorization
 or input validation: each plugin method still validates its URL, source access,

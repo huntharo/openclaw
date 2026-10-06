@@ -1,12 +1,21 @@
 import { execFileSync, execSync, fork, spawnSync } from "node:child_process";
 import dns from "node:dns";
 import { once } from "node:events";
-import { chmodSync, copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { get } from "node:https";
 import { Socket } from "node:net";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureFullEnv, withEnv } from "../../src/test-utils/env.js";
+import { installSharedTestSetup } from "../setup.shared.js";
 import { requireNodeTool } from "./node-toolchain.js";
 import { useAutoCleanupTempDirTracker } from "./temp-dir.js";
 
@@ -44,6 +53,44 @@ function commitGitFixture(directory: string, text: string) {
 }
 
 describe("ordinary tests cannot reach GitHub", () => {
+  it.each([false, true])(
+    "retains the real-home network barrier with profile loading %s",
+    (loadProfileEnv) => {
+      installSharedTestSetup().cleanup();
+      const caller = captureFullEnv();
+      const home = tempDirs.make("github-real-home-policy-");
+      writeFileSync(join(home, ".profile"), "export LIVE=1\n");
+      const lookup = vi.spyOn(dns, "lookup").mockImplementation(() => {
+        throw new Error("unexpected DNS dispatch");
+      });
+      try {
+        withEnv(
+          {
+            HOME: home,
+            USERPROFILE: home,
+            LIVE: undefined,
+            OPENCLAW_LIVE_TEST: undefined,
+            OPENCLAW_LIVE_GATEWAY: undefined,
+            OPENCLAW_LIVE_USE_REAL_HOME: "1",
+          },
+          () => {
+            const setup = installSharedTestSetup({ loadProfileEnv });
+            try {
+              expect(() => get("https://api.github.com/")).toThrow(forbidden);
+              expect(lookup).not.toHaveBeenCalled();
+            } finally {
+              setup.cleanup();
+            }
+          },
+        );
+      } finally {
+        lookup.mockRestore();
+        caller.restore();
+        installSharedTestSetup();
+      }
+    },
+  );
+
   it.each(["api.github.com", "github.com", "tenant.ghe.com"])(
     "blocks HTTP and socket access to %s before dispatch",
     async (host) => {
@@ -67,6 +114,41 @@ describe("ordinary tests cannot reach GitHub", () => {
     } finally {
       lookup.mockRestore();
     }
+  });
+
+  it("resolves a physical child preload when the UI runtime supplies HTTP module metadata", () => {
+    const directory = tempDirs.make("github-ui-module-guard-");
+    const script = join(directory, "ui-guard.mjs");
+    const source = readFileSync(new URL("./github-network-guard.mjs", import.meta.url), "utf8")
+      .replaceAll(
+        "import.meta.url",
+        JSON.stringify("http://localhost:3000/test/helpers/github-network-guard.mjs"),
+      )
+      .replaceAll("import.meta.filename", "undefined");
+    writeFileSync(script, source);
+    const result = spawnSync(
+      node,
+      [
+        "--input-type=module",
+        "-e",
+        `
+      import { spawnSync } from "node:child_process";
+      globalThis[Symbol.for("openclaw.test.githubNetworkGuard")]?.();
+      const guard = await import(${JSON.stringify(pathToFileURL(script).href)});
+      guard.installGitHubNetworkGuard();
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", 'import dns from "node:dns"; dns.lookup = () => { throw new Error("unexpected DNS dispatch"); }; await fetch("https://api.github.com/");'], { env: {}, encoding: "utf8" });
+      process.stdout.write(child.stderr);
+      process.exitCode = child.status === 1 ? 0 : 2;
+    `,
+      ],
+      {
+        cwd: fileURLToPath(new URL("../../ui/", import.meta.url)),
+        env: {},
+        encoding: "utf8",
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(forbidden);
   });
 
   it.each(["api.github.com", "ghe.example.test"])(
@@ -157,6 +239,38 @@ describe("ordinary tests cannot reach GitHub", () => {
       expect(spawnSync("git", args, { cwd: checkout }).status).toBe(0);
     },
   );
+
+  it("allows an explicitly nonrecursive local push while blocking recursion and GitHub destinations", () => {
+    const directory = tempDirs.make("github-local-push-guard-");
+    const source = join(directory, "source.git");
+    const checkout = join(directory, "checkout");
+    execFileSync("git", ["init", "--bare", "-q", source]);
+    execFileSync("git", ["init", "-q", checkout]);
+    const sha = commitGitFixture(checkout, "synthetic local push\n");
+    const push = ["push", "--recurse-submodules=no", source, "HEAD:refs/heads/main"];
+    expect(spawnSync("git", push, { cwd: checkout }).status).toBe(0);
+    expect(
+      execFileSync("git", ["-C", source, "rev-parse", "refs/heads/main"], {
+        encoding: "utf8",
+      }).trim(),
+    ).toBe(sha);
+    expect(() =>
+      execFileSync(
+        "git",
+        ["push", "--recurse-submodules=on-demand", source, "HEAD:refs/heads/main"],
+        { cwd: checkout },
+      ),
+    ).toThrow(forbidden);
+    const remote = "https://github.com/example/repo.git";
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd: checkout });
+    // Even without admission this destination resolves only to the local bare fixture.
+    execFileSync("git", ["config", `url.${source}.insteadOf`, remote], { cwd: checkout });
+    expect(() =>
+      execFileSync("git", ["push", "--recurse-submodules=no", "origin", "HEAD:refs/heads/main"], {
+        cwd: checkout,
+      }),
+    ).toThrow(forbidden);
+  });
 
   it("blocks Git remote creation that immediately fetches", () => {
     const directory = tempDirs.make("github-git-remote-create-");
@@ -253,7 +367,7 @@ describe("ordinary tests cannot reach GitHub", () => {
     },
   );
 
-  it.each(["--recurse-submodules", "--recurse-submodules=component"])(
+  it.each(["--recurse-submodules", "--recurse-submodules=component", "--recurse-submodules=no"])(
     "rejects recursive clone admission with %s",
     (option) => {
       const directory = tempDirs.make("github-recursive-clone-guard-");

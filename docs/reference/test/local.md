@@ -153,8 +153,9 @@ The shared Node test setup blocks GitHub HTTP connections and native `gh` execut
 Node subprocesses with a replaced environment. Mock HTTP transports or put a
 synthetic `gh` script in a temporary fixture directory. Shell PATH lookup also
 stops before the developer's installed CLI. Both public and Enterprise GitHub
-token variables are removed from the isolated test environment. Explicit live
-test selections retain their existing network and credential policy.
+token variables are removed from the isolated test environment. The real-home flag
+and values loaded from profiles do not permit GitHub requests by themselves.
+Explicit live test selections retain their existing network and credential policy.
 Native Git checks configured remotes and submodule URLs. Use direct argument
 arrays for native Git network fixtures. Shell Git network operations, recursive
 clones, submodule updates, and Git network operations in repositories with populated

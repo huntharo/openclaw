@@ -78,12 +78,11 @@ export function installSharedTestSetup(options?: SharedTestSetupOptions): {
     return existing;
   }
 
+  const homePolicy = resolveTestHomePolicy(process.env);
   const testEnv = withIsolatedTestHome({
     loadProfileEnv: options?.loadProfileEnv,
   });
-  const homePolicy = resolveTestHomePolicy(process.env);
-  const restoreGitHubGuard =
-    homePolicy.live || homePolicy.allowRealHome ? undefined : installGitHubNetworkGuard();
+  const restoreGitHubGuard = homePolicy.live ? undefined : installGitHubNetworkGuard();
   installProcessWarningFilter();
 
   let cleaned = false;

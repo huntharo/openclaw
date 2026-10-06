@@ -2,17 +2,13 @@ import { z } from "zod";
 import { GitHubIdentityError, prepareGitHubReadIdentity } from "../agents/github-tool-identity.js";
 import { BoardValidationError } from "../boards/board-layout.js";
 import { resolveGitHubActionsRequest } from "../boards/github-actions-capability.js";
-import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
-import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import type { BoardCapabilityAuthority } from "./board-host-tools.js";
 import { BoardGatewayUnavailableError } from "./board-view-ticket.js";
 import { requestCurrentGitHubOAuthRefresh } from "./github-oauth-lifecycle.js";
 import { gitHubPublicApi } from "./github-public-api.js";
 import type { GatewayRequestContext, RespondFn } from "./server-methods/types.js";
 
-const CACHE_TTL_MS = 30_000;
-const CACHE_LIMIT = 32;
 const MAX_CONCURRENT_READS = 32;
 // Thirty workflow runs include large repository objects before projection.
 const ACTIONS_MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -41,13 +37,10 @@ const runsSchema = z.object({
     )
     .max(30),
 });
-type ActionsResult = z.infer<typeof runsSchema>;
-type ActionsCache = {
+type ActionsAdmission = {
   active: number;
-  values: Map<string, { value: ActionsResult; expiresAt: number }>;
-  pending: Map<string, Promise<ActionsResult>>;
 };
-const gatewayCaches = new WeakMap<GatewayRequestContext, ActionsCache>();
+const gatewayAdmissions = new WeakMap<GatewayRequestContext, ActionsAdmission>();
 
 function actionsFailure(error: unknown): Error {
   if (
@@ -115,13 +108,11 @@ export async function readBoardGitHubActions(
   publish: RespondFn,
 ): Promise<void> {
   const request = resolveGitHubActionsRequest(params);
-  const cache = await authority.useCurrent(() => {
-    const admitted: ActionsCache = gatewayCaches.get(context) ?? {
+  const admission = await authority.useCurrent(() => {
+    const admitted: ActionsAdmission = gatewayAdmissions.get(context) ?? {
       active: 0,
-      values: new Map(),
-      pending: new Map(),
     };
-    gatewayCaches.set(context, admitted);
+    gatewayAdmissions.set(context, admitted);
     if (admitted.active >= MAX_CONCURRENT_READS) {
       throw new Error("GitHub Actions reads are busy; retry shortly.");
     }
@@ -130,74 +121,55 @@ export async function readBoardGitHubActions(
   });
   try {
     const identity = await prepareBoardGitHubIdentity(context, authority);
-    const key = JSON.stringify([authority.boardSession, identity.cacheScope, request.url]);
-    const result = await identity.start(() => {
-      const cached = cache.values.get(key);
-      if (cached && cached.expiresAt > Date.now()) {
-        return structuredClone(cached.value);
-      }
-      cache.values.delete(key);
-      // Creation is synchronous, so the checked caller admits the fetch. Shared transport
-      // must not inherit that widget's lifetime; every caller gates delivery below.
-      return getOrCreatePromise(
-        cache.pending,
-        key,
+    const result = await identity.start(async () => {
+      const response = await gitHubPublicApi.fetchGitHubApi(
+        request.url,
+        fetch,
+        identity.token,
         async () => {
-          const response = await gitHubPublicApi.fetchGitHubApi(
-            request.url,
-            fetch,
-            identity.token,
-            async () => {
-              // A redirect is a new target, not authority to read another repository or operation.
-              throw new BoardValidationError(
-                "invalid_operation",
-                "GitHub Actions redirected the request; verify the repository/workflow, update the widget grant if needed, and retry.",
-              );
-            },
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            gitHubPublicApi.GITHUB_API_ORIGIN,
+          // A redirect is a new target, not authority to read another repository or operation.
+          throw new BoardValidationError(
+            "invalid_operation",
+            "GitHub Actions redirected the request; verify the repository/workflow, update the widget grant if needed, and retry.",
           );
-          const raw = await gitHubPublicApi.readGitHubJsonResponse(
-            response,
-            ACTIONS_MAX_RESPONSE_BYTES,
-          );
-          const parsed = runsSchema.safeParse(raw);
-          if (
-            !parsed.success ||
-            parsed.data.workflow_runs.length > request.perPage ||
-            JSON.stringify(parsed.data).includes(identity.token)
-          ) {
-            throw new Error("Invalid Actions response");
-          }
-          for (const run of parsed.data.workflow_runs) {
-            const url = new URL(run.html_url);
-            if (
-              url.origin !== "https://github.com" ||
-              url.username ||
-              url.password ||
-              url.search ||
-              url.hash ||
-              url.pathname.toLowerCase() !== `/${request.repository}/actions/runs/${run.id}`
-            ) {
-              throw new Error("Invalid Actions run URL");
-            }
-          }
-          // Internal, credential-scoped cache population is not delivery. No widget owns
-          // this transport result; every caller must validate its own authority below.
-          cache.values.set(key, { value: parsed.data, expiresAt: Date.now() + CACHE_TTL_MS });
-          pruneMapToMaxSize(cache.values, CACHE_LIMIT);
-          return parsed.data;
         },
-        { evictOnSettled: true },
+        identity,
+        undefined,
+        undefined,
+        undefined,
+        gitHubPublicApi.GITHUB_API_ORIGIN,
       );
+      const raw = await gitHubPublicApi.readGitHubJsonResponse(
+        response,
+        ACTIONS_MAX_RESPONSE_BYTES,
+      );
+      const parsed = runsSchema.safeParse(raw);
+      if (
+        !parsed.success ||
+        parsed.data.workflow_runs.length > request.perPage ||
+        JSON.stringify(parsed.data).includes(identity.token)
+      ) {
+        throw new Error("Invalid Actions response");
+      }
+      for (const run of parsed.data.workflow_runs) {
+        const url = new URL(run.html_url);
+        if (
+          url.origin !== "https://github.com" ||
+          url.username ||
+          url.password ||
+          url.search ||
+          url.hash ||
+          url.pathname.toLowerCase() !== `/${request.repository}/actions/runs/${run.id}`
+        ) {
+          throw new Error("Invalid Actions run URL");
+        }
+      }
+      return parsed.data;
     });
     await identity.start(() => publish(true, structuredClone(result)));
   } catch (error) {
     throw actionsFailure(error);
   } finally {
-    cache.active -= 1;
+    admission.active -= 1;
   }
 }

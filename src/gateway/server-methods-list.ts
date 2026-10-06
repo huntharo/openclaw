@@ -50,6 +50,7 @@ export const GATEWAY_EVENTS = [
   "session.tool",
   "sessions.changed",
   "controlUi.sessionPullRequests.changed",
+  "controlUi.linkReader.changed",
   "plugins.controlUi.changed",
   "presence",
   "tick",

@@ -2,19 +2,16 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
-import type {
-  ControlUiLinkReaderDocument,
-  ControlUiLinkReaderDetailParams,
-  ControlUiLinkReaderDescriptor,
-} from "../../../src/shared/control-ui-link-reader.js";
+import type { ControlUiLinkReaderDescriptor } from "../../../src/shared/control-ui-link-reader.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { t } from "../i18n/index.ts";
 import { registerLinkReaderEnglish } from "../i18n/locales/en-link-reader.ts";
+import { linkReaderChangeScope, subscribeLinkReaderChanges } from "../lib/link-reader-changes.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
+import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
 import { DockLayoutController } from "./dock-layout-controller.ts";
 import { icons } from "./icons.ts";
-import { linkReaderErrorMessage } from "./link-reader-error.ts";
-import { LinkReaderImages } from "./link-reader-images.ts";
+import { LinkReaderPanelRequests } from "./link-reader-panel-request.ts";
 import {
   renderLinkReaderPanelContent,
   readerIcon,
@@ -58,6 +55,30 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
   @property({ attribute: false }) sessionKey = "";
   @property({ attribute: false }) onClose?: () => void;
   private hostedSignature = "";
+  constructor() {
+    super();
+    new SubscriptionsController(this).effect(
+      () => (this.available && this.readers.length ? linkReaderChangeScope(this.client) : null),
+      ({ client }) =>
+        subscribeLinkReaderChanges(
+          client,
+          () => this.agentId,
+          ({ url }) => {
+            for (const tab of this.tabs) {
+              const target = tabTarget(tab);
+              if (!target || !linkReaderResponseMatchesTarget(target, url)) {
+                continue;
+              }
+              if (tab === this.activeTab) {
+                this.abortRequest();
+              }
+              this.setTabView(tab, { status: "idle" });
+            }
+            this.requestUpdate();
+          },
+        ),
+    );
+  }
 
   get hostedTabs(): PanelHostedTab[] {
     return this.tabs.map((tab) => ({
@@ -91,7 +112,24 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
   private tabs: ReaderTab[] = [];
   private activeId: string | null = null;
   private nextTabId = 0;
-  private requestAbort: AbortController | null = null;
+  private readonly requests = new LinkReaderPanelRequests(
+    () => ({
+      client: this.client,
+      agentId: this.agentId,
+      sessionKey: this.sessionKey,
+      connected: this.isConnected,
+      available: this.available,
+      presented: this.panelPresented,
+      tab: this.activeTab,
+      target: this.target,
+      readers: this.readers,
+      tabs: this.tabs,
+    }),
+    (tab, view) => {
+      this.setTabView(tab, view);
+      this.requestUpdate();
+    },
+  );
   private returnFocus: HTMLElement | null = null;
   private scrollContent = false;
   private focusAddress = false;
@@ -257,11 +295,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     }
   }
   private abortRequest(): void {
-    this.requestAbort?.abort();
-    this.requestAbort = null;
-    if (this.activeTab?.view.status === "loading") {
-      this.activeTab.view = { status: "idle" };
-    }
+    this.requests.abort();
     this.refreshRequested = false;
   }
   private setTabView(tab: ReaderTab, view: ReaderTab["view"]): void {
@@ -468,78 +502,9 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     }
   }
   private async loadDetail(): Promise<void> {
-    const target = this.target;
-    const tab = this.activeTab;
-    const client = this.client;
-    const agentId = this.agentId;
-    const sessionKey = this.sessionKey;
-    const generation = client?.connectionGeneration;
-    const recoveryScope = client?.recoveryScope;
-    if (!target || !tab || !client || !this.available || !this.panelPresented) {
-      return;
-    }
-    const request = new AbortController();
-    this.requestAbort = request;
-    tab.view = { status: "loading" };
-    const isCurrent = () =>
-      this.requestAbort === request &&
-      !request.signal.aborted &&
-      this.isConnected &&
-      this.client === client &&
-      this.agentId === agentId &&
-      this.sessionKey === sessionKey &&
-      client.connectionGeneration === generation &&
-      client.recoveryScope === recoveryScope &&
-      this.available &&
-      this.panelPresented &&
-      this.activeTab === tab &&
-      this.target?.href === target.href &&
-      this.readers.includes(target.reader);
-    const requestParams: ControlUiLinkReaderDetailParams = {
-      url: target.href,
-      ...(agentId ? { agentId } : {}),
-      ...(this.refreshRequested ? { refresh: true } : {}),
-    };
+    const refresh = this.refreshRequested;
     this.refreshRequested = false;
-    this.requestUpdate();
-    try {
-      const detail = await client.request<ControlUiLinkReaderDocument>(
-        target.reader.linkReader.detailMethod,
-        requestParams,
-        { signal: request.signal },
-      );
-      if (isCurrent()) {
-        if (!detail || !linkReaderResponseMatchesTarget(target, detail.url)) {
-          throw new Error("Link document does not match the requested target");
-        }
-        const imageMethod = target.reader.linkReader.imageMethod;
-        const images = imageMethod
-          ? new LinkReaderImages(
-              client,
-              imageMethod,
-              () =>
-                this.isConnected &&
-                this.available &&
-                this.client === client &&
-                this.agentId === agentId &&
-                this.sessionKey === sessionKey &&
-                client.connectionGeneration === generation &&
-                client.recoveryScope === recoveryScope &&
-                this.tabs.includes(tab) &&
-                this.readers.includes(target.reader) &&
-                tab.view.status === "ready" &&
-                tab.view.detail === detail,
-            )
-          : undefined;
-        this.setTabView(tab, { status: "ready", detail, images });
-        this.requestUpdate();
-      }
-    } catch (error) {
-      if (isCurrent()) {
-        tab.view = { status: "error", message: linkReaderErrorMessage(error) };
-        this.requestUpdate();
-      }
-    }
+    await this.requests.load(refresh);
   }
   override render() {
     const tab = this.activeTab;

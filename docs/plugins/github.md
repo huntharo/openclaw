@@ -109,9 +109,9 @@ hovercard, and GitHub links open externally.
 - Uncached hover previews share a two-second upstream request budget. Slow avatars
   or co-author lookups are omitted; slow required metadata returns a retryable
   unavailable error. The full reader keeps its longer request timeout.
-- Hover previews are shared for one minute across readers using the same GitHub
-  identity. Concurrent requests share a fetch, but each reader must still have
-  access when the result arrives. **Refresh** bypasses the cached preview.
+- API content is shared for 30 seconds across readers using the same credential
+  and API host. Concurrent requests share a fetch, but each reader must still
+  have access when the result arrives. **Refresh** requests a new observation.
 - **Refresh** requests the current item again. Rate limits, deleted items, and
   unavailable services show their specific explanation in the reader and hovercards,
   including GitHub's retry delay when available. Cached preview details stay visible
@@ -123,6 +123,29 @@ hovercard, and GitHub links open externally.
   pause all API resources for that credential; the server honors `Retry-After`
   and quota reset times. Rate-limited reads retain cached content and do not
   switch to anonymous requests to bypass the cooldown.
+
+## Shared PR and Git observations
+
+Within one Gateway instance, session PR status, the public reader and hovercards,
+GitHub Actions reads, publication observations, and team reports use one API
+accounting and response owner per credential and API host. Branch discovery is
+shared across sessions and worktrees with the same repository and branch. PR
+facts use the destination repository and PR number, so different branch lookups
+refer to the same observed PR. A newer observation replaces older facts and
+invalidates affected session projections and open reader views. Notifications
+only reach connections that previously read that target; a reload still checks
+the current identity and repository visibility.
+
+Git reads have a separate shared owner. It joins identical pending operations
+and publishes accepted changes to interested session views. Completed publication
+Git mutations invalidate affected reads before views reload. External Git changes
+are discovered on subsequent reads and the existing polling schedule.
+
+These stores are bounded, in-memory state for one process. Restarting the Gateway
+clears them. Separate Gateways, standalone CLI processes, and arbitrary commands
+launched by an agent do not share this instance's cache or budget. The native PR
+status and reader integration supports GitHub, including configured GitHub
+Enterprise endpoints; it does not provide GitLab merge-request tracking.
 
 ## Plugin author integration
 

@@ -67,7 +67,7 @@ describe("Control UI GitHub failures", () => {
     const signal = await started.promise;
     expect(signal).not.toBe(controller.signal);
     controller.abort();
-    await expect(request).rejects.toMatchObject({ statusCode: 502 });
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
     expect(signal.aborted).toBe(true);
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
@@ -228,18 +228,17 @@ describe("Control UI GitHub failures", () => {
             { status: 403, headers: remaining ? { "x-ratelimit-remaining": remaining } : {} },
           ),
       );
-      const response = await gitHubPublicApi.fetchGitHubApi(
-        "https://api.github.com/graphql",
-        fetchMock,
-        "quota-token",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        { query: "query { viewer { login } }", variables: {} },
-      );
       await expect(
-        gitHubPublicApi.readGitHubGraphQLResponse(response, fetchMock, "quota-token"),
+        gitHubPublicApi.fetchGitHubApi(
+          "https://api.github.com/graphql",
+          fetchMock,
+          "quota-token",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { query: "query { viewer { login } }", variables: {} },
+        ),
       ).rejects.toMatchObject({
         statusCode: 429,
         retryAfterMs: 60_000,
@@ -296,16 +295,25 @@ describe("Control UI GitHub failures", () => {
     vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
     const firstResponse = createDeferred<Response>();
     const secondResponse = createDeferred<Response>();
+    const firstStarted = createDeferred();
+    const secondStarted = createDeferred();
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockImplementationOnce(async () => firstResponse.promise)
-      .mockImplementationOnce(async () => secondResponse.promise);
-    const request = () =>
+      .mockImplementationOnce(async () => {
+        firstStarted.resolve();
+        return firstResponse.promise;
+      })
+      .mockImplementationOnce(async () => {
+        secondStarted.resolve();
+        return secondResponse.promise;
+      });
+    const request = (path: string) =>
       gitHubPublicApi
-        .fetchGitHubJson("https://api.github.com/user/1", fetchMock)
+        .fetchGitHubJson(`https://api.github.com${path}`, fetchMock)
         .catch((error: unknown) => error);
-    const first = request();
-    const second = request();
+    const first = request("/user/1");
+    const second = request("/user/2");
+    await Promise.all([firstStarted.promise, secondStarted.promise]);
     firstResponse.resolve(new Response(null, { status: 429, headers: { "retry-after": "90" } }));
     await expect(first).resolves.toMatchObject({ retryAfterMs: 90_000 });
     secondResponse.resolve(new Response(null, { status: 429, headers: { "retry-after": "30" } }));
@@ -471,21 +479,39 @@ describe("Control UI GitHub failures", () => {
     expect(display.retryable).toBe(true);
   });
 
-  it("dispatches an admitted request before its caller can retire", async () => {
+  it("rechecks surviving reader identity at dispatch after asynchronous revalidation", async () => {
     let active = true;
-    let activeAtDispatch: boolean | undefined;
+    let verifications = 0;
+    let retirementQueued = false;
+    const retired = new Error("Selected GitHub identity retired before dispatch");
+    const identity = {
+      revalidate: async () => {
+        verifications += 1;
+      },
+      assertSelected: () => {
+        if (!active) {
+          throw retired;
+        }
+        if (verifications >= 2 && !retirementQueued) {
+          // Another owner can retire this identity while the shared revalidation promise returns.
+          retirementQueued = true;
+          queueMicrotask(() => {
+            active = false;
+          });
+        }
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("{}"));
     const pending = gitHubPublicApi.fetchGitHubApi(
       "https://api.github.com/repos/owner/repo/actions/runs",
-      async () => {
-        activeAtDispatch = active;
-        return new Response("{}");
-      },
+      fetchImpl,
       "synthetic-token",
+      undefined,
+      identity,
     );
-    active = false;
-    await pending;
-
-    expect(activeAtDispatch).toBe(true);
+    await expect(pending).rejects.toBe(retired);
+    expect(retirementQueued).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("shows configured credential recovery instructions but hides unknown errors", () => {
