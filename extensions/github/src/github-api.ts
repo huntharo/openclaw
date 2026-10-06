@@ -59,7 +59,7 @@ const GITHUB_API_MAX_REDIRECTS = 3;
 const responseQuotas = new WeakMap<Response, ApiRequestQuota>();
 
 export class ControlUiGitHubError extends Error {
-  private readonly retryAtMs?: number;
+  readonly retryAtMs: number | undefined;
   readonly upstreamStatus: number;
   readonly retryable: boolean;
 
@@ -352,8 +352,8 @@ export async function readBoundedResponse(response: Response, maxBytes: number):
 }
 
 // GitHub reports quota exhaustion as 429 or as 403 with exhausted-quota
-// headers; a bare 403 is a permission response and must stay distinguishable
-// so callers can degrade optional fetches instead of flagging rate limits.
+// headers. Body-reported secondary limits are classified by the JSON reader;
+// other 403 responses remain permission failures.
 function isGitHubRateLimitResponse(response: Response): boolean {
   return apiQuotaErrorForResponse(response) !== undefined;
 }
@@ -368,8 +368,8 @@ function githubResponseErrorStatus(response: Response): number {
   return 502;
 }
 
-function githubResponseError(response: Response, graphqlRateLimited = false): ControlUiGitHubError {
-  const quotaError = apiQuotaErrorForResponse(response, graphqlRateLimited);
+function githubResponseError(response: Response, rateLimited = false): ControlUiGitHubError {
+  const quotaError = apiQuotaErrorForResponse(response, rateLimited);
   if (quotaError) {
     return githubQuotaError(quotaError);
   }
@@ -478,6 +478,22 @@ export async function readGitHubJsonResponse(
   maxBytes = GITHUB_JSON_MAX_BYTES,
 ): Promise<unknown> {
   if (!response.ok) {
+    if (response.status === 403 && !isGitHubRateLimitResponse(response)) {
+      let payload: unknown;
+      try {
+        payload = await readGitHubJsonBody(response, maxBytes);
+      } catch {
+        // An unreadable error body must not change a permission failure's status.
+      }
+      if (
+        isRecord(payload) &&
+        typeof payload.message === "string" &&
+        /\b(?:secondary rate limit|abuse detection)\b/iu.test(payload.message)
+      ) {
+        const error = responseQuotas.get(response)?.observe(response, "core", "secondary", false);
+        throw error ? githubQuotaError(error) : githubResponseError(response, true);
+      }
+    }
     await discardResponse(response);
     throw githubResponseError(response);
   }

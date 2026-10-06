@@ -37,6 +37,10 @@ export function apiRateLimitHint(message: unknown): boolean | "secondary" {
     : /rate limit/i.test(message);
 }
 
+function isValidQuotaTimestamp(value: number): boolean {
+  return Number.isSafeInteger(value) && Number.isFinite(new Date(value).getTime());
+}
+
 /** Normalize conventional HTTP quota headers without returning upstream diagnostics. */
 export function apiQuotaErrorForResponse(
   response: Response,
@@ -61,8 +65,8 @@ export function apiQuotaErrorForResponse(
   const retryAt = retry === undefined ? 0 : now + retry * 1_000;
   const resetAt = reset === undefined ? 0 : reset * 1_000;
   const proposed = Math.max(
-    Number.isSafeInteger(retryAt) ? retryAt : 0,
-    Number.isSafeInteger(resetAt) ? resetAt : 0,
+    isValidQuotaTimestamp(retryAt) ? retryAt : 0,
+    isValidQuotaTimestamp(resetAt) ? resetAt : 0,
   );
   return new ApiQuotaError(
     "upstream",
@@ -135,7 +139,7 @@ export class ApiRequestQuota {
     const remaining = parseStrictNonNegativeInteger(response.headers.get("x-ratelimit-remaining"));
     const reset = parseStrictNonNegativeInteger(response.headers.get("x-ratelimit-reset"));
     const resetAt = reset === undefined ? 0 : reset * 1_000;
-    if (remaining !== undefined && Number.isSafeInteger(resetAt) && resetAt > now) {
+    if (remaining !== undefined && isValidQuotaTimestamp(resetAt) && resetAt > now) {
       const previous = this.primary.get(key);
       const available = Math.max(0, remaining - (this.pending.get(resource) ?? 0));
       // Out-of-order responses cannot replenish reservations in the same primary window.

@@ -106,12 +106,10 @@ export async function runCliFallbackCandidate(
   const cliReplyToMode = cliThreadRequired
     ? cliThreadingContext.replyToMode
     : (turn.followupRun.originatingReplyToMode ?? turn.sessionCtx.ReplyToMode);
-  const isRestartSentinelContinuation =
-    turn.sessionCtx.InputProvenance?.kind === "internal_system" &&
-    turn.sessionCtx.InputProvenance.sourceTool === "restart-sentinel";
-  const cliCurrentMessageId = isRestartSentinelContinuation
-    ? turn.sessionCtx.ReplyToId
-    : (turn.sessionCtx.MessageSidFull ?? turn.sessionCtx.MessageSid);
+  const cliCurrentMessageId =
+    cliThreadingContext.currentMessageId != null
+      ? String(cliThreadingContext.currentMessageId)
+      : undefined;
   const commandDetailsVisible = turn.resolvedVerboseLevel === "full";
   const cliToolSummaryTracker = createCliToolSummaryTracker({
     detailMode: turn.toolProgressDetail,
@@ -472,6 +470,7 @@ export async function runCliFallbackCandidate(
             currentInboundAudio: hasInboundAudio(turn.sessionCtx),
             agentAccountId: turn.followupRun.run.agentAccountId,
             senderIsOwner: turn.followupRun.run.senderIsOwner,
+            conversationToolPolicy: turn.followupRun.run.conversationToolPolicy,
             approvalReviewerDeviceId: turn.followupRun.run.approvalReviewerDeviceId,
             toolsAllow: turn.opts?.toolsAllow,
             skillWorkshopProposalRevision: params.candidateRun.skillWorkshopProposalRevision,

@@ -577,6 +577,7 @@ console.log(JSON.stringify(value));
     slowQuota?: boolean;
     corePrimary?: boolean;
     notifier?: boolean;
+    inheritedNotifier?: boolean;
     host?: string;
   }>([
     ...(["attach", "watch"] as const).flatMap((phase) => [
@@ -649,6 +650,14 @@ console.log(JSON.stringify(value));
       output: "GREEN",
     },
     {
+      label: "inherited notifier",
+      phase: "attach",
+      patch: {},
+      inheritedNotifier: true,
+      exitCode: 0,
+      output: "GREEN",
+    },
+    {
       label: "enterprise port",
       phase: "attach",
       patch: {},
@@ -667,6 +676,7 @@ console.log(JSON.stringify(value));
       slowQuota = false,
       corePrimary = false,
       notifier = false,
+      inheritedNotifier = false,
       host = "github.com",
     }) => {
       await withTempDir("openclaw-watch-pr-ci-rest-", async (root) => {
@@ -685,6 +695,7 @@ console.log(JSON.stringify(value));
           `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
+if (${inheritedNotifier} && process.env.OPENCLAW_PR_LOCK_NOTIFY_FD !== undefined) throw new Error("unexpected inherited PR notifier");
 const calls = fs.readFileSync(${JSON.stringify(callsPath)}, "utf8").trim().split("\\n").filter(Boolean).map(JSON.parse);
 fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");
 const pullPath = ${JSON.stringify(pullPath)};
@@ -734,8 +745,9 @@ console.log(JSON.stringify(value));
           sha,
           ["--repo", repo, "--completion", "ci-run"],
           slowQuota ? { readClock: readClockPath } : slowPr ? "wall" : "poll",
-          { OPENCLAW_PR_LOCK_NOTIFY_FD: notifier ? "3" : undefined },
+          notifier ? { OPENCLAW_PR_LOCK_NOTIFY_FD: "3" } : {},
           notifierPath,
+          inheritedNotifier ? { ...process.env, OPENCLAW_PR_LOCK_NOTIFY_FD: "3" } : undefined,
         );
         expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(exitCode);
         expect(corePrimary ? result.stderr : result.stdout).toContain(output);

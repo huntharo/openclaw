@@ -92,6 +92,7 @@ const PUBLICATION_CONTRACT_FILES = [
   "scripts/lib/actions-artifact-archive.mjs",
   "scripts/lib/arg-utils.runtime.mjs",
   "scripts/lib/bounded-response.mjs",
+  "scripts/lib/clawhub-package-family.mjs",
   "scripts/lib/clawhub-publication-state.mjs",
   "scripts/lib/canonical-json.mjs",
   "scripts/lib/npm-core-release-packages.json",
@@ -10008,6 +10009,9 @@ describe("package artifact reuse", () => {
       release_soak: "${{ fromJSON(inputs.request_json).releaseSoak }}",
       shared_image_policy: "${{ fromJSON(inputs.request_json).sharedImagePolicy }}",
     });
+    expect(prepare.with?.published_upgrade_survivor_baseline).toBe(
+      "${{ fromJSON(inputs.request_json).upgradeBaseline }}",
+    );
     expect(
       readWorkflow(LIVE_E2E_WORKFLOW).on?.workflow_call?.inputs?.package_published,
     ).toMatchObject({
