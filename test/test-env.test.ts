@@ -566,7 +566,9 @@ describe("installTestEnv", () => {
     "TWILIO_PHONE_NUMBER",
     "TWILIO_SMS_FROM",
     "TWILIO_MESSAGING_SERVICE_SID",
-  ])("isolates and restores the SMS activation variable %s", (key) => {
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+  ])("isolates and restores the inherited credential variable %s", (key) => {
     setTestEnvValue(key, "test-channel-value");
 
     const testEnv = installTestEnv({ mode: "hermetic" });

@@ -2,7 +2,9 @@
 import "./vitest/vitest.sqlite-preload.mts";
 import { vi } from "vitest";
 import { installProcessWarningFilter } from "../src/infra/warning-filter.js";
+import { installGitHubNetworkGuard } from "./helpers/github-network-guard.mjs";
 import { withIsolatedTestHome } from "./test-env.js";
+import { resolveTestHomePolicy } from "./test-home-policy.mts";
 
 const openAiCodexTokenRefreshTestHook = "__OPENCLAW_TEST_REFRESH_OPENAI_CODEX_TOKEN__";
 type GlobalWithOpenAiCodexTokenRefreshTestHook = typeof globalThis & {
@@ -79,6 +81,9 @@ export function installSharedTestSetup(options?: SharedTestSetupOptions): {
   const testEnv = withIsolatedTestHome({
     loadProfileEnv: options?.loadProfileEnv,
   });
+  const homePolicy = resolveTestHomePolicy(process.env);
+  const restoreGitHubGuard =
+    homePolicy.live || homePolicy.allowRealHome ? undefined : installGitHubNetworkGuard();
   installProcessWarningFilter();
 
   let cleaned = false;
@@ -90,6 +95,7 @@ export function installSharedTestSetup(options?: SharedTestSetupOptions): {
       }
       cleaned = true;
       process.removeListener("exit", handle.cleanup);
+      restoreGitHubGuard?.();
       testEnv.cleanup();
       delete globalState[SHARED_TEST_SETUP];
     },
