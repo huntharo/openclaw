@@ -35,25 +35,34 @@ describe("FRV protected gh evidence reads", () => {
   ];
 
   it.each([
-    ["getRun", ["101"], "actions/runs/101", { run_attempt: 2 }],
-    ["getRunAttempt", ["101", 2], "actions/runs/101/attempts/2", { run_attempt: 2 }],
+    ["getRun", ["101"], "actions/runs/101", { run_attempt: 2 }, "none"],
+    ["getRunAttempt", ["101", 2], "actions/runs/101/attempts/2", { run_attempt: 2 }, "none"],
     [
       "getAttemptJobs",
       ["101", 2],
       "actions/runs/101/attempts/2/jobs?per_page=100",
       [{ id: 1 }, { id: 2 }],
+      "none",
     ],
     [
       "getParentJobs",
       ["77"],
       "actions/runs/77/jobs?filter=all&per_page=100",
       [{ id: 1 }, { id: 2 }],
+      "none",
     ],
-    ["getJobLog", [1], "actions/jobs/1/logs", "job evidence"],
-    ["getParentJobs", ["77"], "actions/runs/77/jobs?filter=all&per_page=100", [], "empty"],
+    ["getJobLog", [1], "actions/jobs/1/logs", "job evidence", "none"],
+    [
+      "getAttemptJobs",
+      ["101", 2],
+      "actions/runs/101/attempts/2/jobs?per_page=100",
+      [],
+      "empty-jobs",
+    ],
+    ["getParentJobs", ["77"], "actions/runs/77/jobs?filter=all&per_page=100", [], "empty-jobs"],
   ] as const)(
     "revalidates %s through the default protected route",
-    (method, args, endpoint, expected, failure?: "empty") => {
+    (method, args, endpoint, expected, failure) => {
       const result = runProtectedFrv(method, [...args], endpoint, failure);
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(expected);
@@ -113,7 +122,7 @@ describe("FRV protected gh evidence reads", () => {
     expect(result.calls).toEqual([]);
   });
 
-  it.each(["paged", "enterprise-paged"] as const)(
+  it.each(["paged", "enterprise-paged", "paged-empty"] as const)(
     "collects filtered jobs across individually admitted CLI pages (%s)",
     (failure) => {
       const result = runProtectedFrv(
@@ -123,7 +132,9 @@ describe("FRV protected gh evidence reads", () => {
         failure,
       );
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual([{ id: 1 }, { id: 2 }]);
+      expect(JSON.parse(result.stdout)).toEqual(
+        failure === "paged-empty" ? [{ id: 1 }] : [{ id: 1 }, { id: 2 }],
+      );
       expect(result.calls).toHaveLength(2);
     },
   );
@@ -167,11 +178,12 @@ function runProtectedFrv(
     | "protected"
     | "unrelated"
     | "transient-deadline"
-    | "empty"
     | "403"
     | "429"
     | "rate-limited"
     | "admission-deadline"
+    | "empty-jobs"
+    | "paged-empty"
     | "paged"
     | "enterprise-paged" = "none",
 ) {
@@ -197,7 +209,7 @@ if (failure === "rate-limited") {
   fail("HTTP 429: secondary rate limit", 1);
 }
 const next = ${JSON.stringify(`${enterprise ? "https://ghe.example.test/api/v3" : "https://api.github.com"}/repos/${REPOSITORY}/${endpoint}&page=2`)};
-const paged = failure === "paged" || failure === "enterprise-paged";
+const paged = failure === "paged" || failure === "enterprise-paged" || failure === "paged-empty";
 const pageTwo = paged && args.includes(next);
 if (args[0] !== "api" || (!args.includes(${JSON.stringify(`repos/${REPOSITORY}/${endpoint}`)}) && !pageTwo)) fail("unexpected request", 17);
 if (!args.some((arg, i) => ["-H", "--header"].includes(arg) && args[i+1] === "Cache-Control: max-age=0")) fail("missing live header", 18);
@@ -212,7 +224,7 @@ if (failure === "403" || failure === "429") {
 }
 if (${endpoint.includes("/jobs?")}) {
   if (!args.includes(".jobs[] | @json")) fail("missing job filter", 17);
-  if (failure !== "empty") console.log(paged && !args.includes("--paginate") ? (pageTwo ? '{"id":2}' : '{"id":1}') : '{"id":1}\\n{"id":2}');
+  if (failure !== "empty-jobs" && !(failure === "paged-empty" && pageTwo)) console.log(paged && !args.includes("--paginate") ? (pageTwo ? '{"id":2}' : '{"id":1}') : '{"id":1}\\n{"id":2}');
 } else console.log(${endpoint.endsWith("/logs") ? JSON.stringify("job evidence") : JSON.stringify('{"run_attempt":2}')});
 `,
   );
