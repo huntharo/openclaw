@@ -420,16 +420,23 @@ export async function prepareGatewayLifecycle(params: {
   let configReloaderStopPromise: Promise<void> | null = null;
   const stopConfigReloaderForClose = () =>
     (configReloaderStopPromise ??= runtimeState.configReloader.stop());
+  const step = <T>(name: string, run: () => T | Promise<T>) =>
+    measureGatewayCloseStep(`restart.close.${name}`, run);
+  const drainClosePersistence = () =>
+    Promise.all([
+      step("auth-profile-usage", () => closeAuthProfileUsage(params.sdkResourceHost)),
+      step("model-accounts", stopModelAccountsForClose),
+      step("mention-inbox", () => mentionInbox.dispose()),
+      step("worktree-run-end", () => worktreeRunEnd.drain()),
+      step("sandbox-registry", () => sandboxRegistry.drain()),
+    ]);
   const beginClosePrelude = async (options?: GatewayCloseOptions) => {
-    const step = <T>(name: string, run: () => T | Promise<T>) =>
-      measureGatewayCloseStep(`restart.close.${name}`, run);
     await step("prelude-fence", () => markClosePreludeStarted(options));
     // Owners are fenced synchronously above. Join them before any runtime they
     // can publish into is torn down.
     await Promise.all([
-      step("auth-profile-usage", () => closeAuthProfileUsage(params.sdkResourceHost)),
+      drainClosePersistence(),
       step("pending-request-entries", () => requestEntryLifetime.waitForPendingEntries()),
-      step("model-accounts", stopModelAccountsForClose),
       step("delivery-recovery", runtimeState.stopDeliveryRecovery),
       step("media-cleanup", stopMediaCleanupForClose),
       step("update-check", () => runtimeState.stopGatewayUpdateCheck()),
@@ -440,9 +447,6 @@ export async function prepareGatewayLifecycle(params: {
       step("session-pull-requests", () => runtimeState.controlUiSessionPullRequests?.stop()),
       step("link-readers", () => runtimeState.controlUiLinkReaderNotifications?.stop()),
       step("health-work", () => healthWork.drain()),
-      step("mention-inbox", () => mentionInbox.dispose()),
-      step("worktree-run-end", () => worktreeRunEnd.drain()),
-      step("sandbox-registry", () => sandboxRegistry.drain()),
     ]);
   };
   const runClosePrelude = async () => {
@@ -452,11 +456,7 @@ export async function prepareGatewayLifecycle(params: {
     await shutdownRuntime.runGatewayClosePrelude({
       stopDiagnostics: stopGatewayDiagnosticHeartbeat,
       skillsChangeUnsub: runtimeState.skillsChangeUnsub,
-      disposeAuthRateLimiter: () => {
-        authRateLimiter.dispose();
-        nodeReapprovalCoordinator.dispose();
-      },
-      disposeBrowserAuthRateLimiter: () => browserAuthRateLimiter.dispose(),
+      disposeNodeReapproval: () => nodeReapprovalCoordinator.dispose(),
       stopChannelHealthMonitor: async () => {
         const monitor = runtimeState?.channelHealthMonitor;
         monitor?.shutdown();
@@ -515,7 +515,8 @@ export async function prepareGatewayLifecycle(params: {
       {
         resolveGatewayContext: runtime.resolvePluginGatewayContext,
         preparePluginRegistryClose: () => pluginRuntime.prepareClose(),
-        agentUnsub: runtimeState.agentUnsub,
+        // Preparation can publish writes before it has a native database borrower.
+        drainPersistence: () => drainClosePersistence().then(() => runtimeState.agentUnsub?.()),
         chatRunState,
         chatAbortControllers,
         chatQueuedTurns,

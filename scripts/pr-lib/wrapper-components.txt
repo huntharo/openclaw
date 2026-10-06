@@ -90,6 +90,7 @@ packages/net-policy/src/redact-sensitive-url.ts
 packages/net-policy/src/url-protocol.ts
 packages/normalization-core/package.json
 packages/normalization-core/src/agent-id.ts
+packages/normalization-core/src/agent-run-terminal-outcome.ts
 packages/normalization-core/src/balanced-json.ts
 packages/normalization-core/src/boolean-coercion.ts
 packages/normalization-core/src/cjk-chars.ts
@@ -872,6 +873,7 @@ src/infra/gateway-process-argv.ts
 src/infra/gateway-scheduler.ts
 src/infra/gateway-supervision.ts
 src/infra/git-commit.ts
+src/infra/git-content-budget.ts
 src/infra/git-exec.ts
 src/infra/git-network-retry.ts
 src/infra/git-operation-timing.ts
@@ -1226,8 +1228,10 @@ src/plugins/compat/media-legacy-projection.ts
 src/plugins/compat/mention-inbox-record.ts
 src/plugins/compat/model-account-connect-record.ts
 src/plugins/compat/plugin-sdk-subpath-records.ts
+src/plugins/compat/progress-receipt-handoff-record.ts
 src/plugins/compat/registry-records.ts
 src/plugins/compat/registry.ts
+src/plugins/compat/reply-tool-authority-record.ts
 src/plugins/compat/session-persistence-records.ts
 src/plugins/compat/tts-preferences-record.ts
 src/plugins/compat/watched-sessions.ts
@@ -1350,7 +1354,6 @@ src/plugins/plugin-instance-error.ts
 src/plugins/plugin-instance-invocation.ts
 src/plugins/plugin-instance-module-loader.ts
 src/plugins/plugin-instance-owned-values.ts
-src/plugins/plugin-instance-runtime-scope.ts
 src/plugins/plugin-instance-scope.ts
 src/plugins/plugin-instance-settlement.ts
 src/plugins/plugin-instance-bindings.ts
@@ -1578,6 +1581,7 @@ src/skills/skill-library-error.ts
 src/skills/lifecycle/upload-store-error.ts
 src/skills/runtime/refresh-watch-targets.types.ts
 src/state/agent-creation-claim.ts
+src/state/agent-database-admission-error.ts
 src/state/agent-database-admission.ts
 src/state/agent-database-startup.ts
 src/state/agent-deletion-cleanup.ts
@@ -1637,6 +1641,7 @@ src/state/openclaw-agent-execution-cleanup.ts
 src/state/openclaw-agent-execution-contract.ts
 src/state/openclaw-agent-execution-incognito.ts
 src/state/openclaw-agent-execution-native.ts
+src/state/openclaw-agent-execution-scope.ts
 src/state/openclaw-agent-execution.ts
 src/state/openclaw-agent-goal-operations-schema.ts
 src/state/openclaw-agent-message-tool-outcome-schema.ts
