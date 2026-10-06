@@ -245,8 +245,11 @@ export async function fetchGitHubApi(
 ): Promise<Response> {
   const baseUrl = resolveGitHubApiBaseUrl(apiBaseUrl);
   const initial = safeGitHubApiUrl(rawUrl, new URL(baseUrl), githubGraphqlUrl(baseUrl));
-  if (!initial || (graphql && (initial.href !== githubGraphqlUrl(baseUrl) || !token || etag))) {
-    throw new ControlUiGitHubError(502, "Invalid GitHub API request");
+  if (!initial) {
+    throw new ControlUiGitHubError(502, "Invalid GitHub API URL");
+  }
+  if (graphql && (initial.href !== githubGraphqlUrl(baseUrl) || !token || etag)) {
+    throw new ControlUiGitHubError(502, "Invalid authenticated GitHub GraphQL request");
   }
   const store = getSharedApiStore({ apiBaseUrl: baseUrl, token, fetchImpl });
   getGitHubPullRequestStore(store);
@@ -302,6 +305,7 @@ export async function fetchGitHubApi(
         // Visibility and account admission facts are always reread; content shares a short TTL.
         freshnessMs:
           /^\/repos\/[^/]+\/[^/]+$/.test(githubRestApiPath(initial, baseUrl)) ||
+          /^\/repositories\/\d+$/.test(githubRestApiPath(initial, baseUrl)) ||
           githubRestApiPath(initial, baseUrl) === "/user"
             ? 0
             : 30_000,

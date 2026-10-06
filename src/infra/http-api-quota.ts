@@ -10,6 +10,7 @@ export { apiStoreRequestKey } from "./http-api-read-store.js";
 const CAPACITY = 20;
 const REFILL_INTERVAL_MS = 3_000;
 const DEFAULT_COOLDOWN_MS = 60_000;
+const MAX_CREDENTIAL_SCOPES = 1_024;
 
 export const ApiQuotaError = resolveGlobalSingleton(
   Symbol.for("openclaw.apiQuotaError"),
@@ -87,6 +88,16 @@ export class ApiRequestQuota {
   private readonly pending = new Map<string, number>();
   private readonly cooldowns = new Map<string, ApiQuotaError>();
   private secondaryFailures = 0;
+
+  canForget(): boolean {
+    const now = Date.now();
+    return (
+      this.pending.size === 0 &&
+      this.tokens + Math.max(0, now - this.refilledAt) / REFILL_INTERVAL_MS >= CAPACITY &&
+      [...this.primary.values()].every((quota) => quota.resetAt <= now) &&
+      [...this.cooldowns.values()].every((cooldown) => cooldown.retryAtMs <= now)
+    );
+  }
 
   admit(resource = "core"): () => void {
     const now = Date.now();
@@ -190,8 +201,23 @@ export class ApiRequestQuota {
 }
 
 /** One instance owns admission and every response used to derive API projections. */
-export class ApiRequestStore extends ApiRequestQuota {
+export class ApiRequestStore {
   readonly responses = new ApiResponseStore();
+
+  constructor(private readonly quota = new ApiRequestQuota()) {}
+
+  admit(resource?: string): () => void {
+    return this.quota.admit(resource);
+  }
+
+  observe(
+    response: Response,
+    resource = "core",
+    rateLimited: boolean | "primary" | "secondary" = false,
+    confirmedSuccess = true,
+  ): ApiQuotaError | undefined {
+    return this.quota.observe(response, resource, rateLimited, confirmedSuccess);
+  }
 
   async dispatch(resource: string, load: () => Promise<Response>): Promise<Response> {
     const release = this.admit(resource);
@@ -242,17 +268,24 @@ export class ApiRequestStore extends ApiRequestQuota {
   }
 }
 
+type CredentialScope = {
+  key: string;
+  scopes: Map<string, CredentialScope>;
+  quota: ApiRequestQuota;
+  store: WeakRef<ApiRequestStore>;
+};
+
 const shared = resolveGlobalSingleton(
   Symbol.for("openclaw.sharedHttpApiQuota"),
   () => ({
-    transports: new WeakMap<object, Map<string, ApiRequestStore>>(),
-    stores: new Set<ApiRequestStore>(),
+    transports: new WeakMap<object, Map<string, CredentialScope>>(),
+    scopes: new Set<CredentialScope>(),
   }),
   (state) => {
-    for (const store of state.stores) {
-      store.responses.close();
+    for (const scope of state.scopes) {
+      scope.store.deref()?.responses.close();
     }
-    state.stores.clear();
+    state.scopes.clear();
     state.transports = new WeakMap();
   },
   "close-only",
@@ -265,7 +298,7 @@ export function getSharedApiStore(options: {
   fetchImpl?: object;
 }): ApiRequestStore {
   const transport = options.fetchImpl ?? globalThis.fetch;
-  const scopes = shared.transports.get(transport) ?? new Map<string, ApiRequestStore>();
+  const scopes = shared.transports.get(transport) ?? new Map<string, CredentialScope>();
   shared.transports.set(transport, scopes);
   const credential = options.token
     ? createHash("sha256").update(options.token).digest("hex")
@@ -273,13 +306,31 @@ export function getSharedApiStore(options: {
   const base = new URL(options.apiBaseUrl);
   const scope = `${base.origin}${base.pathname.replace(/\/+$/, "")}:${credential}`;
   const existing = scopes.get(scope);
-  if (existing) {
-    return existing;
+  const retained = existing?.store.deref();
+  if (retained) {
+    return retained;
   }
-  const quota = new ApiRequestStore();
-  scopes.set(scope, quota);
-  shared.stores.add(quota);
-  return quota;
+  // Historical tokens must not pin response bodies. Keep their small quota state
+  // until every reservation and server cooldown expires, even if the cache is collected.
+  for (const candidate of shared.scopes) {
+    if (candidate !== existing && !candidate.store.deref() && candidate.quota.canForget()) {
+      candidate.scopes.delete(candidate.key);
+      shared.scopes.delete(candidate);
+    }
+  }
+  if (!existing && shared.scopes.size >= MAX_CREDENTIAL_SCOPES) {
+    throw new ApiQuotaError("admission", Date.now() + REFILL_INTERVAL_MS);
+  }
+  const quota = existing?.quota ?? new ApiRequestQuota();
+  const store = new ApiRequestStore(quota);
+  if (existing) {
+    existing.store = new WeakRef(store);
+  } else {
+    const entry = { key: scope, scopes, quota, store: new WeakRef(store) };
+    scopes.set(scope, entry);
+    shared.scopes.add(entry);
+  }
+  return store;
 }
 
 export const getSharedApiQuota = getSharedApiStore;

@@ -284,7 +284,7 @@ describe("loadControlUiGitHubPreview", () => {
     },
   );
 
-  it("shares in-flight content across readers and expires it after thirty seconds", async () => {
+  it("shares in-flight content across readers and expires it after one minute", async () => {
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const started = createDeferred<void>();
@@ -306,7 +306,7 @@ describe("loadControlUiGitHubPreview", () => {
     const itemRequests = () =>
       fetchMock.mock.calls.filter(([input]) => requestUrl(input).includes("/issues/")).length;
     expect(itemRequests()).toBe(1);
-    now += 29_999;
+    now += 59_999;
     await loadControlUiGitHubPreview(target, identity, fetchMock);
     expect(itemRequests()).toBe(1);
     now += 1;

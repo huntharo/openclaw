@@ -222,12 +222,14 @@ class GitHubPullRequestStore {
         }
       }
       if (newHead && oldHead && newHead !== oldHead) {
+        const pullPath = `/repos/${owner}/${repo}/pulls/${number}`.toLowerCase();
         this.store.responses.invalidate((requestKey, url) => {
+          const path = new URL(url).pathname.toLowerCase().replace(/\/$/, "");
           return (
             requestKey !== change.key &&
-            new URL(url).pathname
-              .toLowerCase()
-              .endsWith(`/repos/${owner}/${repo}/pulls/${number}`.toLowerCase())
+            [pullPath, `${pullPath}/files`, `${pullPath}/commits`].some((suffix) =>
+              path.endsWith(suffix),
+            )
           );
         });
       }

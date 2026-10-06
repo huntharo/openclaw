@@ -50,13 +50,32 @@ function pruneRelationships(entry: BranchCacheEntry) {
 }
 
 function createStore() {
+  const active = new Map<BranchCacheEntry, number>();
   const cache = createRetainedCache<BranchCacheEntry>({
     onRelease: (entry, signal) => {
       entry.readers.delete(signal);
       pruneRelationships(entry);
+      // The retained cache removes its last pin after this callback returns.
+      queueMicrotask(pruneSubscriptions);
     },
   });
   const subscriptions = new Map<ApiRequestStore, () => void>();
+  const entries = () => new Set([...cache.values(), ...active.keys()]);
+  function pruneSubscriptions() {
+    const used = new Set<ApiRequestStore>();
+    for (const entry of entries()) {
+      used.add(entry.store);
+      for (const dependency of entry.dependencies.values()) {
+        used.add(dependency.store);
+      }
+    }
+    for (const [store, unsubscribe] of subscriptions) {
+      if (!used.has(store)) {
+        unsubscribe();
+        subscriptions.delete(store);
+      }
+    }
+  }
   const scopes = new WeakMap<ApiRequestStore, number>();
   let nextScope = 0;
   const listeners = new Set<(identities: ReadonlySet<string>) => void>();
@@ -74,7 +93,7 @@ function createStore() {
     const canonical = gitHubPublicApi.getGitHubPullRequestStore(store).subscribe((change) => {
       const identities = new Set<string>();
       const pullIdentity = `${change.owner}/${change.repo}#${change.number}`.toLowerCase();
-      for (const entry of cache.values()) {
+      for (const entry of entries()) {
         if (
           (entry.store === store ||
             [...entry.dependencies.values()].some((dependency) => dependency.store === store)) &&
@@ -103,7 +122,7 @@ function createStore() {
         return;
       }
       const identities = new Set<string>();
-      for (const entry of cache.values()) {
+      for (const entry of entries()) {
         if (
           entry.store !== store &&
           ![...entry.dependencies.values()].some((dependency) => dependency.store === store)
@@ -140,6 +159,19 @@ function createStore() {
     cache,
     listeners,
     observe,
+    pruneSubscriptions,
+    use(entry: BranchCacheEntry) {
+      active.set(entry, (active.get(entry) ?? 0) + 1);
+      return () => {
+        const remaining = (active.get(entry) ?? 1) - 1;
+        if (remaining === 0) {
+          active.delete(entry);
+        } else {
+          active.set(entry, remaining);
+        }
+        pruneSubscriptions();
+      };
+    },
     scope(store: ApiRequestStore) {
       let id = scopes.get(store);
       if (id === undefined) {
@@ -149,10 +181,11 @@ function createStore() {
       return id;
     },
     close() {
-      for (const entry of cache.values()) {
+      for (const entry of entries()) {
         entry.access.abort();
       }
       cache.clear();
+      active.clear();
       for (const unsubscribe of subscriptions.values()) {
         unsubscribe();
       }
@@ -211,6 +244,7 @@ function relationshipKey(context: GitCheckoutContext, read: Read, relationship: 
 
 export function releaseSessionPullRequestStore(signal?: AbortSignal): void {
   owner.cache.release(signal);
+  owner.pruneSubscriptions();
 }
 
 /** Branch lookup ownership excludes session identity; each joining reader retains its own grant. */
@@ -227,7 +261,6 @@ export async function loadSharedBranchPullRequests(
   load: BranchLoad,
 ): Promise<BranchPullRequestsSnapshot> {
   read.assertCurrent();
-  owner.observe(read.store);
   const key = branchKey(context, read);
   const cached = owner.cache.get(key, options.signal);
   const entry: BranchCacheEntry = cached ?? {
@@ -285,6 +318,7 @@ export async function loadSharedBranchPullRequests(
               revision: store.responses.revision(apiStoreRequestKey(url)),
               consumed: false,
             });
+            owner.pruneSubscriptions();
           },
           onResponse: (url, store, observation) => {
             const requestKey = apiStoreRequestKey(url);
@@ -299,6 +333,7 @@ export async function loadSharedBranchPullRequests(
         },
       );
       entry.dependencies.clear();
+      owner.pruneSubscriptions();
       entry.discoveredPullRequests.clear();
       const snapshot = await load(context, transportRead, entry);
       entry.access.assertCurrent();
@@ -323,16 +358,21 @@ export async function loadSharedBranchPullRequests(
   const track = (mode: "normal" | "forced", run: () => Promise<BranchPullRequestsSnapshot>) => {
     entry.expiresAt = Date.now() + SUCCESS_CACHE_MS;
     entry.refreshMode = mode;
+    const releaseUse = owner.use(entry);
     const promise = run().finally(() => {
       if (entry.promise === promise) {
         entry.refreshMode = null;
       }
+      releaseUse();
     });
     entry.promise = promise;
     return promise;
   };
+  const releaseUse = owner.use(entry);
   try {
+    owner.observe(read.store);
     owner.cache.set(key, entry, options.signal);
+    owner.pruneSubscriptions();
     let promise = entry.promise;
     if (entry.refreshMode && (!options.refresh || entry.refreshMode === "forced")) {
       // A cache event during this load does not split identical pending branch lookups.
@@ -362,6 +402,7 @@ export async function loadSharedBranchPullRequests(
     return structuredClone(snapshot);
   } finally {
     release();
+    releaseUse();
     read.assertCurrent();
   }
 }

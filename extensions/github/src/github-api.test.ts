@@ -22,6 +22,44 @@ function scopedRequests(
 afterEach(() => vi.restoreAllMocks());
 
 describe("shared GitHub admission", () => {
+  it.each(["files", "commits"])(
+    "retires pending %s reads when the PR head changes",
+    async (resource) => {
+      const api = await import("./github-api.js");
+      const started = Promise.withResolvers<void>();
+      const old = Promise.withResolvers<Response>();
+      const pullUrl = `${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls/1`;
+      let head = "old";
+      const fetchImpl = vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith(`/${resource}`)) {
+          started.resolve();
+          return old.promise;
+        }
+        return new Response(JSON.stringify({ number: 1, head: { sha: head } }));
+      });
+      const request = scopedRequests(api, fetchImpl, api.GITHUB_API_BASE_URL);
+      await request(pullUrl, "synthetic-head-change");
+      const pending = request(`${pullUrl}/${resource}`, "synthetic-head-change");
+      await started.promise;
+      const outcome = expect(pending).rejects.toThrow("API facts invalidated");
+      head = "new";
+      await api.fetchGitHubApi(
+        pullUrl,
+        fetchImpl,
+        "synthetic-head-change",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        api.GITHUB_API_BASE_URL,
+        { refresh: true },
+      );
+      old.resolve(new Response(JSON.stringify([{ title: "Old head" }])));
+      await outcome;
+    },
+  );
+
   it("bounds concurrent REST and GraphQL dispatches and refills without bypassing the bucket", async () => {
     const api = await import("./github-api.js");
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
@@ -61,8 +99,8 @@ describe("shared GitHub admission", () => {
     const url = `${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls`;
     await request(url, "synthetic-token");
     const results = await Promise.allSettled([
-      request(url, "synthetic-token"),
-      request(url, "synthetic-token"),
+      request(`${url}/1`, "synthetic-token"),
+      request(`${url}/2`, "synthetic-token"),
     ]);
     expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -82,15 +120,17 @@ describe("shared GitHub admission", () => {
       .mockReturnValueOnce(second.promise);
     const request = scopedRequests(api, fetchImpl, api.GITHUB_API_BASE_URL);
     const url = `${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls`;
-    const a = request(url, "synthetic-cold-primary");
-    const b = request(url, "synthetic-cold-primary");
+    const a = request(`${url}/1`, "synthetic-cold-primary");
+    const b = request(`${url}/2`, "synthetic-cold-primary");
     first.resolve(
       new Response("{}", {
         headers: { "x-ratelimit-remaining": "1", "x-ratelimit-reset": "1800000090" },
       }),
     );
     await a;
-    await expect(request(url, "synthetic-cold-primary")).rejects.toMatchObject({ statusCode: 429 });
+    await expect(request(`${url}/3`, "synthetic-cold-primary")).rejects.toMatchObject({
+      statusCode: 429,
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     second.resolve(
       new Response("{}", {
@@ -103,43 +143,26 @@ describe("shared GitHub admission", () => {
   it("applies header cooldowns while a secondary-limit body is still pending", async () => {
     const api = await import("./github-api.js");
     vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
-    const started = Promise.withResolvers<void>();
-    const bodyController = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
+    const cancel = vi.fn();
     const response = new Response(
       new ReadableStream<Uint8Array>({
-        start(controller) {
-          bodyController.resolve(controller);
-        },
+        cancel,
       }),
       { status: 403, headers: { "retry-after": "120" } },
     );
-    const clone = response.clone.bind(response);
-    vi.spyOn(response, "clone").mockImplementation(() => {
-      started.resolve();
-      return clone();
-    });
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response("{}"));
     fetchImpl.mockResolvedValueOnce(response);
     const request = scopedRequests(api, fetchImpl, api.GITHUB_API_BASE_URL);
     const pending = request(`${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls`, "synthetic-slow");
-    const outcome = expect(pending).rejects.toMatchObject({
+    await expect(pending).rejects.toMatchObject({
       statusCode: 429,
       retryAfterMs: 120_000,
     });
-    const controller = await bodyController.promise;
-    await started.promise;
-    try {
-      await expect(
-        request(`${api.GITHUB_API_BASE_URL}/search/issues?q=test`, "synthetic-slow"),
-      ).rejects.toMatchObject({ statusCode: 429 });
-      expect(fetchImpl).toHaveBeenCalledOnce();
-    } finally {
-      controller.enqueue(
-        new TextEncoder().encode('{"message":"You have exceeded a secondary rate limit."}'),
-      );
-      controller.close();
-      await outcome;
-    }
+    await expect(
+      request(`${api.GITHUB_API_BASE_URL}/search/issues?q=test`, "synthetic-slow"),
+    ).rejects.toMatchObject({ statusCode: 429 });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -226,11 +249,12 @@ describe("GitHub API base URL", () => {
       )
       .mockImplementation(async () => new Response("{}"));
     const enterprise = scopedRequests(api, fetchImpl, enterpriseBase);
-    const response = await enterprise(api.resolveGitHubApiUrls(enterpriseBase).graphqlUrl, token, {
-      query: "query { viewer { login } }",
-      variables: {},
-    });
-    await expect(api.readGitHubGraphQLResponse(response, fetchImpl, token)).rejects.toMatchObject({
+    await expect(
+      enterprise(api.resolveGitHubApiUrls(enterpriseBase).graphqlUrl, token, {
+        query: "query { viewer { login } }",
+        variables: {},
+      }),
+    ).rejects.toMatchObject({
       statusCode: 429,
       retryAfterMs: 60_000,
     });

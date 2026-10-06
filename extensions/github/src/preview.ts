@@ -259,7 +259,7 @@ async function fetchPreview(
       signal,
       undefined,
       GITHUB_API_ORIGIN,
-      { refresh },
+      { refresh, freshnessMs: 60_000 },
     );
   const assertPublicRepository = (url: string) =>
     assertPublicGitHubRepository(url, fetchImpl, token, identity, signal);

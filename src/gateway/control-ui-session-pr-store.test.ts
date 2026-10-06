@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { apiStoreRequestKey, getSharedApiStore } from "../infra/http-api-quota.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
+import { prepareSessionPullRequestGitHubRead } from "./control-ui-session-pr-request.js";
+import {
+  type BranchPullRequestsSnapshot,
+  loadSharedBranchPullRequests,
+  releaseSessionPullRequestStore,
+} from "./control-ui-session-pr-store.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
 import { loadControlUiSessionPullRequests } from "./control-ui-session-prs.js";
 import {
@@ -28,6 +34,126 @@ afterEach(async () => {
 });
 
 describe("shared PR facts and session projections", () => {
+  it("retires evicted observers after the last active reader receives current facts", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new Error("Unexpected GitHub request");
+    });
+    const read = prepareSessionPullRequestGitHubRead("github.com", fetchImpl, () => {});
+    const store = read.store;
+    const facts = gitHubPublicApi.getGitHubPullRequestStore(store);
+    const requestKey = apiStoreRequestKey(
+      "https://api.github.com/repos/openclaw/openclaw/pulls/103469",
+    );
+    await store.responses.remember(requestKey, githubJson(pullListItem()));
+    const stopped = { canonical: vi.fn(), responses: vi.fn() };
+    const subscribeFacts = facts.subscribe.bind(facts);
+    const canonicalObserver = vi.spyOn(facts, "subscribe").mockImplementation((listener) => {
+      const unsubscribe = subscribeFacts(listener);
+      return () => {
+        stopped.canonical();
+        unsubscribe();
+      };
+    });
+    const subscribeResponses = store.responses.subscribe.bind(store.responses);
+    const responseObserver = vi
+      .spyOn(store.responses, "subscribe")
+      .mockImplementation((listener, replay) => {
+        const unsubscribe = subscribeResponses(listener, replay);
+        return () => {
+          stopped.responses();
+          unsubscribe();
+        };
+      });
+    const close = vi.spyOn(store.responses, "close");
+    const finishLoad = createDeferred();
+    const load = vi.fn<Parameters<typeof loadSharedBranchPullRequests>[3]>(
+      async (context, _read, entry) => {
+        entry.discoveredPullRequests.add("openclaw/openclaw#103469");
+        const accepted = facts.project(context.owner, context.repo, 103469, pullListItem());
+        const snapshot: BranchPullRequestsSnapshot = {
+          pullRequests: [
+            {
+              number: 103469,
+              owner: context.owner,
+              repo: context.repo,
+              branch: context.branch ?? "",
+              title: "fixture pull request",
+              url: "https://github.com/openclaw/openclaw/pull/103469",
+              state: accepted.state === "closed" ? "closed" : "open",
+            },
+          ],
+          publicationCandidates: [],
+          mergedHeads: [],
+          workingBranchHasLivePullRequest: true,
+          rateLimited: false,
+        };
+        if (load.mock.calls.length === 1) {
+          await finishLoad.promise;
+        }
+        return snapshot;
+      },
+    );
+    const retiring = new AbortController();
+    const options = {
+      refresh: false,
+      identity: "retiring-reader",
+      relationship: "retiring-reader",
+      fetchImpl,
+    };
+    const first = loadSharedBranchPullRequests(
+      testGitContext,
+      read,
+      { ...options, signal: retiring.signal },
+      load,
+    ).catch((error: unknown) => error);
+    const second = loadSharedBranchPullRequests(
+      testGitContext,
+      read,
+      { ...options, identity: "surviving-reader", relationship: "surviving-reader" },
+      load,
+    );
+    try {
+      expect(load).toHaveBeenCalledTimes(1);
+      releaseSessionPullRequestStore(retiring.signal);
+      retiring.abort(new Error("reader retired"));
+      expect(await first).toMatchObject({ name: "AbortError" });
+      const otherFetch = vi.fn<typeof fetch>(async () => {
+        throw new Error("Unexpected GitHub request");
+      });
+      const otherRead = prepareSessionPullRequestGitHubRead("github.com", otherFetch, () => {});
+      for (let index = 0; index < 100; index++) {
+        await loadSharedBranchPullRequests(
+          { ...testGitContext, branch: `observer-churn-${index}` },
+          otherRead,
+          { ...options, fetchImpl: otherFetch },
+          async () => ({
+            pullRequests: [],
+            publicationCandidates: [],
+            mergedHeads: [],
+            workingBranchHasLivePullRequest: false,
+            rateLimited: false,
+          }),
+        );
+      }
+      expect(stopped.canonical).not.toHaveBeenCalled();
+      expect(stopped.responses).not.toHaveBeenCalled();
+      await store.responses.remember(requestKey, githubJson(pullListItem({ state: "closed" })));
+      finishLoad.resolve();
+      expect(await second).toMatchObject({ pullRequests: [{ state: "closed" }] });
+      expect(stopped.canonical).toHaveBeenCalledTimes(1);
+      expect(stopped.responses).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      retiring.abort();
+      finishLoad.resolve();
+      await Promise.allSettled([first, second]);
+      canonicalObserver.mockRestore();
+      responseObserver.mockRestore();
+      close.mockRestore();
+    }
+  });
+
   it("reprojects a canonical change while a first load is waiting on another PR", async () => {
     const firstProjected = createDeferred();
     const siblingResponse = createDeferred<Response>();

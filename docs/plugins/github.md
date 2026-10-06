@@ -109,9 +109,13 @@ hovercard, and GitHub links open externally.
 - Uncached hover previews share a two-second upstream request budget. Slow avatars
   or co-author lookups are omitted; slow required metadata returns a retryable
   unavailable error. The full reader keeps its longer request timeout.
-- API content is shared for 30 seconds across readers using the same credential
-  and API host. Concurrent requests share a fetch, but each reader must still
-  have access when the result arrives. **Refresh** requests a new observation.
+- API content is shared across readers using the same credential and API host.
+  Each reader sets its maximum acceptable age: 30 seconds for PR details, one
+  minute for previews, and five minutes for complete issue and commit documents.
+  A response retained by another reader cannot extend that age. Repository
+  visibility checks always read fresh metadata. Concurrent requests share a fetch,
+  but each reader must still have access when the result arrives. **Refresh**
+  requests a new observation while respecting the shared quota and cooldown.
 - **Refresh** requests the current item again. Rate limits, deleted items, and
   unavailable services show their specific explanation in the reader and hovercards,
   including GitHub's retry delay when available. Cached preview details stay visible
@@ -142,7 +146,11 @@ Git mutations invalidate affected reads before views reload. External Git change
 are discovered on subsequent reads and the existing polling schedule.
 
 These stores are bounded, in-memory state for one process. Restarting the Gateway
-clears them. Separate Gateways, standalone CLI processes, and arbitrary commands
+clears them. Unused credential owners do not pin historical response caches;
+their small quota state remains until reservations and cooldowns expire. Scope
+admission is bounded and preserves held readers and their backoff. Different
+tokens currently have separate scopes, even when they belong to the same account.
+Separate Gateways, standalone CLI processes, and arbitrary commands
 launched by an agent do not share this instance's cache or budget. The native PR
 status and reader integration supports GitHub, including configured GitHub
 Enterprise endpoints; it does not provide GitLab merge-request tracking.

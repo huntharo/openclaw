@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { ApiRequestStore } from "./http-api-quota.js";
+import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
+import { ApiRequestStore, getSharedApiStore } from "./http-api-quota.js";
 import { apiStoreRequestKey } from "./http-api-read-store.js";
 
 afterEach(() => vi.useRealTimers());
@@ -9,6 +10,90 @@ const json = (body: unknown, status = 200, headers = {}) =>
   new Response(JSON.stringify(body), { status, headers });
 
 describe("API store admission and delivery", () => {
+  it("bounds credential scope admission without retiring held readers or their cooldown", async () => {
+    vi.useFakeTimers();
+    await drainGlobalSingletonLifecycleState();
+    const fetchImpl = vi.fn<typeof fetch>();
+    const scope = (token: string) =>
+      getSharedApiStore({
+        apiBaseUrl: "https://api.github.com",
+        token,
+        fetchImpl,
+      });
+    const first = scope("synthetic-retained");
+    const started = createDeferred();
+    const release = createDeferred();
+    const load = vi.fn(async () => {
+      started.resolve();
+      await release.promise;
+      return json({ title: "Shared" });
+    });
+    const pending = first.responses.read(key, () => first.dispatch("core", load));
+    await started.promise;
+    first.observe(json({}, 429, { "Retry-After": "120" }));
+    const held = [first];
+    try {
+      for (let i = 1; i < 1_024; i++) {
+        held.push(scope(`synthetic-rotation-${i}`));
+      }
+      expect(() => scope("synthetic-overflow")).toThrow("API request quota unavailable");
+      expect(scope("synthetic-retained")).toBe(first);
+      const joined = scope("synthetic-retained").responses.read(key, load);
+      await expect(first.dispatch("search", load)).rejects.toMatchObject({ retryAfterMs: 120_000 });
+      await expect(
+        scope("synthetic-rotation-1").dispatch("core", async () => json({})),
+      ).resolves.toBeInstanceOf(Response);
+      release.resolve();
+      expect(await (await pending).json()).toEqual({ title: "Shared" });
+      expect(await (await joined).json()).toEqual({ title: "Shared" });
+      expect(load).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(120_000);
+      await expect(
+        scope("synthetic-retained").dispatch("core", async () => json({})),
+      ).resolves.toBeInstanceOf(Response);
+    } finally {
+      release.resolve();
+      await pending;
+      for (const store of held) {
+        store.responses.close();
+      }
+      await drainGlobalSingletonLifecycleState();
+    }
+  });
+
+  it.each(["async", "buffered"] as const)(
+    "honors the requesting reader's maximum age for %s reads",
+    async (mode) => {
+      vi.useFakeTimers();
+      const store = new ApiRequestStore();
+      let title = "Original";
+      const transport = vi.fn(() => json({ title }));
+      const read = async (freshnessMs: number) => {
+        if (mode === "async") {
+          return (await store.responses.read(key, async () => transport(), { freshnessMs })).json();
+        }
+        return store.responses
+          .readBuffered(
+            key,
+            () => ({ body: Buffer.from(JSON.stringify({ title })), response: transport() }),
+            { freshnessMs },
+          )
+          .response.json();
+      };
+      expect(await read(30_000)).toEqual({ title: "Original" });
+      title = "Updated";
+      vi.advanceTimersByTime(1_001);
+      expect(await read(5_000)).toEqual({ title: "Original" });
+      expect(await read(1_000)).toEqual({ title: "Updated" });
+      vi.advanceTimersByTime(2_000);
+      expect(await read(5_000)).toEqual({ title: "Updated" });
+      title = "Fresh admission";
+      expect(await read(0)).toEqual({ title: "Fresh admission" });
+      expect(transport).toHaveBeenCalledTimes(3);
+      store.responses.close();
+    },
+  );
+
   it("starts an explicit refresh without letting older pending work overwrite it", async () => {
     const store = new ApiRequestStore();
     const started = createDeferred();
