@@ -156,6 +156,13 @@ jobs:
         if: ${{ matrix.platform == 'linux' }}
         run: rm -rf packages/plugin-sdk/dist
 
+      # Seed CI's SDK-only declaration group first; the full build owns saved dist.
+      - name: Warm SDK declaration build cache
+        if: ${{ matrix.platform == 'linux' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: pnpm build:plugin-sdk:dts
+
       - name: Warm build cache
         if: ${{ matrix.platform == 'linux' }}
         env:

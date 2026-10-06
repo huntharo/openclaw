@@ -988,6 +988,7 @@ const configs: UserConfig[] = [
       { WORKER_DEPLOY_BUILD: "true", SEALED_RUNTIME_BUILD: "true" },
     ),
   ),
+  // The build wrapper must select exactly one of the full and SDK-only declaration groups.
   ...(TSDOWN_DECLARATIONS
     ? buildUnifiedDeclarationGroups(unifiedDistEntries).map(({ name, sources }) =>
         nodeBuildConfig(

@@ -642,8 +642,9 @@ function resolveTsdownMemoryBudget(params: ResolvedMemoryLimitParams = {}) {
 }
 
 /**
- * Measured against this repo by running the full eleven-invocation build inside real cgroups.
- * A 5GiB slice resolves this heap, completes, and peaks at 4730MiB. A 4GiB slice (3328MB heap)
+ * Measured against this repo's former eleven-invocation build inside real cgroups.
+ * The current four-invocation build retains the runtime graph that sets this floor:
+ * a 5GiB slice resolves this heap, completes, and peaks at 4730MiB. A 4GiB slice (3328MB heap)
  * and a 2816MiB slice (2048MB heap) are both killed in the third, unified-runtime invocation,
  * which also runs when declarations are disabled. Roughly 380MiB of the peak is rolldown, a
  * native addon which --max-old-space-size does not govern at all.
