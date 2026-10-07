@@ -59,6 +59,7 @@ export function renderChatImageLightbox(
       .gallery=${item.gallery}
       .connectVideo=${item.connectVideo}
       .loadFullResolution=${item.loadFullResolution}
+      .svgSource=${item.svgSource}
       src=${item.src}
       .originalSrc=${item.originalSrc ?? ""}
       .imageTitle=${item.title}

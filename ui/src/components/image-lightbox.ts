@@ -1,10 +1,16 @@
 import Panzoom, { type PanzoomObject } from "@panzoom/panzoom";
-import { html, nothing, type PropertyValues, type TemplateResult } from "lit";
+import { html, nothing, type PropertyValues } from "lit";
 import { property, query, queryAll, state } from "lit/decorators.js";
-import { BROWSER_IMAGE_MIME_TYPES } from "../../../src/shared/browser-image-mime-types.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
 import { icons } from "./icons.ts";
+import {
+  lightboxLabels,
+  renderLightboxAction,
+  renderLightboxImage,
+  renderLightboxOriginalLink,
+  renderSvgFrame,
+} from "./image-lightbox-controls.ts";
 import {
   canSwipeLightboxVideo,
   ImageLightboxGalleryController,
@@ -12,8 +18,14 @@ import {
   trapLightboxTabFocus,
 } from "./image-lightbox-gallery.ts";
 import { panImageWithKeyboard } from "./image-lightbox-keyboard.ts";
+import {
+  isOriginalImageDataUrl,
+  isOriginalImageMimeType,
+} from "./image-lightbox-original-source.ts";
+import { ImageLightboxSvgController } from "./image-lightbox-svg.ts";
 import { imageLightboxStyles } from "./image-lightbox.styles.ts";
 import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
+import type { OpenClawModalDialog } from "./modal-dialog.ts";
 import "./modal-dialog.ts";
 
 const MAX_SCALE = 4;
@@ -30,34 +42,8 @@ const GALLERY_INPUTS = [
   "imageWidth",
   "imageHeight",
   "mediaKind",
+  "svgSource",
 ] as const;
-
-function mimeTypeEssence(value: string): string {
-  return value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-}
-
-function dataUrlMimeType(source: string): string | undefined {
-  const mediaType = /^data:([^,]*)/i.exec(source)?.[1];
-  return mediaType === undefined ? undefined : mimeTypeEssence(mediaType);
-}
-
-function renderLightboxAction(
-  className: string,
-  label: string,
-  disabled: boolean,
-  action: () => unknown,
-  content: string | TemplateResult,
-) {
-  return html`<button
-    class=${"action " + className}
-    type="button"
-    aria-label=${t(label)}
-    aria-disabled=${disabled}
-    @click=${action}
-  >
-    ${content}
-  </button>`;
-}
 
 class OpenClawImageLightbox extends OpenClawLitElement {
   @property({ attribute: false }) connectVideo?: ImageLightboxItem["connectVideo"];
@@ -69,11 +55,15 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   @property({ attribute: false }) imageTitle = "";
   @property({ attribute: false }) imageWidth?: number;
   @property({ attribute: false }) imageHeight?: number;
+  @property({ attribute: false }) svgSource?: ImageLightboxItem["svgSource"];
   @query(".slide") private slide?: HTMLDivElement;
   @query(".stage") private stage?: HTMLDivElement;
   @query(".video") private video?: HTMLVideoElement;
   @query(".image") private image?: HTMLImageElement;
-  @queryAll(".action, video[controls]") private focusables!: NodeListOf<HTMLElement>;
+  @query(".interactive-svg") private svgFrame?: HTMLIFrameElement;
+  @query(".svg-script-notice") private svgScriptNotice?: OpenClawModalDialog;
+  @queryAll('.action, video[controls], iframe, .svg-search input, img[role="button"]')
+  private focusables!: NodeListOf<HTMLElement>;
   @state() private openOriginalUrl = "";
   @state() private resolvingOriginal = false;
   private originalBlobUrl = "";
@@ -89,6 +79,13 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   private readonly galleryController = new ImageLightboxGalleryController(() =>
     this.requestUpdate(),
   );
+  private readonly svgController = new ImageLightboxSvgController({
+    readItem: () => this.currentImage,
+    getFrame: () => this.svgFrame ?? null,
+    invalidate: () => this.requestUpdate(),
+    closeViewer: () => this.emitClose(),
+    readColorScheme: () => (getComputedStyle(this).colorScheme === "dark" ? "dark" : "light"),
+  });
   private displayedIndex = 0;
   private displayedSource = "";
   private slideAnimation?: Animation;
@@ -146,6 +143,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     this.motionQuery?.removeEventListener("change", this.handleMotionPreferenceChange);
     this.motionQuery = undefined;
     this.destroyPanzoom();
+    this.svgController.dispose();
     this.originalUrlRequest += 1;
     this.revokeOriginalBlobUrl();
     super.disconnectedCallback();
@@ -161,6 +159,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       width: this.imageWidth,
       height: this.imageHeight,
       loadFullResolution: this.loadFullResolution,
+      svgSource: this.svgSource,
     });
   }
 
@@ -171,6 +170,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     if (GALLERY_INPUTS.some((key) => changed.has(key))) {
       this.cancelSwipe();
       this.resetGallery();
+      this.svgController.reset();
     }
   }
 
@@ -185,15 +185,20 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       this.displayedIndex = this.galleryController.index;
       this.destroyPanzoom();
       this.scale = 1;
+      this.svgController.reset();
     }
     this.galleryController.connectPlayer(this.video);
+    this.svgController.bind(this.svgFrame ?? null);
+    this.svgScriptNotice?.setReturnFocusTarget(
+      this.shadowRoot?.querySelector<HTMLElement>(".svg-interaction") ?? null,
+    );
     const source = this.video?.getAttribute("src") ?? this.currentImage?.src ?? this.src;
     if (selectionChanged || this.displayedSource !== source) {
       this.displayedSource = source;
       void this.resolveOriginalUrl();
-      if (this.image?.complete && this.image.naturalWidth > 0) {
-        this.initializePanzoom(this.image);
-      }
+    }
+    if (this.image?.complete && this.image.naturalWidth > 0) {
+      this.initializePanzoom(this.image);
     }
   }
 
@@ -201,21 +206,9 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     const title =
       (this.hasGallery ? (this.currentImage?.title ?? this.imageTitle) : this.imageTitle).trim() ||
       t("chat.imageLightbox.untitled");
-    const dialogLabel =
-      this.mediaKind === "video"
-        ? t("chat.mediaPlayer.videoPreview", { title })
-        : t("chat.imageLightbox.label", { title });
-    const closeLabel =
-      this.mediaKind === "video"
-        ? t("chat.mediaPlayer.closeVideoPreview")
-        : t("chat.imageLightbox.close");
+    const { dialogLabel, closeLabel } = lightboxLabels(this.mediaKind, title);
     const canZoom = this.imageReady && this.panzoom !== undefined;
-    const width = this.currentImage?.width;
-    const height = this.currentImage?.height;
-    const sized = Number.isFinite(width) && width! > 0 && Number.isFinite(height) && height! > 0;
-    const imageSize = sized
-      ? `width: min(${width}px, 100cqw, calc(100cqh * ${width! / height!}))`
-      : nothing;
+    const svg = this.svgController.active;
     return html`
       <openclaw-modal-dialog
         class="mobile-edge-to-edge viewport-edge-to-edge"
@@ -227,28 +220,8 @@ class OpenClawImageLightbox extends OpenClawLitElement {
           <header class="header">
             <strong class="title">${title}</strong>
             <div class="actions">
-              ${
-                this.openOriginalUrl || (this.hasGallery && this.resolvingOriginal)
-                  ? html`
-                      <a
-                        class="action open-original"
-                        href=${this.openOriginalUrl || nothing}
-                        aria-disabled=${!this.openOriginalUrl}
-                        tabindex=${this.openOriginalUrl ? 0 : -1}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label=${t("chat.imageLightbox.openOriginal")}
-                      >
-                        <span class="open-original-label">
-                          ${t("chat.imageLightbox.openOriginal")}
-                        </span>
-                        <span class="open-original-icon" aria-hidden="true">
-                          ${icons.externalLink}
-                        </span>
-                      </a>
-                    `
-                  : nothing
-              }
+              ${this.svgController.renderAction(this.toggleSvgInteraction)}
+              ${renderLightboxOriginalLink(this.openOriginalUrl, this.hasGallery && this.resolvingOriginal)}
               <button
                 class="action close"
                 type="button"
@@ -261,7 +234,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
             </div>
           </header>
           <div
-            class=${this.mediaKind === "video" ? "stage stage--video" : this.hasGallery ? "stage stage--gallery" : "stage"}
+            class=${svg ? "stage stage--interactive" : this.mediaKind === "video" ? "stage stage--video" : this.hasGallery ? "stage stage--gallery" : "stage"}
             @pointerdown=${{ handleEvent: this.handleStagePointerDown, capture: true }}
             @pointermove=${this.handleStagePointerMove}
             @pointerup=${this.handleStagePointerUp}
@@ -269,32 +242,37 @@ class OpenClawImageLightbox extends OpenClawLitElement {
             @dblclick=${this.handleDoubleClick}
           >
             ${
-              this.mediaKind === "video"
-                ? html`<video
-                    class="video"
-                    @loadeddata=${() => this.galleryController.updateVideoStatus("ready")}
-                    @playing=${() => this.galleryController.updateVideoStatus("ready")}
-                    @error=${() => this.galleryController.updateVideoStatus("unavailable")}
-                    aria-label=${title}
-                    controls
-                    autoplay
-                    playsinline
-                    tabindex="0"
-                  ></video>`
-                : html`<div class="slide">
-                    <img
-                      class=${this.scale > 1 ? "image zoomed" : "image"}
-                      style=${imageSize}
-                      src=${this.currentImage?.src ?? this.src}
-                      alt=${title}
-                      referrerpolicy="no-referrer"
-                      @load=${this.handleImageLoad}
-                      @error=${this.handleImageError}
-                      @dragstart=${(event: DragEvent) => event.preventDefault()}
-                    />
-                  </div>`
+              svg
+                ? renderSvgFrame(title, svg.scheme, (frame) =>
+                    this.svgController.frameLoaded(frame),
+                  )
+                : this.mediaKind === "video"
+                  ? html`<video
+                      class="video"
+                      @loadeddata=${() => this.galleryController.updateVideoStatus("ready")}
+                      @playing=${() => this.galleryController.updateVideoStatus("ready")}
+                      @error=${() => this.galleryController.updateVideoStatus("unavailable")}
+                      aria-label=${title}
+                      controls
+                      autoplay
+                      playsinline
+                      tabindex="0"
+                    ></video>`
+                  : renderLightboxImage({
+                      src: this.currentImage?.src ?? this.src,
+                      title,
+                      scale: this.scale,
+                      width: this.currentImage?.width,
+                      height: this.currentImage?.height,
+                      interactive: this.svgController.available,
+                      loaded: this.handleImageLoad,
+                      failed: this.handleImageError,
+                      clicked: this.svgController.handlePreviewClick,
+                      keydown: this.svgController.handlePreviewKeydown,
+                    })
             }
           </div>
+          ${this.svgController.renderNotice()} ${this.svgController.renderSearch()}
           ${
             this.hasGallery
               ? html`
@@ -322,7 +300,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
               : nothing
           }
           ${
-            this.mediaKind === "image"
+            this.mediaKind === "image" && !svg
               ? html`<div class="zoom-controls">
                   ${renderLightboxAction("zoom-control", "chat.imageLightbox.zoomOut", !canZoom || this.scale <= 1, this.zoomOut, "−")}
                   ${renderLightboxAction("zoom-control zoom-level", "chat.imageLightbox.resetZoom", !canZoom || this.scale === 1, this.resetZoom, html`${Math.round(this.scale * 100)}%`)}
@@ -332,7 +310,27 @@ class OpenClawImageLightbox extends OpenClawLitElement {
           }
         </section>
       </openclaw-modal-dialog>
+      ${this.svgController.renderConfirmation(() => {
+        this.svgController.runOnce();
+        this.updateSvgInteraction();
+      })}
     `;
+  }
+
+  private toggleSvgInteraction = () => {
+    this.svgController.toggle();
+    this.updateSvgInteraction();
+  };
+
+  private updateSvgInteraction() {
+    if (this.svgController.active) {
+      this.cancelSwipe();
+      this.destroyPanzoom();
+    } else if (!this.svgController.confirmationOpen) {
+      void this.updateComplete.then(() =>
+        this.shadowRoot?.querySelector<HTMLElement>(".svg-interaction")?.focus(),
+      );
+    }
   }
 
   private handleImageLoad = (event: Event) => {
@@ -424,9 +422,11 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   };
 
   private handleStagePointerDown = (event: PointerEvent) => {
+    this.svgController.previewPointerDown(event);
     if (event.pointerType === "touch") {
       this.touchPointers.add(event.pointerId);
       if (this.touchPointers.size > 1) {
+        this.svgController.cancelPreviewPress();
         this.cancelSwipe();
         this.backdropPointer = undefined;
         return;
@@ -444,6 +444,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       : undefined;
     if (
       event.pointerType === "touch" &&
+      !this.svgController.active &&
       this.hasGallery &&
       !this.galleryController.busy &&
       this.scale <= 1 &&
@@ -531,6 +532,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   };
 
   private handleStagePointerCancel = (event: PointerEvent) => {
+    this.svgController.cancelPreviewPress();
     this.touchPointers.delete(event.pointerId);
     this.backdropPointer = undefined;
     this.cancelSwipe();
@@ -616,10 +618,9 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       return;
     }
     this.openOriginalUrl = "";
-    const sourceType = isDataUrl ? dataUrlMimeType(source) : undefined;
     // Reject active data formats before fetching. Incoming blob URLs still need
     // their fetched MIME checked because top-level blobs inherit the app origin.
-    if (isDataUrl && (!sourceType || !BROWSER_IMAGE_MIME_TYPES.has(sourceType))) {
+    if (isDataUrl && !isOriginalImageDataUrl(source)) {
       return;
     }
     this.resolvingOriginal = true;
@@ -629,7 +630,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       if (
         !this.isConnected ||
         request !== this.originalUrlRequest ||
-        !BROWSER_IMAGE_MIME_TYPES.has(mimeTypeEssence(blob.type))
+        !isOriginalImageMimeType(blob.type)
       ) {
         return;
       }
@@ -649,6 +650,22 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   }
 
   private handleKeydown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && this.svgController.dismissSearch()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    trapLightboxTabFocus(event, this.focusables);
+    const textField = event
+      .composedPath()
+      .some(
+        (target) =>
+          target instanceof HTMLElement &&
+          (target.matches("input, textarea, select") || target.isContentEditable),
+      );
+    if (textField) {
+      return;
+    }
     if (event.key === "Escape" && exitLightboxVideoFullscreen(this.video, event)) {
       return;
     }
@@ -681,16 +698,19 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     if (this.panzoom && zoom) {
       event.preventDefault();
       zoom();
-      return;
     }
-    trapLightboxTabFocus(event, this.focusables);
   };
 
   private emitClose = (event?: Event) => {
+    if (event?.type === "modal-cancel" && this.svgController.dismissSearch()) {
+      event.preventDefault();
+      return;
+    }
     if (event?.type === "modal-cancel" && exitLightboxVideoFullscreen(this.video, event)) {
       return;
     }
     this.galleryController.stopPlayer();
+    this.svgController.reset();
     this.dispatchEvent(
       new CustomEvent("image-lightbox-close", {
         bubbles: true,

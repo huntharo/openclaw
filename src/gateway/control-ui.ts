@@ -67,6 +67,7 @@ import {
   isReadHttpMethod,
   respondNotFound as respondControlUiNotFound,
   respondPlainText,
+  sendJson,
 } from "./control-ui-http-utils.js";
 import { serveControlUiIndexHtml } from "./control-ui-index.js";
 import { resolveAssistantMediaRoutePath } from "./control-ui-resource-routes.js";
@@ -83,6 +84,7 @@ import {
   respondHeadForControlUiFile,
   serveControlUiAsset,
 } from "./control-ui-static.js";
+import { serveControlUiSvgViewer } from "./control-ui-svg-viewer.js";
 import {
   createGatewayByteStream,
   resolveByteResponse,
@@ -137,13 +139,6 @@ function controlUiAvatarResolutionMeta(
     avatarStatus: resolved.kind,
     avatarReason: resolved.kind === "none" ? resolved.reason : null,
   };
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache");
-  res.end(JSON.stringify(body));
 }
 
 function respondControlUiAssetsUnavailable(res: ServerResponse, root?: ControlUiRootState) {
@@ -782,6 +777,10 @@ export async function handleControlUiHttpRequest(
   }
 
   applyControlUiSecurityHeaders(res);
+
+  if (serveControlUiSvgViewer(req, res, pathname, basePath)) {
+    return true;
+  }
 
   if (isControlUiSharePath(pathname, basePath) && pathname !== `${basePath}/share/card.png`) {
     serveControlUiShareDocument(req, res, url, basePath, resolveGatewayPublicOrigin(opts?.config));

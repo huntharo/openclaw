@@ -7,6 +7,7 @@ export function openResolvedImage(
   title: string,
   release?: () => void,
   requestVersion?: number,
+  svgSource?: ImageLightboxItem["svgSource"],
 ) {
   const safeSrc = resolveSafeExternalUrl(src, window.location.href, { allowDataImage: true });
   if (!safeSrc) {
@@ -14,7 +15,12 @@ export function openResolvedImage(
     return;
   }
   if (onOpenImage) {
-    const item: ImageLightboxItem = { src: safeSrc, title, ...(release ? { release } : {}) };
+    const item: ImageLightboxItem = {
+      src: safeSrc,
+      title,
+      ...(release ? { release } : {}),
+      ...(svgSource ? { svgSource } : {}),
+    };
     if (requestVersion === undefined) {
       onOpenImage(item);
     } else {
