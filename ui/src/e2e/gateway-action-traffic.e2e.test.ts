@@ -41,7 +41,10 @@ function traffic(frames: WireFrame[]) {
 
 function expectBudget(name: string, frames: WireFrame[], sentFrames: number, sentBytes: number) {
   const summary = traffic(frames);
-  expect(summary.sent.frames, `${name}: client frame budget`).toBeLessThanOrEqual(sentFrames);
+  expect(
+    summary.sent.frames,
+    `${name}: client frame budget (${JSON.stringify(summary.sent.kinds)})`,
+  ).toBeLessThanOrEqual(sentFrames);
   expect(summary.sent.bytes, `${name}: client UTF-8 byte budget`).toBeLessThanOrEqual(sentBytes);
   return summary;
 }
@@ -62,7 +65,8 @@ async function drainAcknowledgments(page: Page) {
       .filter((frame) => frame.direction === "sent")
       .map((frame) => JSON.parse(frame.data) as { type: string; id?: string })
       .filter((frame) => frame.type === "req" && !responses.has(frame.id));
-    if (pending.length === 0 && previousLength === frames.length) {
+    const ready = await page.evaluate(() => window.openclawControlUi?.snapshot().ready === true);
+    if (pending.length === 0 && previousLength === frames.length && ready) {
       return frames;
     }
     previousLength = frames.length;
