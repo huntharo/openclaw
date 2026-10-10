@@ -221,6 +221,7 @@ export class MarkdownDomReconciler {
   private source = "";
   private stableHtml = "";
   private connected = true;
+  private hadMedia = false;
   private readonly mediaSlots = new Map<
     number,
     { element: HTMLElement; root?: MarkdownMediaRoot }
@@ -255,22 +256,32 @@ export class MarkdownDomReconciler {
     ) {
       this.reset();
     }
+    const changed: Fragment[] = [];
     if (stableHtml.length > this.stableHtml.length) {
       const completed = stableHtml.slice(this.stableHtml.length);
       if (this.tail) {
         // Promotion retains the same DOM owner and its reader state.
-        this.tail.html = completed;
+        if (this.tail.html !== completed) {
+          this.tail.html = completed;
+          changed.push(this.tail);
+        }
         this.tail = undefined;
       } else {
-        this.fragments.push(this.createFragment(completed, false));
+        const fragment = this.createFragment(completed, false);
+        this.fragments.push(fragment);
+        changed.push(fragment);
       }
     }
     if (tailHtml) {
       if (this.tail) {
-        this.tail.html = tailHtml;
+        if (this.tail.html !== tailHtml) {
+          this.tail.html = tailHtml;
+          changed.push(this.tail);
+        }
       } else {
         this.tail = this.createFragment(tailHtml, true);
         this.fragments.push(this.tail);
+        changed.push(this.tail);
       }
     } else if (this.tail) {
       removeRange(this.tail);
@@ -280,7 +291,7 @@ export class MarkdownDomReconciler {
     this.messageKey = messageKey;
     this.source = source;
     this.stableHtml = stableHtml;
-    this.renderFragments(media);
+    this.renderFragments(media, changed);
   }
 
   /** A standalone fragment uses the same canonical-tree and media ownership. */
@@ -292,7 +303,7 @@ export class MarkdownDomReconciler {
       this.fragments.push(fragment);
     }
     fragment.html = html;
-    this.renderFragments(media);
+    this.renderFragments(media, [fragment]);
   }
 
   dispose(): void {
@@ -326,9 +337,11 @@ export class MarkdownDomReconciler {
     };
   }
 
-  private renderFragments(media?: MarkdownDomMedia): void {
+  private renderFragments(media: MarkdownDomMedia | undefined, changed: readonly Fragment[]): void {
     this.usedSlots = new Set();
-    for (const fragment of this.fragments) {
+    // Media policy can change without HTML changes; removing media must also
+    // revisit its former slots. Plain text only reconciles changed ranges.
+    for (const fragment of media || this.hadMedia ? this.fragments : changed) {
       const prefix = media?.prefix ?? "";
       // Canonical strings also memoize completed fragments without retaining a
       // detached DOM tree. Media policy still refreshes on every update.
@@ -339,6 +352,7 @@ export class MarkdownDomReconciler {
       }
       fragment.children = this.reconcile(fragment, fragment.children, fragment.canonical, media);
     }
+    this.hadMedia = Boolean(media);
     for (const [index, slot] of this.mediaSlots) {
       if (!this.usedSlots.has(index)) {
         slot.root?.dispose();
