@@ -1,12 +1,4 @@
-import { html, noChange, nothing, render, type ChildPart, type RootPart } from "lit";
-import { AsyncDirective, directive } from "lit/async-directive.js";
-import {
-  clearPart,
-  insertPart,
-  removePart,
-  setChildPartValue,
-  setCommittedValue,
-} from "lit/directive-helpers.js";
+import { html } from "lit";
 import { guard } from "lit/directives/guard.js";
 import { ref } from "lit/directives/ref.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
@@ -259,15 +251,21 @@ export function renderMessageMarkdown(
   const recoverFullMessage =
     isAssistant || (opts.role === "user" && disclosure?.onRetryFullMessage);
   const recovered = recoverFullMessage && disclosure?.expanded;
-  const { content: text, parts } = renderMarkdownText(
-    recovered ? (disclosure.markdown ?? markdown) : markdown,
-    messageKey,
-    opts.isStreaming,
-    recovered ? { ...markdownRenderOptions, mode: "document" } : markdownRenderOptions,
-    duplicateSuffix,
-    isAssistant && opts.isStreaming ? messageKey : undefined,
-    media,
-  );
+  const source = recovered ? (disclosure.markdown ?? markdown) : markdown;
+  const options: MarkdownRenderOptions = recovered
+    ? { ...markdownRenderOptions, mode: "document" }
+    : markdownRenderOptions;
+  const parts: [string, string] = opts.isStreaming
+    ? toStreamingMarkdownParts(source, options, isAssistant ? messageKey : undefined)
+    : [toSanitizedMarkdownHtml(source, options), ""];
+  if (duplicateSuffix) {
+    const terminalPart = parts[1].trim() ? 1 : 0;
+    parts[terminalPart] = appendDuplicateSuffix(parts[terminalPart], duplicateSuffix);
+  }
+  const content = renderMarkdownMedia({ messageKey, source, parts }, media);
+  const text = html`
+    <div class="chat-text" dir="${detectTextDirection(media?.text ?? source)}">${content}</div>
+  `;
   // Exhausted recovery keeps the preview visible and offers manual re-entry.
   if (recoverFullMessage && disclosure?.onRetryFullMessage) {
     return html`
@@ -337,182 +335,6 @@ export type AssistantMessageDisclosure = {
   /** Set when automatic full-message retries exhausted; invoking re-enters the loader. */
   onRetryFullMessage?: () => void;
 };
-
-type MarkdownFragment = { html: string; incremental: boolean; part: ChildPart };
-
-class MarkdownPartsDirective extends AsyncDirective {
-  private messageKey: string | undefined;
-  private source = "";
-  private stableHtml = "";
-  private fragments: MarkdownFragment[] = [];
-  private parts: ChildPart[] = [];
-  private tail: MarkdownFragment | undefined;
-  private hadMedia = false;
-  private mediaSlots = new Map<number, { element: HTMLElement; part?: RootPart }>();
-  private mediaRender = {};
-
-  protected override disconnected() {
-    for (const slot of this.mediaSlots.values()) {
-      slot.part?.setConnected(false);
-    }
-  }
-
-  protected override reconnected() {
-    for (const slot of this.mediaSlots.values()) {
-      slot.part?.setConnected(true);
-    }
-  }
-
-  render(
-    _messageKey: string,
-    _source: string,
-    _html: readonly [string, string],
-    _media?: MarkdownMedia,
-  ) {
-    return noChange;
-  }
-
-  override update(
-    part: ChildPart,
-    [messageKey, source, [stableHtml, tailHtml], media]: [
-      string,
-      string,
-      readonly [string, string],
-      MarkdownMedia?,
-    ],
-  ) {
-    const changed: MarkdownFragment[] = [];
-    const appendFragment = (value: string, incremental: boolean) => {
-      const fragment = { html: value, incremental, part: insertPart(part) };
-      this.parts.push(fragment.part);
-      this.fragments.push(fragment);
-      changed.push(fragment);
-      return fragment;
-    };
-    if (this.messageKey !== messageKey) {
-      for (const slot of this.mediaSlots.values()) {
-        render(nothing, slot.element);
-      }
-      this.mediaSlots.clear();
-    }
-    if (
-      this.messageKey !== messageKey ||
-      !source.startsWith(this.source) ||
-      !stableHtml.startsWith(this.stableHtml)
-    ) {
-      this.fragments = [];
-      clearPart(part);
-      this.parts = [];
-      this.tail = undefined;
-      this.stableHtml = "";
-    }
-    // Lit owns disconnection/clearing of these inserted ranges. Ordinary tail
-    // updates commit only changed ranges instead of an iterable of the prefix.
-    setCommittedValue(part, this.parts);
-    if (stableHtml.length > this.stableHtml.length) {
-      const completed = stableHtml.slice(this.stableHtml.length);
-      if (this.tail) {
-        // Promotion keeps this fragment's Lit part and renderer. Switching to
-        // static HTML would discard its live controls and reader enhancements.
-        if (this.tail.html !== completed) {
-          this.tail.html = completed;
-          changed.push(this.tail);
-        }
-        this.tail = undefined;
-      } else {
-        appendFragment(completed, false);
-      }
-    }
-    if (tailHtml) {
-      if (this.tail) {
-        if (this.tail.html !== tailHtml) {
-          this.tail.html = tailHtml;
-          changed.push(this.tail);
-        }
-      } else {
-        this.tail = appendFragment(tailHtml, true);
-      }
-    } else if (this.tail) {
-      this.fragments.pop();
-      this.parts.pop();
-      removePart(this.tail.part);
-      this.tail = undefined;
-    }
-    this.messageKey = messageKey;
-    this.source = source;
-    this.stableHtml = stableHtml;
-    const usedSlots = new Set<number>();
-    const mediaRender = (this.mediaRender = {});
-    const positionedMedia = media
-      ? {
-          ...media,
-          render: (item: MarkdownMedia["items"][number], index: number) => {
-            let slot = this.mediaSlots.get(index);
-            if (!slot) {
-              slot = { element: document.createElement("div") };
-              this.mediaSlots.set(index, slot);
-            }
-            usedSlots.add(index);
-            // Markdown can move a media slot from its streaming tail into the
-            // stable prefix. Keep the media renderer and decoded image mounted.
-            slot.part = render(media.render(item, index), slot.element);
-            slot.part.setConnected(this.isConnected);
-            return slot.element;
-          },
-        }
-      : undefined;
-    queueMicrotask(() => {
-      if (this.mediaRender !== mediaRender) {
-        return;
-      }
-      for (const [index, slot] of this.mediaSlots) {
-        if (!usedSlots.has(index)) {
-          render(nothing, slot.element);
-          this.mediaSlots.delete(index);
-        }
-      }
-    });
-    // Canonical HTML proves continuity; live DOM also contains the reader's
-    // control choices and Markdown enhancements, which must stay on its nodes.
-    // Media policy and callbacks can change independently of HTML. Rebind its
-    // retained slots when present, including the transition back to plain text.
-    for (const fragment of media || this.hadMedia ? this.fragments : changed) {
-      setChildPartValue(
-        fragment.part,
-        renderMarkdownMedia(fragment.html, positionedMedia, fragment.incremental),
-      );
-    }
-    this.hadMedia = Boolean(media);
-    return noChange;
-  }
-}
-
-const markdownParts = directive(MarkdownPartsDirective);
-
-function renderMarkdownText(
-  markdown: string,
-  messageKey: string,
-  isStreaming: boolean,
-  markdownRenderOptions?: MarkdownRenderOptions,
-  duplicateSuffix?: DuplicateSuffix,
-  streamKey?: string,
-  media?: MarkdownMedia,
-) {
-  const parts: [string, string] = isStreaming
-    ? toStreamingMarkdownParts(markdown, markdownRenderOptions, streamKey)
-    : [toSanitizedMarkdownHtml(markdown, markdownRenderOptions), ""];
-  if (duplicateSuffix) {
-    const terminalPart = parts[1].trim() ? 1 : 0;
-    parts[terminalPart] = appendDuplicateSuffix(parts[terminalPart], duplicateSuffix);
-  }
-  const content = markdownParts(messageKey, markdown, parts, media);
-  return {
-    parts,
-    content: html`
-      <div class="chat-text" dir="${detectTextDirection(media?.text ?? markdown)}">${content}</div>
-    `,
-  };
-}
 
 function appendDuplicateSuffix(rendered: string, suffix: DuplicateSuffix): string {
   const template = document.createElement("template");
