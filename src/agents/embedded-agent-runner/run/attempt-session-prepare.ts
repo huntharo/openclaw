@@ -1,8 +1,7 @@
 import { isAnthropicOAuthApiKey, isDirectAnthropicModel } from "@openclaw/ai/internal/anthropic";
 import { supportsClaudeInHistorySystemMessages } from "@openclaw/llm-core";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
-import { sameSessionTranscriptTargetBinding } from "../../../config/sessions/transcript-target-binding.js";
-import { captureOwnedTranscriptWriteAssertion, getOwnedSessionTranscriptReader } from "../../../config/sessions/transcript-write-context.js";
+import { getOwnedSessionTranscriptReader } from "../../../config/sessions/transcript-write-context.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
 import {
@@ -17,7 +16,6 @@ import {
   shouldPreserveUserFacingSessionStateForInputProvenance,
 } from "../../../sessions/input-provenance.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
-import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
 import {
   applyAgentAutoCompactionGuard,
@@ -28,6 +26,7 @@ import { toToolDefinitions } from "../../agent-tool-definition-adapter.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { resolveUserTimezone } from "../../date-time.js";
 import { bootstrapHarnessContextEngine } from "../../harness/context-engine-lifecycle.js";
+import { captureEmbeddedToolResultAssertion } from "../../harness/tool-result-policy.js";
 import { relocateCurrentRuntimeContextCarrierToTail } from "../../internal-runtime-context.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
@@ -133,14 +132,11 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   });
 
   // These factories carry compaction/pruning runtime state into the resource loader.
-  const middlewareTarget = input.sessionManager.getSessionTarget();
-  const assertMiddlewareRun = resolveAdmittedRunActiveAssertion(
-    attempt.admittedRunContext,
-    input.runAbortSignal,
-  );
-  const assertMiddlewareTranscript = middlewareTarget
-    ? captureOwnedTranscriptWriteAssertion(middlewareTarget)
-    : undefined;
+  const assertMiddlewareCurrent = captureEmbeddedToolResultAssertion({
+    admittedRunContext: attempt.admittedRunContext,
+    signal: input.runAbortSignal,
+    readTarget: () => input.sessionManager.getSessionTarget(),
+  });
   const extensionFactories = buildEmbeddedExtensionFactories({
     cfg: attempt.config,
     sessionManager: input.sessionManager,
@@ -157,21 +153,7 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     task: attempt.prompt,
     signal: input.runAbortSignal,
     detached: attempt.sessionPersistence === "detached",
-    assertCurrent: assertMiddlewareRun
-      ? () => {
-          assertMiddlewareRun();
-          input.runAbortSignal.throwIfAborted();
-          assertMiddlewareTranscript?.();
-          if (
-            !sameSessionTranscriptTargetBinding(
-              middlewareTarget,
-              input.sessionManager.getSessionTarget(),
-            )
-          ) {
-            throw new Error("Tool-result middleware lost its transcript binding.");
-          }
-        }
-      : undefined,
+    assertCurrent: assertMiddlewareCurrent,
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.effectiveCwd,

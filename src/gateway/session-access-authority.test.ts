@@ -122,6 +122,9 @@ function fixture(scopes = ["operator.write"], creator = "someone-else") {
     setVisibility(visibility: SessionEntry["visibility"]) {
       entry = { ...entry, updatedAt: 2, visibility };
     },
+    setSessionId(sessionId: string) {
+      entry = { ...entry, updatedAt: 2, sessionId };
+    },
     prepare: async () =>
       hold(
         (
@@ -226,13 +229,7 @@ describe("session resource admission", () => {
     "read resources preserve canonical visibility for $creator/$visibility/$scopes",
     async ({ scopes, creator, visibility, allowed }) => {
       const test = fixture([...scopes], creator);
-      test.setEntry({
-        sessionId: "session-1",
-        lifecycleRevision: "incarnation-1",
-        updatedAt: 1,
-        createdActor: { type: "human", source: "profile", id: creator },
-        visibility,
-      });
+      test.setVisibility(visibility);
       const handler = vi.fn<GatewayRequestHandler>(({ sessionAccessAuthority, respond }) => {
         expectDefined(sessionAccessAuthority, "read resource authority").assertCurrent();
         respond(true, { bytes: 17 });
@@ -269,14 +266,11 @@ describe("session resource admission", () => {
           test.client.connect.scopes = [];
         } else if (change === "tool") {
           mocks.toolAllowed = false;
+        } else if (change === "reset") {
+          test.setSessionId("session-2");
         } else {
-          test.setEntry({
-            sessionId: change === "reset" ? "session-2" : "session-1",
-            lifecycleRevision: "incarnation-1",
-            updatedAt: 2,
-            createdActor: { type: "human", source: "profile", id: "someone-else" },
-            visibility: change === "visibility" ? "draft" : "shared",
-          });
+          test.setVisibility("draft");
+          sessionChanges.emit({ agentId: "main", sessionKey: key });
         }
         resume.resolve();
         await failure;

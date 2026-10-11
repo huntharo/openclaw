@@ -21,7 +21,6 @@ import {
   type CodeModeWorkerThreadResult as SharedWorkerThreadResult,
   type PendingBridgeRequest,
   type SettledBridgeRequest,
-  type SourceLocation,
 } from "openclaw/plugin-sdk/code-mode-executor-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { serveWorkerTasks, type WorkerTaskChannel } from "openclaw/plugin-sdk/worker-task-server";
@@ -33,7 +32,7 @@ import {
   type JSValueHandle,
   type Snapshot,
 } from "quickjs-wasi";
-import { readSourceLocation } from "./source-location.js";
+import { errorMessage, formatQuickJsError, readSourceLocation } from "./source-location.js";
 
 type CodeModeWorkerPayload = SharedWorkerPayload<Snapshot> & {
   wasmModule: WebAssembly.Module;
@@ -77,35 +76,6 @@ type BridgeState = {
   admissionFailure?: CodeModeWorkerFailure;
   networkContentObserved?: true;
 };
-
-// QuickJS error stacks are backtrace frames only ("    at file:line:col"), with
-// no leading "Name: message" header like V8. Returning .stack alone therefore
-// dropped the actual cause, surfacing failures to the model as a bare location
-// (e.g. "at openclaw-code-mode:user.js:2:37"). Lead with name+message so the
-// model can self-correct, and keep the frames for location.
-function formatQuickJsError(
-  name: string,
-  message: string,
-  stack: string | undefined,
-  location?: SourceLocation,
-): string {
-  const header = message ? `${name}: ${message}` : name;
-  const sourceStack = normalizeSourceStack(stack, location);
-  if (!sourceStack || sourceStack.split(/\r?\n/, 1)[0] === header) {
-    return header;
-  }
-  return `${header}\n${sourceStack}`;
-}
-
-function errorMessage(error: unknown, location?: SourceLocation): string {
-  if (error instanceof JSException) {
-    return formatQuickJsError(error.name, error.message, error.stack, location);
-  }
-  if (error instanceof Error) {
-    return error.message || String(error);
-  }
-  return String(error);
-}
 
 function trackPromiseRejection(
   promise: JSValueHandle,

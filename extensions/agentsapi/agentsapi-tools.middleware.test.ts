@@ -113,7 +113,7 @@ describe("Agents API actual function-output selection", () => {
           kind: "agent-harness-host-capability",
           version: 1,
           assertActive: assertCurrent,
-          createToolSurface: () => [tool],
+          createToolSurfaceAsync: async () => [tool],
           bindToolSurface: (tools) => tools,
           toolResultPolicy: () => ({
             persistence: "durable",
@@ -126,7 +126,12 @@ describe("Agents API actual function-output selection", () => {
           waitForApproval: async () => undefined,
         },
       };
-      const surface = buildAgentsApiToolSurface(params, controller.signal, assertCurrent, () => {});
+      const surface = await buildAgentsApiToolSurface(
+        params,
+        controller.signal,
+        assertCurrent,
+        () => {},
+      );
       const execution = surface.execute({
         type: "function_call",
         name: "build_logs",
