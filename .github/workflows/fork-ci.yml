@@ -75,4 +75,7 @@ jobs:
           OPENCLAW_E2E_USE_PREBUILT_DIST: "1"
           OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1"
           OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: "1"
-        run: pnpm test:e2e
+        run: |
+          pnpm test:e2e:gateway test/cli-json-stdout.config.e2e.test.ts src/gateway/server-network-runtime.e2e.test.ts src/gateway/gateway-wizard.e2e.test.ts
+          pnpm test:e2e:agent-plugin-gateway
+          pnpm test:ui:e2e
