@@ -19,7 +19,7 @@ import type {
   CodeModeExecutorInlineHost,
 } from "./code-mode-executor-types.js";
 import { runCodeModeExecutor } from "./code-mode-executor.js";
-import { CodeModeOutputState } from "./code-mode-json.js";
+import { CodeModeOutputState, resolveCodeModeOriginalCaptureBytes } from "./code-mode-json.js";
 import {
   createCodeModeNamespaceRuntime,
   type CodeModeNamespaceRuntime,
@@ -60,6 +60,7 @@ import {
 } from "./code-mode-state.js";
 import { recordCodeModeToolOutcome } from "./code-mode-tool-outcome.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
+import { copyInternalToolResultState } from "./runtime/internal-hooks.js";
 import type { ToolResultBudget } from "./tool-result-limits.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import type { ToolSearchToolContext } from "./tool-search-types.js";
@@ -74,12 +75,24 @@ export async function runCodeModeExec(params: {
   assistantTurnId?: string;
   restartSafe: boolean;
   awaitResults?: boolean;
+  originalTextMaxBytes?: number;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
   onRuntime?: (runtime: ToolSearchRuntime) => void;
 }) {
   removeExpiredRuns();
   const { config } = params;
+  const originalTextMaxBytes = resolveCodeModeOriginalCaptureBytes(
+    params.originalTextMaxBytes,
+    config,
+  );
+  const output = new CodeModeOutputState(
+    config.maxOutputBytes,
+    params.resultBudget,
+    originalTextMaxBytes,
+    params.toolCallId,
+  );
+  const capture = output.originalTextCapture;
   const codeModeReplayId = codeModeReplayIdForToolCall(
     params.ctx,
     params.toolCallId,
@@ -90,6 +103,13 @@ export async function runCodeModeExec(params: {
     prepareInput: true,
     validateInput: true,
     callIdScope: codeModeReplayId.replace(/^cm_replay_/, ""),
+    ...(capture
+      ? {
+          onToolStart: (input) => capture.beginMember(input),
+          onAcceptedResult: (input) => capture.captureMember(input),
+          onResultFailure: () => capture.invalidate(),
+        }
+      : {}),
   });
   params.onRuntime?.(runtime);
   const bridgeDispatch = { started: false };
@@ -108,9 +128,14 @@ export async function runCodeModeExec(params: {
     params.awaitResults,
     !params.restartSafe,
   );
+  if (capture) {
+    owner.signal.addEventListener("abort", () => capture.close(), { once: true });
+    if (owner.signal.aborted) {
+      capture.close();
+    }
+  }
   const { approvalWait } = owner;
   const signal = owner.bindCall(params.signal);
-  const output = new CodeModeOutputState(config.maxOutputBytes, params.resultBudget);
   const pending: PendingBridgeState[] = [];
   let releaseReservation: (() => void) | undefined;
   const context = {
@@ -143,6 +168,7 @@ export async function runCodeModeExec(params: {
         {
           kind: "exec",
           retainFinalValue: !params.restartSafe,
+          originalTextMaxBytes,
           source: params.code,
           config: { ...config, timeoutMs: remainingMs },
           catalog: catalogProjection.guestBindings,
@@ -326,6 +352,7 @@ async function resumeCodeModeExecution(
         {
           kind: "resume",
           retainFinalValue: !params.replaySafe,
+          originalTextMaxBytes: params.output.originalTextCapture?.maxCaptureBytes,
           continuation,
           config: { ...params.config, timeoutMs },
           settledRequests: delivery.requests,
@@ -645,7 +672,11 @@ export async function runWait(params: {
       : undefined;
     if (!ready || resumeBudgetMs === undefined) {
       if (signal.aborted) {
-        return { ...codeModeAbortedResult(state), failurePhase: "bridge" as const };
+        const aborted = codeModeAbortedResult(state);
+        return copyInternalToolResultState(aborted, {
+          ...aborted,
+          failurePhase: "bridge" as const,
+        });
       }
       return storeSuspendedRun(state);
     }

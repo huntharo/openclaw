@@ -76,6 +76,7 @@ import {
 import { bindHarnessTrajectory } from "./host-trajectory.js";
 import { formatHarnessApprovalPresentation } from "./native-hook-relay-approval-presentation.js";
 import { createSessionNodeAuthorities } from "./node-execution-authority.js";
+import { captureHostToolResultPolicy } from "./tool-result-policy.js";
 
 type AgentHarnessHostAttempt = Partial<EmbeddedRunAttemptParams> &
   Pick<EmbeddedRunAttemptParams, "admittedRunContext" | "runId">;
@@ -109,6 +110,7 @@ export function createAgentHarnessHostCapabilities(params: {
   const githubPublicationAvailable = attempt.githubPublicationAvailable;
   const workSignal = getAsyncWorkSignal();
   const attemptSignal = attempt.abortSignal;
+  const toolResultPolicy = captureHostToolResultPolicy(attempt, () => assertActive());
   const installationTarget = getInstallationTarget();
   const { sessionKey, onAgentEvent } = attempt;
   // Capture the selected harness declaration before plugin code can mutate it.
@@ -456,6 +458,10 @@ export function createAgentHarnessHostCapabilities(params: {
     kind: "agent-harness-host-capability" as const,
     version: 1 as const,
     assertActive,
+    toolResultPolicy: () => {
+      assertActive();
+      return toolResultPolicy;
+    },
     get assertNativeSubagentSpawnAllowed() {
       return bindHarnessNativeSpawnAuthority(personalToolParticipants, assertActive);
     },

@@ -1,0 +1,53 @@
+.token-miser-accessory {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+}
+
+.token-miser-panel {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  padding: 1rem;
+  color: var(--text);
+}
+
+.token-miser-panel__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.token-miser-panel__heading h2 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+.token-miser-panel__description,
+.token-miser-panel > p {
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.token-miser-panel__metrics {
+  margin: 1rem 0;
+}
+
+.token-miser-panel__metrics > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.375rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.token-miser-panel__metrics dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}

@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { getAgentToolAssistantTurnId } from "../../packages/agent-core/src/tool-execution-context.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { getAgentToolResultOriginalCaptureBytes } from "../plugins/agent-tool-result-middleware.js";
 import { finalizeAgentToolAvailability } from "./agent-tool-availability.js";
 import type { HookContext } from "./agent-tools.before-tool-call.js";
 import { CODE_MODE_NODES_TOOL_ID, isCodeModeSwarmAvailable } from "./code-mode-bridge.js";
@@ -31,6 +32,7 @@ import { recordCodeModeToolOutcome } from "./code-mode-tool-outcome.js";
 import { isCoreCodingSurfaceToolName } from "./core-tool-factory-descriptors.js";
 import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
+import { copyInternalToolResultState } from "./runtime/internal-hooks.js";
 import { executionTitleSchema } from "./schema/typebox.js";
 import { isToolExecutionAllowed } from "./tool-policy-shared.js";
 import { resolveToolResultBudget } from "./tool-result-limits.js";
@@ -60,7 +62,11 @@ export {
 };
 export type { CodeModeFailureCode, CodeModeHeadlessResult } from "./code-mode-runtime.js";
 
-type CodeModeToolContext = ToolSearchToolContext & { modelContextWindowTokens?: number };
+type CodeModeToolContext = ToolSearchToolContext & {
+  modelContextWindowTokens?: number;
+  originalTextMaxBytes?: number;
+  originalTextCaptureRuntime?: "openclaw" | "codex" | "agentsapi";
+};
 
 const MAX_CODE_MODE_CATALOG_INDEX_CHARS = 8_000;
 
@@ -200,7 +206,10 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
     runtime: ToolSearchRuntime | undefined,
     signal?: AbortSignal,
   ) => {
-    const result = normalizeCodeModeTimeoutResult(rawResult);
+    const result = copyInternalToolResultState(
+      rawResult,
+      normalizeCodeModeTimeoutResult(rawResult),
+    );
     markCodeModePermissionChangeResult(result, signal);
     return recordCodeModeToolOutcome(
       {
@@ -259,6 +268,9 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
         assistantTurnId: getAgentToolAssistantTurnId(),
         restartSafe: ctx.forceRestartSafeTools === true || input.restartSafe,
         awaitResults: input.awaitResults,
+        originalTextMaxBytes:
+          ctx.originalTextMaxBytes ??
+          getAgentToolResultOriginalCaptureBytes(ctx.originalTextCaptureRuntime ?? "openclaw"),
         signal,
         onUpdate,
         onRuntime: (value) => {

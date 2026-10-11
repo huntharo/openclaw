@@ -1,9 +1,9 @@
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   buildAgentHookContextChannelFields,
   embeddedAgentLog,
-  formatErrorMessage,
   resolveSandboxContext,
   type AgentHarnessSideQuestionParamsV2,
   type AgentHarnessSideQuestionResult,
@@ -16,7 +16,6 @@ import {
 } from "openclaw/plugin-sdk/codex-mcp-projection";
 import { loadExecApprovals } from "openclaw/plugin-sdk/exec-approvals-runtime";
 import { registerNativeHookRelayForBundledRuntime } from "openclaw/plugin-sdk/native-hook-relay-runtime";
-import { readStringField as readString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveCodexAppServerForModelProvider } from "./app-server-policy.js";
 import { handleCodexAppServerApprovalRequest } from "./approval-bridge.js";
 import { retireUnsafeCodexTurnClientBestEffort } from "./attempt-client-cleanup.js";
@@ -81,15 +80,9 @@ import {
   assertCodexTurnStartResponse,
   readCodexDynamicToolCallParams,
 } from "./protocol-validators.js";
-import {
-  isJsonObject,
-  type CodexThreadForkParams,
-  type JsonObject,
-  type JsonValue,
-} from "./protocol.js";
+import { isJsonObject, type JsonObject, type JsonValue } from "./protocol.js";
 import { resolveCodexProviderWebSearchSupportForClient } from "./provider-capabilities.js";
 import { readRecentCodexRateLimits } from "./rate-limit-cache.js";
-import { formatCodexUsageLimitErrorMessage } from "./rate-limits.js";
 import {
   readCodexSupportedReasoningEfforts,
   resolveCodexAppServerReasoningEffort,
@@ -117,6 +110,7 @@ import {
   type CodexAppServerClientOptions,
 } from "./shared-client.js";
 import { cleanupCodexSideQuestion } from "./side-question-cleanup.js";
+import { formatCodexErrorMessage, forkCodexSideThread } from "./side-question-errors.js";
 import { SIDE_DEVELOPER_INSTRUCTIONS } from "./side-question-instructions.js";
 import {
   applySideQuestionModelSelection,
@@ -465,9 +459,19 @@ export async function runCodexAppServerSideQuestion(
     const exposedTools = tools.filter(
       (tool) => tool.name !== "web_search" && tool.name !== "computer",
     );
+    const resultPolicy = sideRunParams.hostCapabilities.toolResultPolicy?.();
     return {
       toolBridge: createCodexDynamicToolBridge({
         assertCurrent: nativeExecutionPolicy.assertCurrent,
+        resultPolicy: resultPolicy && {
+          ...resultPolicy,
+          assertCurrent: () => {
+            resultPolicy.assertCurrent?.();
+            assertCurrent();
+            nativeExecutionPolicy.assertCurrent();
+            runAbortController.signal.throwIfAborted();
+          },
+        },
         tools: exposedTools,
         signal: runAbortController.signal,
         loading: resolveCodexDynamicToolsLoading(pluginConfig),
@@ -1003,44 +1007,3 @@ export async function runCodexAppServerSideQuestion(
     });
   }
 }
-
-async function forkCodexSideThread(
-  client: CodexAppServerClient,
-  params: CodexThreadForkParams,
-  options: { timeoutMs: number; signal?: AbortSignal },
-): Promise<unknown> {
-  try {
-    return await client.request("thread/fork", params, options);
-  } catch (error) {
-    if (isMissingCodexParentThreadError(error)) {
-      throw new Error(
-        "Codex /btw needs an active Codex thread. Send a normal message first, then try /btw again.",
-        { cause: error },
-      );
-    }
-    throw error;
-  }
-}
-
-function isMissingCodexParentThreadError(error: unknown): boolean {
-  const message = formatErrorMessage(error);
-  return (
-    message.includes("no rollout found for thread id") ||
-    message.includes("includeTurns is unavailable before first user message")
-  );
-}
-
-function formatCodexErrorMessage(params: JsonObject, rateLimits: JsonValue | undefined): Error {
-  const error = isJsonObject(params.error) ? params.error : undefined;
-  const message =
-    formatCodexUsageLimitErrorMessage({
-      message: error ? readString(error, "message") : undefined,
-      codexErrorInfo: error?.codexErrorInfo,
-      rateLimits,
-    }) ??
-    (error ? (readString(error, "message") ?? readString(error, "error")) : undefined) ??
-    readString(params, "message") ??
-    "Codex /btw side thread failed.";
-  return new Error(formatErrorMessage(message));
-}
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

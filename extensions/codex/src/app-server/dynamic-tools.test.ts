@@ -21,10 +21,7 @@ import {
 } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { RemoteWorkspaceFileReader } from "openclaw/plugin-sdk/file-access-runtime";
-import {
-  initializeGlobalHookRunner,
-  resetGlobalHookRunner,
-} from "openclaw/plugin-sdk/hook-runtime";
+import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
   createEmptyPluginRegistry,
   createMockPluginRegistry,
@@ -46,9 +43,18 @@ import {
   projectCodexExecutableDynamicTools,
 } from "./dynamic-tools.js";
 import {
+  createBridgeWithToolResult,
+  createDynamicToolCall,
+  createSingleToolBridge,
+  createTool,
+  expectInputText,
+  firstInputText,
+  installResultMiddleware,
+  resetDynamicToolBridgeTestState,
+  textToolResult,
+} from "./dynamic-tools.test-support.js";
+import {
   CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
-  type CodexDynamicToolCallParams,
-  type CodexDynamicToolCallResponse,
   type CodexDynamicToolFunctionSpec,
   type CodexDynamicToolSpec,
   type JsonValue,
@@ -64,23 +70,6 @@ const REPLACEMENT_FRAME_IMAGE =
 
 // Synthetic, non-usable credential fixtures for model-visible redaction coverage.
 const SYNTHETIC_BEARER_CREDENTIAL = "bearer-model-visible-credential-1234567890";
-
-function installResultMiddleware(
-  handler: ReturnType<
-    typeof createEmptyPluginRegistry
-  >["agentToolResultMiddlewares"][number]["handler"],
-) {
-  const registry = createEmptyPluginRegistry();
-  registry.agentToolResultMiddlewares.push({
-    pluginId: "test-result",
-    pluginName: "Test result",
-    rawHandler: handler,
-    handler,
-    runtimes: ["codex"],
-    source: "test",
-  });
-  setActivePluginRegistry(registry);
-}
 
 function createScreenshotBridge() {
   const computerContextEpoch: {
@@ -125,31 +114,6 @@ function frameImageIdentity(data: string, mimeType = "image/png") {
     .digest("hex");
 }
 
-function createDynamicToolCall(
-  tool: string,
-  arguments_: JsonValue = {},
-  callId = "call-1",
-): CodexDynamicToolCallParams {
-  return {
-    threadId: "thread-1",
-    turnId: "turn-1",
-    callId,
-    namespace: null,
-    tool,
-    arguments: arguments_,
-  };
-}
-
-function createTool(overrides: Partial<AnyAgentTool>): AnyAgentTool {
-  return {
-    name: "tts",
-    description: "Convert text to speech.",
-    parameters: { type: "object", properties: {}, additionalProperties: true },
-    execute: vi.fn(),
-    ...overrides,
-  } as unknown as AnyAgentTool;
-}
-
 function mediaResult(mediaUrl: string, audioAsVoice?: boolean): AgentToolResult<unknown> {
   return {
     content: [{ type: "text", text: "Generated media reply." }],
@@ -160,47 +124,6 @@ function mediaResult(mediaUrl: string, audioAsVoice?: boolean): AgentToolResult<
       },
     },
   };
-}
-
-function textToolResult(text: string, details: unknown = {}): AgentToolResult<unknown> {
-  return { content: [{ type: "text", text }], details };
-}
-
-function createSingleToolBridge(
-  tool: AnyAgentTool,
-  options: Omit<Parameters<typeof createCodexDynamicToolBridge>[0], "tools" | "signal"> = {},
-) {
-  return createCodexDynamicToolBridge({
-    tools: [tool],
-    signal: new AbortController().signal,
-    ...options,
-  });
-}
-
-function createBridgeWithToolResult(
-  toolName: string,
-  toolResult: AgentToolResult<unknown>,
-  hookContext?: Parameters<typeof createCodexDynamicToolBridge>[0]["hookContext"],
-) {
-  return createSingleToolBridge(
-    createTool({ name: toolName, execute: vi.fn(async () => toolResult) }),
-    { hookContext },
-  );
-}
-
-function firstInputText(response: CodexDynamicToolCallResponse) {
-  const firstItem = response.contentItems[0];
-  if (firstItem?.type !== "inputText" || typeof firstItem.text !== "string") {
-    throw new Error("expected inputText tool result");
-  }
-  return firstItem.text;
-}
-
-function expectInputText(response: CodexDynamicToolCallResponse, text: string, success = true) {
-  expect(toCodexDynamicToolProtocolResponse(response)).toEqual({
-    success,
-    contentItems: [{ type: "inputText", text }],
-  });
 }
 
 const requireRecord = createRequireRecord("object", "expected-label");
@@ -313,10 +236,7 @@ function expectSchemaRejection(
   });
 }
 
-afterEach(() => {
-  resetGlobalHookRunner();
-  setActivePluginRegistry(createEmptyPluginRegistry());
-});
+afterEach(resetDynamicToolBridgeTestState);
 
 describe("createCodexDynamicToolBridge", () => {
   it.each([

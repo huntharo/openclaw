@@ -223,6 +223,7 @@ export type {
   AgentToolResultMiddlewareContext,
   AgentToolResultMiddlewareEvent,
   AgentToolResultMiddlewareOptions,
+  AgentToolResultMiddlewareProjection,
   AgentToolResultMiddlewareResult,
   AgentToolResultMiddlewareRuntime,
   OpenClawAgentToolResult,

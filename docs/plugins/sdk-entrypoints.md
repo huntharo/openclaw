@@ -71,6 +71,14 @@ and export `codeModeExecutor` from the plugin's top-level `code-mode-executor-ap
 artifact. The host resolves this artifact only when QuickJS is selected;
 ordinary plugin registration remains lightweight.
 
+`resolveCodeModeOriginalCaptureBytes(requested, config)` bounds an optional
+host-prepared original text capture hint by the requested cap, 32 MiB, and the
+executor's memory and snapshot limits in bytes. Pass the resulting cap to the
+shared `captureCodeModeOutput` and `captureCodeModeValue` owners on execution
+and resume. This private worker hint is not a guest tool argument and does not
+change guest output budgets. Executors that omit the hint keep ordinary bounded
+capture; they cannot advertise complete pre-truncation originals.
+
 Selected bundled executors preserve core runtime availability despite global
 plugin disablement or a restrictive allowlist. Explicit owner denies and
 disabled entries still apply. External executors retain the full plugin policy.

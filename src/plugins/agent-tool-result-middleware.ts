@@ -24,6 +24,38 @@ const AGENT_TOOL_RESULT_MIDDLEWARE_RUNTIME_SET = new Set<string>(
   AGENT_TOOL_RESULT_MIDDLEWARE_RUNTIMES,
 );
 
+export function normalizeAgentToolResultMiddlewareBehavior(
+  options?: AgentToolResultMiddlewareOptions,
+  existingHandler?: AgentToolResultMiddleware,
+): Readonly<{
+  failureMode: "error" | "passthrough";
+  originalTextMaxBytes?: number;
+}> {
+  const failureMode = options?.failureMode ?? "error";
+  if (failureMode !== "error" && failureMode !== "passthrough") {
+    throw new TypeError("Unknown tool-result middleware failure mode");
+  }
+  const originalTextMaxBytes = options?.originalTextMaxBytes;
+  if (
+    originalTextMaxBytes !== undefined &&
+    (!Number.isSafeInteger(originalTextMaxBytes) ||
+      originalTextMaxBytes < 1024 ||
+      originalTextMaxBytes > 32 * 1024 * 1024)
+  ) {
+    throw new TypeError("originalTextMaxBytes must be 1024–33554432 bytes");
+  }
+  if (
+    existingHandler &&
+    (existingHandler.originalTextMaxBytes !== originalTextMaxBytes ||
+      (existingHandler.failureMode ?? "error") !== failureMode)
+  ) {
+    throw new TypeError(
+      "Repeated middleware registration must use the same original capture cap and failure mode",
+    );
+  }
+  return Object.freeze({ failureMode, originalTextMaxBytes });
+}
+
 function normalizeAgentToolResultMiddlewareRuntime(
   runtime: string,
 ): AgentToolResultMiddlewareRuntime | undefined {
@@ -120,5 +152,15 @@ export function listAgentToolResultMiddlewares(
     getActivePluginRegistry()
       ?.agentToolResultMiddlewares?.filter((entry) => entry.runtimes.includes(runtime))
       .map((entry) => entry.handler) ?? []
+  );
+}
+
+/** Producer capture is admitted only by a currently registered runtime consumer. */
+export function getAgentToolResultOriginalCaptureBytes(
+  runtime: AgentToolResultMiddlewareRuntime,
+): number {
+  return Math.max(
+    0,
+    ...listAgentToolResultMiddlewares(runtime).map((handler) => handler.originalTextMaxBytes ?? 0),
   );
 }

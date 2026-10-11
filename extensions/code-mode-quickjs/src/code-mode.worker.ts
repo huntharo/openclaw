@@ -4,6 +4,7 @@ import {
   boundCodeModeError,
   captureCodeModeOutput,
   captureCodeModeValue,
+  resolveCodeModeOriginalCaptureBytes,
   EMPTY_CODE_MODE_OUTPUT,
   buildUserSource,
   SOURCE_LOCATION_KEY,
@@ -20,7 +21,6 @@ import {
   type CodeModeWorkerThreadResult as SharedWorkerThreadResult,
   type PendingBridgeRequest,
   type SettledBridgeRequest,
-  type SourceLocation,
 } from "openclaw/plugin-sdk/code-mode-executor-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { serveWorkerTasks, type WorkerTaskChannel } from "openclaw/plugin-sdk/worker-task-server";
@@ -32,7 +32,7 @@ import {
   type JSValueHandle,
   type Snapshot,
 } from "quickjs-wasi";
-import { readSourceLocation } from "./source-location.js";
+import { errorMessage, formatQuickJsError, readSourceLocation } from "./source-location.js";
 
 type CodeModeWorkerPayload = SharedWorkerPayload<Snapshot> & {
   wasmModule: WebAssembly.Module;
@@ -76,35 +76,6 @@ type BridgeState = {
   admissionFailure?: CodeModeWorkerFailure;
   networkContentObserved?: true;
 };
-
-// QuickJS error stacks are backtrace frames only ("    at file:line:col"), with
-// no leading "Name: message" header like V8. Returning .stack alone therefore
-// dropped the actual cause, surfacing failures to the model as a bare location
-// (e.g. "at openclaw-code-mode:user.js:2:37"). Lead with name+message so the
-// model can self-correct, and keep the frames for location.
-function formatQuickJsError(
-  name: string,
-  message: string,
-  stack: string | undefined,
-  location?: SourceLocation,
-): string {
-  const header = message ? `${name}: ${message}` : name;
-  const sourceStack = normalizeSourceStack(stack, location);
-  if (!sourceStack || sourceStack.split(/\r?\n/, 1)[0] === header) {
-    return header;
-  }
-  return `${header}\n${sourceStack}`;
-}
-
-function errorMessage(error: unknown, location?: SourceLocation): string {
-  if (error instanceof JSException) {
-    return formatQuickJsError(error.name, error.message, error.stack, location);
-  }
-  if (error instanceof Error) {
-    return error.message || String(error);
-  }
-  return String(error);
-}
 
 function trackPromiseRejection(
   promise: JSValueHandle,
@@ -329,8 +300,9 @@ function captureWorkerResult(
   result: CodeModeWorkerResult,
   config: CodeModeConfig,
   retainFinalValue = false,
+  originalTextMaxBytes = 0,
 ): CodeModeWorkerThreadResult {
-  const output = captureCodeModeOutput(result.output, config.maxOutputBytes);
+  const output = captureCodeModeOutput(result.output, config.maxOutputBytes, originalTextMaxBytes);
   if (result.status === "completed") {
     return {
       ...result,
@@ -341,6 +313,7 @@ function captureWorkerResult(
         retainFinalValue
           ? Math.min(config.memoryLimitBytes, config.maxSnapshotBytes)
           : config.maxOutputBytes,
+        originalTextMaxBytes,
       ),
     };
   }
@@ -468,6 +441,7 @@ async function runVmExecution(params: {
   setBudget: (timeoutMs: number) => void;
   pauseBudget: () => void;
   channel?: WorkerTaskChannel;
+  originalTextMaxBytes?: number;
 }): Promise<CodeModeWorkerResult> {
   let output: unknown[] = [];
   let prepare = params.prepare;
@@ -522,7 +496,11 @@ async function runVmExecution(params: {
               pendingRequests: params.bridge.pendingRequests,
               canceledRequestIds: params.bridge.canceledRequestIds,
               settlementMode,
-              output: captureCodeModeOutput(output, params.config.maxOutputBytes),
+              output: captureCodeModeOutput(
+                output,
+                params.config.maxOutputBytes,
+                params.originalTextMaxBytes,
+              ),
               memoryUsedBytes: params.vm.getMemoryUsage().memoryUsedSize,
             });
             // Output already crossed to the owner. Do not emit it again on parking/failure.
@@ -639,6 +617,7 @@ async function run(
     bridge,
     config,
     maxTimeoutMs: input.config.timeoutMs,
+    originalTextMaxBytes: resolveCodeModeOriginalCaptureBytes(input.originalTextMaxBytes, config),
     prepare: () => {
       if (input.kind === "exec") {
         const program = buildUserSource(source, input.prelude);
@@ -688,6 +667,10 @@ async function main(
   }
   // SAFETY: The private executor sends core-normalized limits through structured clone.
   const config = input.config as CodeModeConfig;
+  const originalTextMaxBytes = resolveCodeModeOriginalCaptureBytes(
+    typeof input.originalTextMaxBytes === "number" ? input.originalTextMaxBytes : undefined,
+    config,
+  );
   try {
     if (config.timeoutMs <= 0) {
       throw new CodeModeWorkerFailure("timeout", "code mode timeout exceeded");
@@ -703,6 +686,7 @@ async function main(
         executionTimeoutMs:
           typeof input.executionTimeoutMs === "number" ? input.executionTimeoutMs : undefined,
         config,
+        originalTextMaxBytes,
         catalog: Array.isArray(input.catalog) ? input.catalog : [],
         apiFiles: Array.isArray(input.apiFiles)
           ? (input.apiFiles as CodeModeApiVirtualFile[]) // SAFETY: Only host-prepared declaration files enter this channel.
@@ -727,6 +711,7 @@ async function main(
         wasmExtensions: input.wasmExtensions,
         continuation: snapshot,
         config,
+        originalTextMaxBytes,
         settledRequests: Array.isArray(input.settledRequests)
           ? (input.settledRequests as SettledBridgeRequest[]) // SAFETY: The core broker constructs envelopes around guest JSON.
           : [],
@@ -739,6 +724,7 @@ async function main(
       await run(payload, channel),
       config,
       input.retainFinalValue === true,
+      originalTextMaxBytes,
     );
   } catch (error) {
     const timedOut = isQuickJsInterruptedError(error);

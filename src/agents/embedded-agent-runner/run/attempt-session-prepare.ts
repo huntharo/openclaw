@@ -26,6 +26,7 @@ import { toToolDefinitions } from "../../agent-tool-definition-adapter.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { resolveUserTimezone } from "../../date-time.js";
 import { bootstrapHarnessContextEngine } from "../../harness/context-engine-lifecycle.js";
+import { captureEmbeddedToolResultAssertion } from "../../harness/tool-result-policy.js";
 import { relocateCurrentRuntimeContextCarrierToTail } from "../../internal-runtime-context.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
@@ -131,6 +132,11 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   });
 
   // These factories carry compaction/pruning runtime state into the resource loader.
+  const assertMiddlewareCurrent = captureEmbeddedToolResultAssertion({
+    admittedRunContext: attempt.admittedRunContext,
+    signal: input.runAbortSignal,
+    readTarget: () => input.sessionManager.getSessionTarget(),
+  });
   const extensionFactories = buildEmbeddedExtensionFactories({
     cfg: attempt.config,
     sessionManager: input.sessionManager,
@@ -140,6 +146,14 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     sessionId: attempt.sessionId,
     sessionKey: attempt.sessionKey ?? attempt.sandboxSessionKey,
     runId: attempt.runId,
+    toolNames: () =>
+      input.clientToolPreparation.toolSearchCatalogRef?.current?.entries.map(
+        (entry) => entry.name,
+      ) ?? [],
+    task: attempt.prompt,
+    signal: input.runAbortSignal,
+    detached: attempt.sessionPersistence === "detached",
+    assertCurrent: assertMiddlewareCurrent,
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.effectiveCwd,

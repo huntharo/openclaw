@@ -19,6 +19,7 @@ export {
   boundCodeModeError,
   captureCodeModeOutput,
   captureCodeModeValue,
+  resolveCodeModeOriginalCaptureBytes,
   EMPTY_CODE_MODE_OUTPUT,
 } from "../agents/code-mode-json.js";
 export type { CodeModeOutputSource } from "../agents/code-mode-json.js";

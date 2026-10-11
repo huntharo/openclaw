@@ -122,6 +122,9 @@ function fixture(scopes = ["operator.write"], creator = "someone-else") {
     setVisibility(visibility: SessionEntry["visibility"]) {
       entry = { ...entry, updatedAt: 2, visibility };
     },
+    setSessionId(sessionId: string) {
+      entry = { ...entry, updatedAt: 2, sessionId };
+    },
     prepare: async () =>
       hold(
         (
@@ -145,9 +148,9 @@ function dispatchSession(
       Parameters<typeof handleGatewayRequest>[0],
       "respond" | "sessionMutationCommitGuard" | "expectedProfileBinding"
     >
-  > & { allowOwnSessionScope?: boolean } = {},
+  > & { allowOwnSessionScope?: boolean; mode?: "read" | "write" } = {},
 ) {
-  const { allowOwnSessionScope, ...request } = options;
+  const { allowOwnSessionScope, mode = "write", ...request } = options;
   const method = "fixture.session.open";
   return handleGatewayRequest({
     req: { type: "req", id: "session-access", method, params: { sessionKey: key } },
@@ -159,8 +162,11 @@ function dispatchSession(
         pluginId: "fixture",
         name: method,
         handler,
-        scope: "operator.write",
-        sessionAccess: { mode: "write", requiredTool: "browser", allowOwnSessionScope },
+        scope: mode === "read" ? "operator.read" : "operator.write",
+        sessionAccess:
+          mode === "read"
+            ? { mode, requiredTool: "browser" }
+            : { mode, requiredTool: "browser", allowOwnSessionScope },
       }),
     ]),
     isWebchatConnect: () => false,
@@ -214,6 +220,87 @@ afterEach(() => {
 });
 
 describe("session resource admission", () => {
+  it.each([
+    { scopes: ["operator.read"], creator: "someone-else", visibility: "shared", allowed: true },
+    { scopes: ["operator.read"], creator: "someone-else", visibility: "draft", allowed: false },
+    { scopes: ["operator.read"], creator: "former-alice", visibility: "draft", allowed: true },
+    { scopes: ["operator.sessions.read"], creator: "alice", visibility: "shared", allowed: false },
+  ] as const)(
+    "read resources preserve canonical visibility for $creator/$visibility/$scopes",
+    async ({ scopes, creator, visibility, allowed }) => {
+      const test = fixture([...scopes], creator);
+      test.setVisibility(visibility);
+      const handler = vi.fn<GatewayRequestHandler>(({ sessionAccessAuthority, respond }) => {
+        expectDefined(sessionAccessAuthority, "read resource authority").assertCurrent();
+        respond(true, { bytes: 17 });
+      });
+      const respond = vi.fn();
+      await dispatchSession(test, handler, { mode: "read", respond });
+      expect(handler).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      expect(respond.mock.calls[0]?.[0]).toBe(allowed);
+      if (!allowed && scopes[0] === "operator.read") {
+        expect(respond.mock.calls[0]?.[2]?.message).toContain("was not found");
+      }
+    },
+  );
+
+  it.each(["profile", "scope", "visibility", "reset", "tool"] as const)(
+    "fences successful read delivery after an awaited %s change even without a handler check",
+    async (change) => {
+      const test = fixture(["operator.read"]);
+      const entered = createDeferredCore();
+      const resume = createDeferredCore();
+      const respond = vi.fn();
+      const handler: GatewayRequestHandler = async ({ respond: reply }) => {
+        entered.resolve();
+        await resume.promise;
+        reply(true, { privateOriginal: "must not be delivered" });
+      };
+      const pending = dispatchSession(test, handler, { mode: "read", respond });
+      const failure = pending.catch((error: unknown) => error);
+      try {
+        await Promise.race([entered.promise, pending]);
+        if (change === "profile") {
+          mocks.profileCurrent = false;
+        } else if (change === "scope") {
+          test.client.connect.scopes = [];
+        } else if (change === "tool") {
+          mocks.toolAllowed = false;
+        } else if (change === "reset") {
+          test.setSessionId("session-2");
+        } else {
+          test.setVisibility("draft");
+          sessionChanges.emit({ agentId: "main", sessionKey: key });
+        }
+        resume.resolve();
+        await failure;
+        expect(respond.mock.calls.some(([ok]) => ok === true)).toBe(false);
+      } finally {
+        resume.resolve();
+        await failure;
+      }
+    },
+  );
+
+  it("keeps handler errors usable after read authority expires", async () => {
+    const test = fixture(["operator.read"]);
+    const respond = vi.fn();
+    await dispatchSession(
+      test,
+      async ({ respond: reply }) => {
+        await Promise.resolve();
+        mocks.profileCurrent = false;
+        reply(false, undefined, { code: "UNAVAILABLE", message: "original is unavailable" });
+      },
+      { mode: "read", respond },
+    );
+    expect(respond.mock.calls[0]).toEqual([
+      false,
+      undefined,
+      { code: "UNAVAILABLE", message: "original is unavailable" },
+    ]);
+  });
+
   it.each(["grant", "profile", "scope"] as const)(
     "refuses a replaced original %s during canonical profile preparation before route effects",
     async (change) => {

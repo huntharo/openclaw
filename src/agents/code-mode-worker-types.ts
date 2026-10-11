@@ -67,6 +67,8 @@ type CodeModeWorkerInput<State> =
 export type CodeModeWorkerPayload<State> = CodeModeWorkerInput<State> & {
   /** Only interactive, non-replay cells can hand full final JSON to the run store. */
   retainFinalValue?: boolean;
+  /** Admitted middleware capture allowance, independent of guest/model output budgets. */
+  originalTextMaxBytes?: number;
 };
 
 export type CodeModeSettlementMode =

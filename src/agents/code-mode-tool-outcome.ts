@@ -1,3 +1,4 @@
+import { copyInternalToolResultState } from "./runtime/internal-hooks.js";
 import { digestToolOutcome } from "./tool-loop-outcome-hash.js";
 
 // Retained receipts need only their digest, never a second copy of the guest payload.
@@ -14,6 +15,7 @@ export function recordCodeModeToolOutcome<T extends object>(
   payload: Record<string, unknown>,
   pending?: readonly PendingOperation[],
 ): T {
+  copyInternalToolResultState(payload, result);
   const retained = outcomes.get(payload);
   if (retained !== undefined) {
     outcomes.set(result, retained);

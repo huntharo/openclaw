@@ -1,0 +1,32 @@
+{
+  "name": "@openclaw/token-miser",
+  "version": "2026.9.7",
+  "private": true,
+  "description": "OpenClaw Token Miser tool output retention and helper-model reduction plugin",
+  "type": "module",
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*",
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.9.7"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "controlUi": "./browser/index.ts",
+    "assetScripts": {
+      "build": "cd ../.. && node --import ./scripts/tsx.mjs scripts/build-plugin-control-ui.mts extensions/token-miser",
+      "copy": "cd ../.. && node --import ./scripts/tsx.mjs scripts/build-plugin-control-ui.mts extensions/token-miser --copy",
+      "buildOutputs": ["openclaw.plugin.json"]
+    },
+    "build": {
+      "bundledDist": true,
+      "openclawVersion": "2026.9.7"
+    }
+  }
+}

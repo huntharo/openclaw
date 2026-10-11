@@ -231,6 +231,11 @@ export async function buildAgentsApiToolSurface(
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     runId: params.runId,
+    ...params.hostCapabilities.toolResultPolicy?.(),
+    assertCurrent,
+    signal,
+    resultVisibility: "model",
+    toolNames: entries.map((entry) => entry.tool.name),
   });
   const delivery: ToolDelivery = {
     didSendViaMessagingTool: false,
@@ -382,6 +387,7 @@ export async function buildAgentsApiToolSurface(
         replyToMode: params.replyToMode,
         hasRepliedRef: params.hasRepliedRef ? { value: params.hasRepliedRef.value } : undefined,
       };
+      let selectedText: string | undefined;
       const { transcriptResult, ...nativeResult } = await runAgentHarnessToolInvocation<
         AgentsApiFunctionResult & {
           transcriptResult: Awaited<ReturnType<AnyAgentTool["execute"]>>;
@@ -434,7 +440,19 @@ export async function buildAgentsApiToolSurface(
                 }
               }
             : undefined,
-        applyMiddleware: (event) => middleware.applyToolResultMiddleware(event),
+        applyMiddleware: (event) =>
+          middleware.applyToolResultMiddleware(
+            event,
+            undefined,
+            (result) => {
+              selectedText = serializeToolText(result.content, maxChars);
+              return { ...result, content: [{ type: "text", text: selectedText }] };
+            },
+            (result) => {
+              selectedText = undefined;
+              return result;
+            },
+          ),
         onExecutionResult: entry
           ? (execution) => {
               executionBoundary = execution.boundary;
@@ -495,7 +513,7 @@ export async function buildAgentsApiToolSurface(
           assertCurrent();
           signal.throwIfAborted();
           dispatchAfterHook(presented);
-          const text = serializeToolText(presented.content, maxChars);
+          const text = selectedText ?? serializeToolText(presented.content, maxChars);
           return {
             transcriptResult: observed,
             ...(isError

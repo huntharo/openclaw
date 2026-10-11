@@ -5,6 +5,7 @@ import { registerListener } from "../../../shared/listeners.js";
 import { rethrowIncognitoSessionError } from "../../../state/incognito-session-error.js";
 import { interactiveAgentTheme as theme } from "../../modes/interactive/theme/theme.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import { copyInternalToolResultState } from "../../runtime/internal-hooks.js";
 import { isToolResultError } from "../../tool-result-error.js";
 import type { ResourceDiagnostic } from "../diagnostics.js";
 import type { KeybindingsConfig } from "../keybindings.js";
@@ -12,6 +13,7 @@ import type { ModelRegistry } from "../model-registry.js";
 import { SessionMetadataCommittedError } from "../session-manager-metadata-error.js";
 import type { SessionManager } from "../session-manager.js";
 import type { BuildSystemPromptOptions } from "../system-prompt-metadata.js";
+import { buildBuiltinKeybindings } from "./keybinding-conflicts.js";
 import {
   bindExtensionMetadataActions,
   bindExtensionPersistenceActions,
@@ -63,57 +65,7 @@ import type {
   UserBashEventResult,
 } from "./types.js";
 
-// Extension shortcuts compete with canonical keybinding ids from keybindings.json.
-// Only editor-global shortcuts are reserved here. Picker-specific bindings are not.
-const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
-  "app.interrupt",
-  "app.clear",
-  "app.exit",
-  "app.suspend",
-  "app.thinking.cycle",
-  "app.model.cycleForward",
-  "app.model.cycleBackward",
-  "app.model.select",
-  "app.tools.expand",
-  "app.thinking.toggle",
-  "app.editor.external",
-  "app.message.followUp",
-  "tui.input.submit",
-  "tui.select.confirm",
-  "tui.select.cancel",
-  "tui.input.copy",
-  "tui.editor.deleteToLineEnd",
-] as const;
-
-type BuiltInKeyBindings = Partial<Record<KeyId, { keybinding: string; restrictOverride: boolean }>>;
-
-const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltInKeyBindings => {
-  const builtinKeybindings: BuiltInKeyBindings = {};
-  for (const [keybinding, keys] of Object.entries(resolvedKeybindings)) {
-    if (keys === undefined) {
-      continue;
-    }
-    const keyList = Array.isArray(keys) ? keys : [keys];
-    const restrictOverride = (
-      RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS as readonly string[]
-    ).includes(keybinding);
-    for (const key of keyList) {
-      const normalizedKey = key.toLowerCase() as KeyId;
-      // If multiple actions bind the same key, the reserved action wins so extensions
-      // remain blocked by reserved shortcuts regardless of iteration order.
-      const existing = builtinKeybindings[normalizedKey];
-      if (existing?.restrictOverride && !restrictOverride) {
-        continue;
-      }
-      builtinKeybindings[normalizedKey] = {
-        keybinding,
-        restrictOverride,
-      };
-    }
-  }
-  return builtinKeybindings;
-};
-
+/** Combined result from all before_agent_start handlers */
 interface BeforeAgentStartCombinedResult {
   messages?: NonNullable<BeforeAgentStartEventResult["message"]>[];
   systemPrompt?: string;
@@ -657,7 +609,7 @@ export class ExtensionRunner {
   }
 
   async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
-    const currentEvent: ToolResultEvent = { ...event };
+    const currentEvent: ToolResultEvent = copyInternalToolResultState(event, { ...event });
     let modified = false;
 
     await this.dispatchHandlers("tool_result", async (handler, ctx) => {
