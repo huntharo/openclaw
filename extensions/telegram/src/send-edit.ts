@@ -12,6 +12,8 @@ import {
 } from "./network-errors.js";
 import {
   recordOutboundMessageForPromptContext,
+  recordTelegramAcknowledgedMessageEdit,
+  getTelegramObservedMessageCache,
   type TelegramOutboundPromptContextMessage,
 } from "./outbound-message-context.js";
 import {
@@ -33,7 +35,9 @@ import { resolveTelegramBotUserIdFromToken } from "./token-fingerprint.js";
 type TelegramEditMessageTextParams = Parameters<TelegramApiContext["api"]["editMessageText"]>[3];
 
 type TelegramEditReplyMarkupOpts = TelegramApiCallOpts &
-  Pick<TelegramSendOpts, "buttons" | "signal" | "assertPlatformSendAuthorized">;
+  Pick<TelegramSendOpts, "buttons" | "signal" | "assertPlatformSendAuthorized"> & {
+    businessConnectionId?: string;
+  };
 
 type TelegramEditOpts = TelegramEditReplyMarkupOpts &
   Pick<TelegramSendOpts, "textMode"> & {
@@ -55,11 +59,18 @@ export async function editMessageReplyMarkupTelegram(
     chatIdInput,
     messageIdInput,
     opts,
-    async ({ api, chatId, messageId, request }) => {
+    async ({ cfg, account, api, chatId, messageId, request }) => {
       const replyMarkup = buildInlineKeyboard(buttons) ?? { inline_keyboard: [] };
+      let editedMessage: Message | true = true;
       try {
-        await request(
-          () => api.editMessageReplyMarkup(chatId, messageId, { reply_markup: replyMarkup }),
+        editedMessage = await request(
+          () =>
+            api.editMessageReplyMarkup(chatId, messageId, {
+              reply_markup: replyMarkup,
+              ...(opts.businessConnectionId
+                ? { business_connection_id: opts.businessConnectionId }
+                : {}),
+            }),
           "editMessageReplyMarkup",
           {
             shouldLog: (err) => !isTelegramMessageNotModifiedError(err),
@@ -70,6 +81,14 @@ export async function editMessageReplyMarkupTelegram(
           throw err;
         }
       }
+      await recordTelegramAcknowledgedMessageEdit({
+        cfg,
+        accountId: account.accountId,
+        chatId,
+        messageId,
+        result: editedMessage,
+        businessConnectionId: opts.businessConnectionId,
+      });
       logVerbose(`[telegram] Edited reply markup for message ${messageId} in chat ${chatId}`);
       return { ok: true, messageId: String(messageId), chatId };
     },
@@ -114,7 +133,11 @@ export async function editMessageTelegram(
           : (buildInlineKeyboard(opts.buttons) ?? { inline_keyboard: [] });
       const replyMarkupParams = replyMarkup === undefined ? {} : { reply_markup: replyMarkup };
 
+      const businessParams = opts.businessConnectionId
+        ? { business_connection_id: opts.businessConnectionId }
+        : {};
       const commonTextParams: TelegramEditMessageTextParams = {
+        ...businessParams,
         ...(linkPreviewEnabled ? {} : { link_preview_options: { is_disabled: true } }),
         ...replyMarkupParams,
       };
@@ -187,6 +210,7 @@ export async function editMessageTelegram(
               caption,
               ...(html ? { parse_mode: "HTML" as const } : {}),
               ...replyMarkupParams,
+              ...businessParams,
             }),
           label,
         );
@@ -218,6 +242,17 @@ export async function editMessageTelegram(
         }
       }
 
+      if (!editedMessage || editedMessage === true) {
+        getTelegramObservedMessageCache({
+          cfg,
+          accountId: account.accountId,
+        }).invalidateObservedMessageCaptures({
+          accountId: account.accountId,
+          chatId,
+          messageId: String(messageId),
+          businessConnectionId: opts.businessConnectionId,
+        });
+      }
       if (editedMessage && editedMessage !== true && typeof editedMessage.message_id === "number") {
         const botUserId = resolveTelegramBotUserIdFromToken(opts.token || account.token);
         const successfulSendThread = resolveTelegramMessageThreadSpec(editedMessage as Message);

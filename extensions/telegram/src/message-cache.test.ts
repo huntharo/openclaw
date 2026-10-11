@@ -8,13 +8,14 @@ import {
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildTelegramReplyChain } from "./message-cache-context.js";
 import {
   resolveTelegramMessageCachePersistentScopeKey,
   type PersistedTelegramMessageCacheValue,
   TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_MESSAGES,
   TELEGRAM_MESSAGE_CACHE_PERSISTENT_NAMESPACE,
 } from "./message-cache-persistence.js";
-import { buildTelegramReplyChain, createTelegramMessageCache } from "./message-cache.js";
+import { createTelegramMessageCache } from "./message-cache.js";
 import { setTelegramRuntime } from "./runtime.js";
 import {
   clearTelegramRuntimeForTest,

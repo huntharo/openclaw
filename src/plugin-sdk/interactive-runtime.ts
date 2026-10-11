@@ -47,6 +47,16 @@ export type {
 } from "../interactive/payload.js";
 export type { ModelPickerCapabilityProfile } from "../model-picker/capabilities.js";
 export {
+  buildModelPickerPresentation,
+  createModelPickerCapabilityProfile,
+  resolveModelPickerAction,
+} from "../model-picker/menu.js";
+export type {
+  ModelPickerActionResolution,
+  ModelPickerCatalog,
+  ModelPickerMenuParams,
+} from "../model-picker/menu.js";
+export {
   hasInteractiveReplyBlocks,
   hasLegacyInteractiveReplyBlocks,
   hasMessagePresentationBlocks,

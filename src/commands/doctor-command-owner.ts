@@ -17,7 +17,7 @@ import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js"
 export function createCommandOwnerChannelResolver(cfg: OpenClawConfig) {
   let plugins: ReturnType<typeof resolveReadOnlyChannelPluginsForConfig>["plugins"] | undefined;
   return (channel: string) => {
-    const loaded = resolveChannelPluginRegistration(channel, { loadedOnly: true })?.plugin;
+    const loaded = resolveChannelPluginRegistration(channel)?.plugin;
     if (loaded) {
       return loaded;
     }

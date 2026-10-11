@@ -1,18 +1,9 @@
 // Covers channel-configured checks from bootstrap and plugin metadata.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { isChannelConfigured } from "./channel-configured.js";
-
-const bundledPlugins = vi.hoisted(() => ({
-  getBundledChannelPlugin: vi.fn<() => ChannelPlugin | undefined>(),
-  getBundledChannelSetupPlugin: vi.fn<() => ChannelPlugin | undefined>(),
-}));
-
-vi.mock("../channels/plugins/bundled.js", () => ({
-  ...bundledPlugins,
-  getBundledChannelSecrets: () => undefined,
-  getBundledChannelSetupSecrets: () => undefined,
-}));
 
 function configuredStatePlugin(
   id: string,
@@ -27,11 +18,6 @@ function configuredStatePlugin(
 }
 
 describe("isChannelConfigured", () => {
-  beforeEach(() => {
-    bundledPlugins.getBundledChannelPlugin.mockReset();
-    bundledPlugins.getBundledChannelSetupPlugin.mockReset();
-  });
-
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -132,41 +118,49 @@ describe("isChannelConfigured", () => {
     const hasConfiguredState = vi.fn(() => {
       throw new Error("operational credential storage must not be read during bootstrap");
     });
-    bundledPlugins.getBundledChannelPlugin.mockReturnValue(
-      configuredStatePlugin("matrix", () => false),
-    );
-    bundledPlugins.getBundledChannelSetupPlugin.mockReturnValue(
-      configuredStatePlugin("matrix", hasConfiguredState),
-    );
-
-    expect(
-      isChannelConfigured({}, "matrix", { OPENCLAW_STATE_DIR: "state-with-matrix-creds" }),
-    ).toBe(false);
-    expect(isChannelConfigured({}, "matrix", { MATRIX_ACCESS_TOKEN: "fixture-token" })).toBe(true);
-    expect(
-      isChannelConfigured(
-        { channels: { matrix: { homeserver: "https://configured.matrix.example" } } },
-        "matrix",
-        {},
-      ),
-    ).toBe(true);
-    expect(hasConfiguredState).not.toHaveBeenCalled();
+    const registry = createTestRegistry([
+      {
+        pluginId: "matrix",
+        source: "setup",
+        plugin: configuredStatePlugin("matrix", hasConfiguredState),
+      },
+    ]);
+    withPluginRuntimeRegistryScope(registry, () => {
+      expect(
+        isChannelConfigured({}, "matrix", { OPENCLAW_STATE_DIR: "state-with-matrix-creds" }),
+      ).toBe(false);
+      expect(isChannelConfigured({}, "matrix", { MATRIX_ACCESS_TOKEN: "fixture-token" })).toBe(
+        true,
+      );
+      expect(
+        isChannelConfigured(
+          { channels: { matrix: { homeserver: "https://configured.matrix.example" } } },
+          "matrix",
+          {},
+        ),
+      ).toBe(true);
+      expect(hasConfiguredState).not.toHaveBeenCalled();
+    });
   });
 
-  it("retains setup bootstrap hooks when no configured-state metadata is declared", () => {
+  it("retains already-admitted legacy hooks when no configured-state metadata is declared", () => {
     const hasConfiguredState = vi.fn(
       ({ env }: { env?: NodeJS.ProcessEnv }) => env?.FIXTURE_TOKEN === "configured",
     );
-    bundledPlugins.getBundledChannelPlugin.mockReturnValue(
-      configuredStatePlugin("fixture", () => false),
-    );
-    bundledPlugins.getBundledChannelSetupPlugin.mockReturnValue(
-      configuredStatePlugin("fixture", hasConfiguredState),
-    );
+    const registry = createTestRegistry([
+      {
+        pluginId: "fixture",
+        source: "setup",
+        plugin: configuredStatePlugin("fixture", hasConfiguredState),
+      },
+    ]);
     const env = { FIXTURE_TOKEN: "configured" };
 
-    expect(isChannelConfigured({}, "fixture", env)).toBe(true);
-    expect(hasConfiguredState).toHaveBeenCalledWith({ cfg: {}, env });
-    expect(isChannelConfigured({}, "fixture", {})).toBe(false);
+    withPluginRuntimeRegistryScope(registry, () => {
+      expect(isChannelConfigured({}, "fixture", env)).toBe(true);
+      expect(hasConfiguredState).toHaveBeenCalledWith({ cfg: {}, env });
+      expect(isChannelConfigured({}, "fixture", {})).toBe(false);
+    });
+    expect(isChannelConfigured({}, "fixture", env)).toBe(false);
   });
 });

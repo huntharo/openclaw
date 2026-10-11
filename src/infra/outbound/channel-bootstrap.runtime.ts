@@ -10,7 +10,7 @@ import { resolveStateDir } from "../../config/state-dir.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withActivatedPluginIds } from "../../plugins/activation-context.js";
 import { prepareBundledDiscoveryMode } from "../../plugins/bundled-discovery-state.js";
-import { resolveDiscoverableScopedChannelPluginIds } from "../../plugins/channel-plugin-ids.js";
+import { resolveConfiguredChannelPluginIds } from "../../plugins/channel-plugin-ids.js";
 import { preparePersistedInstalledPluginIndexCacheEntry } from "../../plugins/installed-plugin-index-record-state.js";
 import { loadPluginRegistryHandle } from "../../plugins/loader.js";
 import { getPluginCache, withPluginCache } from "../../plugins/plugin-cache.js";
@@ -83,13 +83,16 @@ function loadBootstrapPlan(
     : agentId === undefined
       ? undefined
       : resolveAgentWorkspaceDir(cfg, agentId);
-  const pluginIds = resolveDiscoverableScopedChannelPluginIds({
+  const pluginIds = resolveConfiguredChannelPluginIds({
     config: autoEnabled.config,
     activationSourceConfig: cfg,
     channelIds: [channel],
     workspaceDir,
     env: env ?? process.env,
   });
+  if (pluginIds.length === 0) {
+    return undefined;
+  }
   const activatedConfig =
     withActivatedPluginIds({ config: autoEnabled.config, pluginIds }) ?? autoEnabled.config;
   const activatedSourceConfig = withActivatedPluginIds({ config: cfg, pluginIds }) ?? cfg;

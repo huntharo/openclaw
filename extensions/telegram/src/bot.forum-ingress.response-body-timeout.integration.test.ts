@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { Bot } from "grammy";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { getChildLogger } from "openclaw/plugin-sdk/runtime-env";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { defaultTelegramBotDeps } from "./bot-deps.js";
@@ -159,6 +160,12 @@ describe("Telegram supergroup ingress with a stalled Bot API response body", () 
       releaseDispatchDedupeClaims: () => undefined,
       claimMessageDispatchDedupe: async () => ({ process: true, claims: [] }),
       resolveTelegramSessionState: async () => ({
+        route: resolveAgentRoute({
+          cfg: params.cfg,
+          channel: "telegram",
+          accountId: params.accountId,
+          peer: { kind: "direct", id: "integration" },
+        }),
         agentId: "integration",
         bindingMode: { kind: "none" as const },
         sessionEntry: undefined,

@@ -51,6 +51,38 @@ compatibility adapter, diagnostics, docs, and a deprecation window first. That
 applies to SDK imports, manifest fields, setup APIs, hooks, and runtime
 registration behavior.
 
+Channel command and model menus now use `ReplyPayload.presentation` when
+`outbound.presentationCapabilities.modelPicker` is explicitly enabled.
+Replace the six `commands.build*ChannelData` registrations with the existing
+outbound presentation renderer and the pure menu helpers in
+`openclaw/plugin-sdk/interactive-runtime`. There is no
+`commands.menuCapabilities` declaration. Existing non-opt-in hooks retain
+their signatures and fallback behavior for all 2026 releases; removal requires
+an explicitly approved breaking SDK release in 2027 or later. Resolve picker
+callbacks against fresh admitted catalog/runtime facts and dispatch the returned
+typed command through ordinary command ingress. See
+[channel plugins](/plugins/sdk-channel-plugins#what-your-plugin-owns).
+
+Telegram's bundled command and model menus now use that portable owner and
+enter the normal command/session pipeline. The published `api.ts` and
+`contract-api.ts` pagination and provider builders, plus published model-button
+helpers and callback decoders, remain for the same 2026 compatibility window;
+the bundled producer no longer calls them. Unpromoted bundled menu wrappers and
+the private provider-list resolver are removed. Delivered legacy model controls
+receive a visible unavailable result, while legacy command pagination enters
+canonical command admission. Transport callback hashes identify catalog rows;
+they do not authorize a selection.
+
+Telegram's observed-message cache separates ordinary and business-connection
+message domains, including callback source checks and reply context. Ordinary
+cache keys are unchanged. Previously stored business observations under an
+ordinary key remain preserved but are not admitted as ordinary history or
+reinterpreted as a business connection. Fresh provider observations populate the
+correct business domain. Current-bot identity includes Telegram's
+`sender_business_bot`; it does not authorize the person invoking a control.
+Source checks cover accepted local observations, not unseen external edits or
+foreign database writes.
+
 `ChatCommandDefinition.category` retains the `"docks"` value accepted by the
 2026.8.1 SDK. Command lists display these legacy definitions under **Tools**.
 The category does not enable channel docking or restore retired docking commands.

@@ -56,7 +56,9 @@ export async function messageCommand(
   opts: Record<string, unknown>,
   deps: CliDeps,
   runtime: RuntimeEnv,
+  assertAdmissionCurrent?: () => void,
 ) {
+  assertAdmissionCurrent?.();
   const loadedRaw = getRuntimeConfig();
   const rawAction = normalizeOptionalString(opts.action) ?? "";
   const actionInput = rawAction || "send";
@@ -73,6 +75,7 @@ export async function messageCommand(
     accountId: opts.accountId,
     checkResolvedAccount: false,
   });
+  assertAdmissionCurrent?.();
   if (explicitAccountId) {
     scope.accountId = explicitAccountId;
     opts.accountId = explicitAccountId;
@@ -86,6 +89,7 @@ export async function messageCommand(
           accountId: explicitAccountId,
         })
       : undefined;
+  assertAdmissionCurrent?.();
   const scopedTargets = getScopedChannelsCommandSecretTargets({
     config: loadedRaw,
     channel: scope.channel,
@@ -100,6 +104,7 @@ export async function messageCommand(
     runtime,
     autoEnable: true,
   });
+  assertAdmissionCurrent?.();
   const agentId = resolveAmbientOwnerAgentId(cfg, undefined, {
     surface: "message CLI",
     hint: `Run ${formatCliCommand("openclaw config set agents.defaults.systemAgent.agentId <id>")} with a configured agent ID.`,
@@ -127,6 +132,7 @@ export async function messageCommand(
       agentId,
       senderIsOwner: opts.senderIsOwner !== false,
       conversationReadOrigin: "direct-operator",
+      assertDirectAdapterHandoff: assertAdmissionCurrent,
       broadcastAccountPlan,
       gateway: {
         clientName: GATEWAY_CLIENT_NAMES.CLI,

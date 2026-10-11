@@ -1,16 +1,21 @@
 // Detects configured channel candidates without provider or setup runtime imports.
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
+  listExplicitlyDisabledChannelIdsForConfig,
   listPotentialConfiguredChannelPresenceSignals,
   type AmbientEnvTriggerPolicy,
 } from "../channels/config-presence.js";
 import { normalizeChatChannelId } from "../channels/ids.js";
 import {
-  hasBundledChannelPackageState,
-  listBundledChannelIdsForPackageState,
+  hasChannelPackageState,
+  listChannelPackageStateCatalog,
 } from "../channels/plugins/package-state-probes.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import type { PluginDiscoveryResult } from "../plugins/discovery.types.js";
-import { hasExplicitManifestOwnerTrust } from "../plugins/manifest-owner-policy.js";
+import {
+  hasExplicitManifestOwnerTrust,
+  isChannelPluginEligibleForScopedOwnership,
+} from "../plugins/manifest-owner-policy.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.types.js";
 import { isChannelConfigured } from "./channel-configured.js";
 import type { PluginAutoEnableCandidate } from "./plugin-auto-enable.types.js";
@@ -68,27 +73,49 @@ export function collectAutoEnableChannelIds(
   discovery?: PluginDiscoveryResult,
   ambientEnvTriggers?: AmbientEnvTriggerPolicy,
 ): string[] {
-  const configuredStateChannelIds = new Set(
-    listBundledChannelIdsForPackageState("configuredState", discovery),
-  );
+  const owners = new Map<string, ReturnType<typeof listChannelPackageStateCatalog>[number]>();
+  for (const entry of listChannelPackageStateCatalog("configuredState", discovery)) {
+    const id = normalizeOptionalString(entry.channel.id);
+    if (!id) {
+      continue;
+    }
+    const channelId = normalizeManifestChannelId(id);
+    if (!owners.has(channelId)) {
+      owners.set(channelId, entry);
+    }
+  }
+  const disabled = new Set(listExplicitlyDisabledChannelIdsForConfig(cfg));
+  const normalizedConfig = normalizePluginsConfig(cfg.plugins);
   return listPotentialConfiguredChannelPresenceSignals(cfg, env, {
     includePersistedAuthState: false,
     discovery,
     ambientEnvTriggers,
   }).flatMap((signal) => {
     const channelId = normalizeManifestChannelId(signal.channelId);
+    if (disabled.has(channelId.toLowerCase())) {
+      return [];
+    }
+    const owner = owners.get(channelId);
     if (
-      signal.source === "env" &&
-      configuredStateChannelIds.has(channelId) &&
-      !hasBundledChannelPackageState({
-        metadataKey: "configuredState",
+      owner &&
+      !isChannelPluginEligibleForScopedOwnership({
+        plugin: { id: owner.pluginId, origin: owner.origin },
+        normalizedConfig,
+        rootConfig: cfg,
         channelId,
-        cfg,
-        env,
-        discovery,
       })
     ) {
       return [];
+    }
+    if (signal.source === "env" && owner) {
+      return hasChannelPackageState({
+        entry: owner,
+        metadataKey: "configuredState",
+        cfg,
+        env,
+      })
+        ? [channelId]
+        : [];
     }
     return isChannelConfigured(cfg, channelId, env) ? [channelId] : [];
   });

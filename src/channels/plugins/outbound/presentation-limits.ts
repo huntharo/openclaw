@@ -11,6 +11,7 @@ import {
 } from "../../../interactive/payload.js";
 import type {
   MessagePresentation,
+  MessagePresentationAction,
   MessagePresentationBlock,
   MessagePresentationButton,
   MessagePresentationOption,
@@ -180,7 +181,7 @@ function hasActionSlotBudget(budget: ActionBudget): boolean {
 
 function adaptControl<Control extends MessagePresentationButton | MessagePresentationOption>(
   control: Control,
-  action: ReturnType<typeof resolveMessagePresentationButtonAction>,
+  action: MessagePresentationAction | undefined,
   limits: SelectLimits | undefined,
 ): Control | undefined {
   if (!action) {
@@ -204,8 +205,12 @@ function adaptControl<Control extends MessagePresentationButton | MessagePresent
 function adaptButton(
   button: MessagePresentationButton,
   limits: ActionLimits | undefined,
+  modelPicker = false,
 ): MessagePresentationButton | undefined {
-  const adapted = adaptControl(button, resolveMessagePresentationButtonAction(button), limits);
+  const action = modelPicker
+    ? resolveMessagePresentationButtonAction(button, { modelPicker: true })
+    : resolveMessagePresentationButtonAction(button);
+  const adapted = adaptControl(button, action, limits);
   if (!adapted || (button.disabled === true && limits?.supportsDisabled !== true)) {
     return undefined;
   }
@@ -222,11 +227,12 @@ function adaptButtonsBlock(
   fallbackBlockType: "context" | "text",
   buttonSelection: ButtonSelection,
   textLimits?: TextLimits,
+  modelPicker = false,
 ): MessagePresentationBlock[] {
   const capacity = buttonCapacity(budget);
   const candidates: ButtonCandidate[] = block.buttons.map((button) => ({
     original: button,
-    adapted: adaptButton(button, limits),
+    adapted: adaptButton(button, limits, modelPicker),
   }));
   const renderableCandidates = candidates.filter(
     (candidate): candidate is RenderableButtonCandidate => Boolean(candidate.adapted),
@@ -264,8 +270,15 @@ function adaptButtonsBlock(
 function adaptOption(
   option: MessagePresentationOption,
   limits: SelectLimits | undefined,
+  modelPicker = false,
 ): MessagePresentationOption | undefined {
-  return adaptControl(option, resolveMessagePresentationOptionAction(option), limits);
+  return adaptControl(
+    option,
+    modelPicker
+      ? resolveMessagePresentationOptionAction(option, { modelPicker: true })
+      : resolveMessagePresentationOptionAction(option),
+    limits,
+  );
 }
 
 function adaptSelectBlock(
@@ -274,10 +287,11 @@ function adaptSelectBlock(
   budget: ActionBudget,
   fallbackBlockType: "context" | "text",
   textLimits?: TextLimits,
+  modelPicker = false,
 ): MessagePresentationBlock[] {
   const candidates: SelectCandidate[] = block.options.map((option) => ({
     original: option,
-    adapted: adaptOption(option, limits),
+    adapted: adaptOption(option, limits, modelPicker),
   }));
   const renderableCandidates = candidates.filter(
     (candidate): candidate is SelectCandidate & { adapted: MessagePresentationOption } =>
@@ -326,7 +340,12 @@ function countRenderableSelectBlocks(
   let count = 0;
   for (const block of blocks) {
     // A valid maxOptions is at least one, so one accepted option reserves the slot.
-    if (block.type === "select" && block.options.some((option) => adaptOption(option, limits))) {
+    if (
+      block.type === "select" &&
+      block.options.some((option) =>
+        adaptOption(option, limits, capabilities?.modelPicker === true),
+      )
+    ) {
       count += 1;
     }
   }
@@ -379,7 +398,7 @@ function createGlobalButtonSelection(params: {
     return block.buttons
       .map((button) => ({
         original: button,
-        adapted: adaptButton(button, params.limits),
+        adapted: adaptButton(button, params.limits, params.capabilities?.modelPicker === true),
       }))
       .filter((candidate): candidate is RenderableButtonCandidate => Boolean(candidate.adapted));
   });
@@ -468,6 +487,7 @@ export function adaptMessagePresentationForChannel(params: {
         fallbackBlockType,
         buttonSelection,
         limits?.text,
+        capabilities?.modelPicker === true,
       );
     }
     if (block.type === "select") {
@@ -477,6 +497,7 @@ export function adaptMessagePresentationForChannel(params: {
         actionBudget,
         fallbackBlockType,
         limits?.text,
+        capabilities?.modelPicker === true,
       );
     }
     return block.type === "divider" && capabilities?.divider === false ? [] : [block];
@@ -500,6 +521,7 @@ export function applyPresentationActionLimits(
     capabilities?.context === false ? "text" : "context",
     undefined,
     capabilities?.limits?.text,
+    capabilities?.modelPicker === true,
   );
   return block.flatMap((entry) => (entry.type === "buttons" ? entry.buttons : []));
 }

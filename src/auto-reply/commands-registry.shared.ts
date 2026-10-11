@@ -148,7 +148,8 @@ export function buildBuiltinChatCommands(
     }),
     defineBuiltinCommand("commands", "List all slash commands.", "status", "power", {
       activeRunSafe: true,
-      modelIndependent: "no-args",
+      args: [defineCommandArgument("page", "Page number", { type: "number" })],
+      modelIndependent: (args) => /^([1-9]\d{0,5})?$/u.test(args),
     }),
     defineBuiltinCommand("tools", "List available runtime tools.", "status", "standard", {
       activeRunSafe: true,

@@ -35,10 +35,11 @@ import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { resolveReplyDirectives } from "./get-reply-directives.js";
 import { initFastReplySessionState } from "./get-reply-fast-path.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
-import type { InternalGetReplyOptions } from "./get-reply.types.js";
+import type { CommandSelectionCurrent, InternalGetReplyOptions } from "./get-reply.types.js";
 import { stripStructuralPrefixes } from "./mentions.js";
 import { resolveContextTokens } from "./model-selection-context.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
+import { captureCommandSelectionCurrent } from "./session-conversation-binding.js";
 import { persistReplySessionEntry } from "./session-entry-persistence.js";
 import { createSkillCommandLoaders } from "./skill-command-loaders.js";
 import type { createTypingController } from "./typing.js";
@@ -82,6 +83,7 @@ function shouldRunNativeSlashCommandFastPath(ctx: MsgContext): boolean {
 export async function maybeResolveNativeSlashCommandFastReply(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
+  commandSelectionCurrent?: CommandSelectionCurrent;
   agentId: string;
   agentDir: string;
   agentCfg: AgentDefaults;
@@ -104,6 +106,8 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     return { handled: false };
   }
 
+  const commandSelectionCurrent =
+    params.commandSelectionCurrent ?? captureCommandSelectionCurrent(params.cfg, params.ctx);
   const sessionState = await initFastReplySessionState({
     ctx: params.ctx,
     cfg: params.cfg,
@@ -370,6 +374,7 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
   const directiveResult = await resolveReplyDirectives({
     ...params,
     ...sessionState,
+    commandSelectionCurrent,
     conversation: prepareReplyConversation({
       ctx: sessionState.sessionCtx,
       sessionEntry: sessionState.sessionStore[sessionState.sessionKey] ?? sessionState.sessionEntry,

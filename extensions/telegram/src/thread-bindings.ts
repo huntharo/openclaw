@@ -434,6 +434,15 @@ async function initializeThreadBindingManager(
       }),
   });
 
+  sessionBindingAdapter.inspectByConversation = (ref) => {
+    if (ref.channel !== "telegram") {
+      return null;
+    }
+    const conversationId = normalizeOptionalString(ref.conversationId);
+    const record = conversationId ? manager.getByConversationId(conversationId) : null;
+    return record ? projectSessionBinding(record) : null;
+  };
+
   registerSessionBindingAdapterV2(sessionBindingAdapter);
 
   const sweeperEnabled = params.enableSweeper !== false;

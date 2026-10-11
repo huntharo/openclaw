@@ -364,6 +364,7 @@ export async function createTelegramBotCore(
       })
     : null;
   let bindingOwnerStopped = false;
+  const inspectUnboundConversation = () => null;
   const disabledBindingAdapter: SessionBindingAdapterV2 | undefined = threadBindingManager
     ? undefined
     : {
@@ -389,7 +390,8 @@ export async function createTelegramBotCore(
           },
         }),
         listBySession: () => [],
-        resolveByConversation: () => null,
+        inspectByConversation: inspectUnboundConversation,
+        resolveByConversation: inspectUnboundConversation,
       };
   bot.stop = (async (...args: Parameters<typeof originalStop>) => {
     if (disabledBindingAdapter) {

@@ -260,6 +260,8 @@ describe("Telegram topic transport payloads", () => {
       message_thread_id: 999,
     }) as unknown as Message;
     const actions = createTelegramCallbackMessageActions({
+      cfg,
+      accountId: "default",
       bot,
       callbackMessage,
       threadSpec: { id: DIRECT_TOPIC_ID, scope: "direct-messages" },
@@ -294,6 +296,8 @@ describe("Telegram topic transport payloads", () => {
         : {},
     ) as unknown as Message;
     const actions = createTelegramCallbackMessageActions({
+      cfg,
+      accountId: "default",
       bot,
       callbackMessage,
       threadSpec: { id: DIRECT_TOPIC_ID, scope: "direct-messages" },
@@ -313,6 +317,8 @@ describe("Telegram topic transport payloads", () => {
       caption: "Choose an action",
     }) as unknown as Message;
     const actions = createTelegramCallbackMessageActions({
+      cfg,
+      accountId: "default",
       bot,
       callbackMessage,
       threadSpec: { id: DIRECT_TOPIC_ID, scope: "direct-messages" },
@@ -350,6 +356,8 @@ describe("Telegram topic transport payloads", () => {
       caption: "Choose an action",
     }) as unknown as Message;
     const actions = createTelegramCallbackMessageActions({
+      cfg,
+      accountId: "default",
       bot,
       callbackMessage,
       threadSpec: { id: DIRECT_TOPIC_ID, scope: "direct-messages" },

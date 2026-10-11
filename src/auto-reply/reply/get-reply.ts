@@ -8,16 +8,12 @@ import {
   resolveAgentWorkspaceDir,
   resolveAgentSkillsFilter,
 } from "../../agents/agent-scope.js";
-import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
-import { projectConversationToolNames } from "../../agents/conversation-tool-policy-pipeline.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { publishedModelCatalogOwnerMatchesAgent } from "../../agents/prepared-model-catalog-owner.js";
-import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../../agents/spawned-context.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
-import { resolveEffectiveToolFsRootExpansionAllowed } from "../../agents/tool-fs-policy.js";
 import {
   WorkspaceAliasRepointedError,
   WorkspaceVanishedError,
@@ -25,7 +21,6 @@ import {
 import { DEFAULT_AGENT_WORKSPACE_DIR } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
-import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
@@ -71,6 +66,7 @@ import { maybeResolveNativeSlashCommandFastReply } from "./get-reply-native-slas
 import {
   applyLinkUnderstandingIfNeeded,
   applyMediaUnderstandingIfNeeded,
+  canSelfServeLocalPaths,
   hasExplicitAudioUnderstandingConfig,
   hasLinkCandidate,
   resolveReplyAgentScope,
@@ -85,7 +81,6 @@ import {
 } from "./inbound-media.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createModelSelectionState } from "./model-selection.js";
-import { resolveOriginMessageProvider } from "./origin-routing.js";
 import {
   classifyHeartbeatPendingFinalDelivery,
   PENDING_FINAL_DELIVERY_CLEAR_PATCH,
@@ -102,7 +97,7 @@ import {
 import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { prepareReplyWorkspace } from "./reply-workspace.js";
-import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
+import { captureCommandSelectionCurrent } from "./session-conversation-binding.js";
 import { prepareReplySessionDiffBaseline } from "./session-diff-baseline.js";
 import { resolveReplySessionInitializationOptions } from "./session-initialization-admission.js";
 import { SessionResetCleanupError } from "./session-reset-cleanup.js";
@@ -151,6 +146,7 @@ export async function getReplyFromConfig(
   const finalized = resolverTiming.measureSync("reply.finalize_context", () =>
     finalizeInboundContext(ctx),
   );
+  const commandSelectionCurrent = captureCommandSelectionCurrent(cfg, finalized, opts);
   // Resolve legacy text-slash source lanes before any session-scoped work.
   // The explicit steer command itself still flows through normal command and
   // prepared-reply handling; this only gives that path the active owner's key.
@@ -315,6 +311,7 @@ export async function getReplyFromConfig(
       maybeResolveNativeSlashCommandFastReply({
         ctx: finalized,
         cfg,
+        commandSelectionCurrent,
         agentId,
         agentDir,
         agentCfg,
@@ -756,6 +753,7 @@ export async function getReplyFromConfig(
     resolveReplyDirectives({
       ctx: finalized,
       ...replyContext,
+      commandSelectionCurrent,
       agentCfg,
       sessionCtx,
       sessionScope,
@@ -1019,62 +1017,26 @@ export async function getReplyFromConfig(
     stagedAttachmentPaths = stageResult.staged;
   }
 
-  if (enableLocalPathSelfServe && resolvedOpts?.disableTools !== true) {
-    const policySessionKey = resolveRuntimePolicySessionKey({
-      cfg,
-      agentId,
+  if (
+    enableLocalPathSelfServe &&
+    canSelfServeLocalPaths({
       ctx: sessionCtx,
-      sessionKey,
-    });
-    const sandboxed = resolveSandboxRuntimeStatus({
       cfg,
       agentId,
       sessionKey,
-      classificationSessionKey: policySessionKey,
-    }).sandboxed;
-    if (
-      (sandboxed && stagedAttachmentPaths.size > 0) ||
-      (!sandboxed && resolveEffectiveToolFsRootExpansionAllowed({ cfg, agentId }))
-    ) {
-      const capabilityProfile = resolveConversationCapabilityProfile({
-        config: cfg,
-        sessionKey: policySessionKey,
-        runSessionKey: policySessionKey === sessionKey ? undefined : sessionKey,
-        agentId,
-        agentAccountId: sessionCtx.AccountId,
-        messageProvider: resolveOriginMessageProvider({
-          originatingChannel: sessionCtx.OriginatingChannel,
-          provider: sessionCtx.Provider ?? sessionCtx.Surface,
-        }),
-        conversationToolPolicy: sessionCtx.ConversationToolPolicy,
-        groupId: resolveGroupSessionKey(sessionCtx)?.id,
-        groupChannel:
-          normalizeOptionalString(sessionCtx.GroupChannel) ??
-          normalizeOptionalString(sessionCtx.GroupSubject),
-        groupSpace: normalizeOptionalString(sessionCtx.GroupSpace),
-        spawnedBy: normalizeOptionalString(sessionEntry.spawnedBy),
-        senderId: normalizeOptionalString(sessionCtx.SenderId),
-        senderName: normalizeOptionalString(sessionCtx.SenderName),
-        senderUsername: normalizeOptionalString(sessionCtx.SenderUsername),
-        senderE164: normalizeOptionalString(sessionCtx.SenderE164),
-        senderIsOwner: command.senderIsOwner,
-        modelProvider: runProvider,
-        modelId: runModel,
-        workspaceDir,
-        runtimeToolAllowlist: resolvedOpts?.toolsAllow,
-        inheritRuntimeToolAllowlist: true,
-        inputProvenance: sessionCtx.InputProvenance,
-      });
-      if (
-        projectConversationToolNames({ capabilityProfile, toolNames: ["read"], warn: () => {} })
-          .length === 1
-      ) {
-        enableLocalPathSelfServe(
-          [finalized, sessionCtx],
-          stagedAttachmentPaths.size > 0 ? stagedAttachmentPaths : undefined,
-        );
-      }
-    }
+      workspaceDir,
+      provider: runProvider,
+      model: runModel,
+      opts: resolvedOpts,
+      senderIsOwner: command.senderIsOwner,
+      spawnedBy: normalizeOptionalString(sessionEntry.spawnedBy),
+      stagedPathsAvailable: stagedAttachmentPaths.size > 0,
+    })
+  ) {
+    enableLocalPathSelfServe(
+      [finalized, sessionCtx],
+      stagedAttachmentPaths.size > 0 ? stagedAttachmentPaths : undefined,
+    );
   }
 
   logResolverTiming("milestone", "before_run_prepared_reply");

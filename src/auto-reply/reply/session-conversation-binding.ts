@@ -8,10 +8,12 @@ import {
   readConversationBindingRouteObservations,
   resolveConversationBindingSelection,
 } from "../../channels/conversation-binding-route-facts.js";
+import { captureRuntimeConfigPublicationCurrent } from "../../config/runtime-snapshot.js";
 import { SessionWorkStartChangedError } from "../../config/sessions/lifecycle.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   getSessionBindingService,
+  capturePureSessionBindingAdapterSelection,
   isSessionBindingError,
   readSessionBindingSelectionCurrent,
   type SessionBindingRecord,
@@ -20,6 +22,7 @@ import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { MsgContext } from "../templating.js";
 import { resolveEffectiveResetTargetSessionKey } from "./acp-reset-target.js";
 import { resolveConversationBindingContextFromMessage } from "./conversation-binding-input.js";
+import type { CommandSelectionCurrent, InternalGetReplyOptions } from "./get-reply.types.js";
 export function resolveSessionDefaultAccountId(params: {
   cfg: OpenClawConfig;
   channelRaw?: string;
@@ -139,6 +142,52 @@ export async function assertPreparedConversationBindingRouteCurrent(
   if (!resolveCommandTurnTargetSessionKey(ctx)) {
     await readPreparedConversationBindingRouteCurrent(ctx);
   }
+}
+
+/** Capture at ingress, before awaited work; source restrictions supplement core facts. */
+export function captureCommandSelectionCurrent(
+  cfg: OpenClawConfig,
+  ctx: Pick<MsgContext, "SessionKey">,
+  opts?: Pick<InternalGetReplyOptions, "commandSelectionCurrent">,
+): CommandSelectionCurrent {
+  const core = {
+    publicationCurrent: captureRuntimeConfigPublicationCurrent(cfg),
+    assertRouteCurrent: capturePreparedPureAdapterRouteAssertion(ctx),
+  };
+  const source = opts?.commandSelectionCurrent;
+  return source
+    ? {
+        publicationCurrent: () =>
+          core.publicationCurrent?.() !== false && source.publicationCurrent?.() !== false,
+        assertRouteCurrent: () => {
+          core.assertRouteCurrent?.();
+          source.assertRouteCurrent?.();
+        },
+      }
+    : core;
+}
+
+/** Commit-time checks use the original adapter's pure projection, never generic SQLite reads. */
+export function capturePreparedPureAdapterRouteAssertion(
+  ctx: Pick<MsgContext, "SessionKey">,
+): (() => void) | undefined {
+  const observations = readConversationBindingRouteObservations(ctx);
+  const read = capturePureSessionBindingAdapterSelection(
+    observations.map((expected) => expected.conversation),
+  );
+  if (!read) {
+    return undefined;
+  }
+  return () => {
+    const records = read();
+    for (const [index, expected] of observations.entries()) {
+      if (!matchesConversationBindingRouteFacts(expected, records[index] ?? null)) {
+        throw new SessionWorkStartChangedError(
+          "Conversation binding changed while preparing the command. Send a new request.",
+        );
+      }
+    }
+  };
 }
 
 export async function resolveSessionConversationBinding(params: {

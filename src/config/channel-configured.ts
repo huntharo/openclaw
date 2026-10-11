@@ -1,4 +1,5 @@
-import { getBootstrapChannelPlugin } from "../channels/plugins/bootstrap-registry.js";
+// Determines whether a channel is configured from bootstrap and plugin state.
+import { getChannelPlugin } from "../channels/plugins/index.js";
 import {
   hasBundledChannelPackageState,
   listBundledChannelIdsForPackageState,
@@ -24,6 +25,7 @@ export function isChannelConfigured(
   if (listBundledChannelIdsForPackageState("configuredState").includes(channelId.trim())) {
     return hasBundledChannelPackageState({ metadataKey: "configuredState", channelId, cfg, env });
   }
-  const plugin = getBootstrapChannelPlugin(channelId);
+  // Legacy hooks belong to an admitted runtime or explicit setup scope.
+  const plugin = getChannelPlugin(channelId);
   return Boolean(plugin?.config?.hasConfiguredState?.({ cfg, env }));
 }

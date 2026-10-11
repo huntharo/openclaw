@@ -8,7 +8,6 @@ import {
   type MessageReceipt,
 } from "openclaw/plugin-sdk/channel-outbound";
 import type { MarkdownTableMode, ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
-import type { ReplyPayloadDelivery } from "openclaw/plugin-sdk/interactive-runtime";
 import { normalizeMessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 import {
   buildOutboundMediaLoadOptions,
@@ -33,6 +32,7 @@ import {
   prepareTelegramOutboundMedia,
   resolveTelegramOutboundMediaSenders,
 } from "../outbound-media.js";
+import { recordTelegramAcknowledgedMessageEdit } from "../outbound-message-context.js";
 import type { TelegramPromptContextProjectionSequence } from "../prompt-context-projection.js";
 import { buildTelegramSendParams } from "../reply-parameters.js";
 import { TELEGRAM_RICH_TEXT_LIMIT } from "../rich-message.js";
@@ -56,6 +56,7 @@ import { recordSentMessage } from "../sent-message-cache.js";
 import { resolveTelegramTargetChatType } from "../targets.js";
 import { planTelegramTextDeliveryPages } from "../telegram-text-delivery.js";
 import { emitTelegramMessageSentHooks } from "./delivery.hooks.js";
+import { maybePinFirstDeliveredMessage } from "./delivery.pin.js";
 import { resolveTelegramReplyId, type TelegramThreadSpec } from "./helpers.js";
 import {
   resolveReplyQuoteForSend,
@@ -450,8 +451,17 @@ function createReplyDeliverer(
           }
           visibleFallbackText = firstDeliveredCaption ?? "";
           if (params.replyMarkup && firstDeliveredMessageId !== undefined) {
-            await config.bot.api.editMessageReplyMarkup(config.chatId, firstDeliveredMessageId, {
-              reply_markup: params.replyMarkup,
+            const result = await config.bot.api.editMessageReplyMarkup(
+              config.chatId,
+              firstDeliveredMessageId,
+              { reply_markup: params.replyMarkup },
+            );
+            await recordTelegramAcknowledgedMessageEdit({
+              cfg: config.cfg ?? { channels: { telegram: { botToken: config.token } } },
+              accountId: config.accountId ?? "default",
+              chatId: config.chatId,
+              messageId: firstDeliveredMessageId,
+              result,
             });
           }
         }
@@ -468,31 +478,6 @@ function createReplyDeliverer(
     return { firstDeliveredMessageId, visibleFallbackText, mediaUrls };
   }
   return { deliverTextReply, deliverMediaReply };
-}
-
-async function maybePinFirstDeliveredMessage(params: {
-  pin: ReplyPayloadDelivery["pin"];
-  bot: Bot;
-  chatId: string;
-  firstDeliveredMessageId?: number;
-}): Promise<void> {
-  const shouldPin = params.pin === true || (typeof params.pin === "object" && params.pin.enabled);
-  if (!shouldPin || typeof params.firstDeliveredMessageId !== "number") {
-    return;
-  }
-  const notify = typeof params.pin === "object" && params.pin.notify === true;
-  try {
-    await params.bot.api.pinChatMessage(params.chatId, params.firstDeliveredMessageId, {
-      disable_notification: !notify,
-    });
-  } catch (err) {
-    if (typeof params.pin === "object" && params.pin.required === true) {
-      throw err;
-    }
-    logVerbose(
-      `telegram pinChatMessage failed chat=${params.chatId} message=${params.firstDeliveredMessageId}: ${formatErrorMessage(err)}`,
-    );
-  }
 }
 
 type DeliverRepliesParams = {

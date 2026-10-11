@@ -6,6 +6,7 @@ import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
+import { withArtifactPreservingStateReads } from "../../state/openclaw-state-db-readonly.js";
 import { shouldAttemptTtsPayload } from "../../tts/tts-config.js";
 import { prepareTtsPreferences } from "../../tts/tts-preferences.js";
 
@@ -47,14 +48,16 @@ export async function maybeApplyTtsToMessageActionSendPayload(params: {
   const preparedTtsPreferences = await prepareTtsPreferences();
   if (
     !explicitTts &&
-    !shouldAttemptTtsPayload({
-      cfg: params.cfg,
-      preparedTtsPreferences,
-      ttsAuto,
-      agentId: params.agentId,
-      channelId: params.channel,
-      accountId: params.accountId ?? undefined,
-    })
+    !withArtifactPreservingStateReads(() =>
+      shouldAttemptTtsPayload({
+        cfg: params.cfg,
+        preparedTtsPreferences,
+        ttsAuto,
+        agentId: params.agentId,
+        channelId: params.channel,
+        accountId: params.accountId ?? undefined,
+      }),
+    )
   ) {
     return params.payload;
   }
