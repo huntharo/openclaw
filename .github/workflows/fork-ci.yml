@@ -31,14 +31,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
+      - uses: ./.github/actions/ensure-base-commit
+        if: matrix.lane == 'lint'
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          fetch-ref: ${{ github.event.pull_request.base.ref || 'main' }}
       - uses: ./.github/actions/setup-ripgrep
       - uses: ./.github/actions/setup-node-env
         with:
           semantic-checks: "true"
+          cache-mode: off
       - name: Lint
         if: matrix.lane == 'lint'
+        env:
+          CHECKOUT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
         run: pnpm lint
       - name: Check production types
         if: matrix.lane == 'types'
