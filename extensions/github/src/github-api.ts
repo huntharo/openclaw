@@ -440,8 +440,8 @@ function githubResponseErrorStatus(response: Response): number {
   return 502;
 }
 
-function githubResponseError(response: Response, graphqlRateLimited = false): ControlUiGitHubError {
-  const quotaError = apiQuotaErrorForResponse(response, graphqlRateLimited);
+function githubResponseError(response: Response, rateLimited = false): ControlUiGitHubError {
+  const quotaError = apiQuotaErrorForResponse(response, rateLimited);
   if (quotaError) {
     return githubQuotaError(quotaError);
   }

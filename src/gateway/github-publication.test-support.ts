@@ -143,27 +143,9 @@ vi.mock("./session-utils-store-worker.js", async (importOriginal) => ({
 
 vi.mock("../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/exec.js")>()),
-  runCommandBuffered: async (
-    argv: string[],
-    options: Parameters<typeof import("../process/exec.js").runCommandBuffered>[1],
-  ) => {
-    const result = await mocks.runCommand(
-      argv.filter((arg) => arg !== "--include"),
-      options,
-    );
-    return argv[0] === "gh" &&
-      argv[1] === "api" &&
-      argv.includes("--include") &&
-      !result.stdout.toString("utf8").startsWith("HTTP/")
-      ? {
-          ...result,
-          stdout: Buffer.concat([
-            Buffer.from(`HTTP/2.0 ${result.code === 0 ? 200 : 500}\r\n\r\n`),
-            result.stdout,
-          ]),
-        }
-      : result;
-  },
+  runCommandBuffered: (
+    await import("./github-publication-command.test-support.js")
+  ).createPublicationCommandMock(mocks.runCommand),
 }));
 
 vi.mock("../secrets/runtime-state.js", () => ({
