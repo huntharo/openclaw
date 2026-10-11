@@ -25,7 +25,6 @@ import {
 } from "./commands-models-catalog.js";
 import {
   buildModelsProviderMenuReply,
-  buildModelsMenuText,
   buildModelsAvailabilityText,
   type ModelsProviderMenu,
 } from "./commands-models-menu.js";

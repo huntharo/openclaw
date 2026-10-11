@@ -29,7 +29,7 @@ export type ModelsMenu = {
   byProvider: ReadonlyMap<string, ModelsProviderMenu>;
 };
 
-export function buildModelsMenuText(params: {
+function buildModelsMenuText(params: {
   providers: string[];
   byProvider: ReadonlyMap<string, ReadonlySet<string>>;
 }): string {

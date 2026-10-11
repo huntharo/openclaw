@@ -66,7 +66,7 @@ export function registerTelegramModelCallbackHttpTests(
         richMessages: false,
       };
       const cfg: OpenClawConfig = {
-        agents: { list: [{ id: "default", default: true }] },
+        agents: { entries: { default: {} } },
         session: { store: fixture.state.path("sessions.json") },
         channels: { telegram: telegramCfg },
       };
@@ -136,7 +136,6 @@ export function registerTelegramModelCallbackHttpTests(
         },
       };
       const messageRuntime: TelegramCallbackMessageRuntime = {
-        buildFailedProcessingResult: (error) => ({ kind: "failed-retryable", error }),
         resolveTelegramSessionState: async () => {
           const routed = await resolveTelegramConversationRoute({
             cfg,
