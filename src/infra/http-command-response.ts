@@ -5,19 +5,19 @@ export function parseHttpCommandResponse(
   output: string,
   { lastResponse = false }: { lastResponse?: boolean } = {},
 ): { response: Response; body: string } | undefined {
+  let frameStart = 0;
   if (lastResponse) {
     // A failed CLI command can retain successful pages before its final response.
-    let frameStart = 0;
     for (const match of output.matchAll(/^HTTP\/[\d.]+ [2-5]\d{2}\b/gmu)) {
       frameStart = match.index;
     }
-    output = output.slice(frameStart);
   }
-  const boundary = /\r?\n\r?\n/u.exec(output);
+  const frame = output.slice(frameStart);
+  const boundary = /\r?\n\r?\n/u.exec(frame);
   if (!boundary) {
     return undefined;
   }
-  const headerOutput = stripVTControlCharacters(output.slice(0, boundary.index));
+  const headerOutput = stripVTControlCharacters(frame.slice(0, boundary.index));
   const status = /^HTTP\/[\d.]+ ([2-5]\d{2})\b/u.exec(headerOutput)?.[1];
   if (!status) {
     return undefined;
@@ -31,6 +31,6 @@ export function parseHttpCommandResponse(
   }
   return {
     response: new Response(null, { status: Number(status), headers }),
-    body: output.slice(boundary.index + boundary[0].length),
+    body: frame.slice(boundary.index + boundary[0].length),
   };
 }

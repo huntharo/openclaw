@@ -31,7 +31,8 @@ describe("shared GitHub admission", () => {
       const pullUrl = `${api.GITHUB_API_BASE_URL}/repos/acme/repo/pulls/1`;
       let head = "old";
       const fetchImpl = vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith(`/${resource}`)) {
+        const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (requestUrl.endsWith(`/${resource}`)) {
           started.resolve();
           return old.promise;
         }
