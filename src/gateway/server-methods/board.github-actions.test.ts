@@ -71,29 +71,18 @@ const commandResult = (value = "", code = 0) => ({
 
 const getOrCreatePromise = lazyPromise.getOrCreatePromise;
 
-function observeSharedCredentialAdmission() {
+function observeSharedReadAdmission() {
   const joined = createDeferred();
   vi.spyOn(lazyPromise, "getOrCreatePromise").mockImplementation((cache, key, create, options) => {
     const pending = cache.get(key);
     const shared = getOrCreatePromise(cache, key, create, options);
-    // Native credential lookup has its own singleflight while the Actions owner is shared.
+    // Wait for the caller to join existing work before changing its authority.
     if (pending === shared) {
       joined.resolve();
     }
     return shared;
   });
   return joined.promise;
-}
-
-function observeActionsReadIngress() {
-  const entered = createDeferred();
-  const fetchGitHubApi = gitHubPublicApi.fetchGitHubApi;
-  vi.spyOn(gitHubPublicApi, "fetchGitHubApi").mockImplementation((...args) => {
-    const pending = fetchGitHubApi(...args);
-    entered.resolve();
-    return pending;
-  });
-  return entered.promise;
 }
 
 describe("board authenticated GitHub Actions", () => {
@@ -642,7 +631,7 @@ describe("board authenticated GitHub Actions", () => {
     };
     const leaderRead = leader.read();
     await started.promise;
-    const joined = observeActionsReadIngress();
+    const joined = observeSharedReadAdmission();
     const followerRead = follower.read();
     await joined;
     await leader.invoke("board.update", {
@@ -694,7 +683,7 @@ describe("board authenticated GitHub Actions", () => {
     };
     const leaderRead = leader.read();
     await started.promise;
-    const joined = observeActionsReadIngress();
+    const joined = observeSharedReadAdmission();
     const followerRead = follower.read();
     await joined;
     await leader.invoke("board.update", {
@@ -716,7 +705,7 @@ describe("board authenticated GitHub Actions", () => {
         ]),
       ).toBe("reading");
       expect((await leaderRead).mock.calls[0]?.[0]).toBe(false);
-      const nativeJoined = observeSharedCredentialAdmission();
+      const nativeJoined = observeSharedReadAdmission();
       const thirdRead = third.read();
       // Native revalidation is shared too; both surviving callers await this lookup.
       expect(
