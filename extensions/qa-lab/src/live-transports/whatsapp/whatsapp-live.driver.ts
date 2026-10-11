@@ -3,8 +3,8 @@ import type {
   WhatsAppQaDriverSession,
 } from "@openclaw/whatsapp/api.js";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import { sleep } from "openclaw/plugin-sdk/runtime-env";
 import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
+import { sleep } from "openclaw/plugin-sdk/runtime-env";
 import type { WhatsAppQaMessageScenarioContext } from "./whatsapp-live.contracts.js";
 import {
   isWhatsAppScenarioSutMessage,
