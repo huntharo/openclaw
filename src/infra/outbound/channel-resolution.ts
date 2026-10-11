@@ -63,10 +63,9 @@ function resolveRuntimeOutboundPluginCandidate(params: {
   requireActivatedRuntime?: boolean;
 }): ChannelPlugin | undefined {
   return (
-[params.loaded, params.runtime].find((plugin) =>
+    [params.loaded, params.runtime].find((plugin) =>
       hasOutboundSurface(plugin, params.requireActivatedRuntime),
-    ) ??
-    (params.allowSetupShell ? (params.loaded ?? params.setupFallback) : undefined)
+    ) ?? (params.allowSetupShell ? (params.loaded ?? params.setupFallback) : undefined)
   );
 }
 

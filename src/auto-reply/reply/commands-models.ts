@@ -16,8 +16,8 @@ import {
   type ModelPickerCatalog,
 } from "../../model-picker/menu.js";
 import type { ReplyPayload } from "../types.js";
-import { commandReply, defineAuthorizedTextCommand } from "./command-gates.js";
 import { resolveCommandPresentationCapabilities } from "./channel-context.js";
+import { commandReply, defineAuthorizedTextCommand } from "./command-gates.js";
 import {
   loadModelsProviderData,
   type ModelsCommandSessionEntry,

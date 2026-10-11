@@ -108,7 +108,6 @@ signature or fallback changes for plugins that do not opt in, throughout every
 release in 2027 or later. Keep transport-only decoding for already delivered
 controls, or provide a visible terminal response when retiring them.
 
-
 ## Opted-in public child sessions
 
 The ingress resolver accepts an optional host-invocation intent,
