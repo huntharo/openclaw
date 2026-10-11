@@ -43,6 +43,8 @@ import { syncBuiltinESMExports } from "node:module";
 import timers from "node:timers/promises";
 if (process.argv[1] === ${JSON.stringify(fileURLToPath(new URL("../../scripts/watch-pr-ci.mts", import.meta.url)))}) {
   process.env.NODE_OPTIONS = ${JSON.stringify(parentEnv.NODE_OPTIONS ?? "")};
+  process.env.GH_TOKEN = "watcher-fixture-token";
+  process.env.GH_ENTERPRISE_TOKEN = "watcher-enterprise-fixture-token";
   const { createGitHubAsyncCommandQuota } = await import(${JSON.stringify(new URL("../../scripts/lib/github-command-quota.mjs", import.meta.url).href)});
   await createGitHubAsyncCommandQuota({ runGhAsync: async () => "", env: { GH_TOKEN: "watcher-fixture-token" } });
   const now = ${typeof clock === "object" ? `() => Number(readFileSync(${JSON.stringify(clock.readClock)}, "utf8"))` : clock === "wall" ? "Date.now" : "() => 0"};
@@ -96,8 +98,6 @@ if (process.argv[1] === ${JSON.stringify(fileURLToPath(new URL("../../scripts/wa
             encoding: "utf8",
             env: {
               ...createIndependentPrFixtureEnv(parentEnv),
-              GH_TOKEN: "watcher-fixture-token",
-              GH_ENTERPRISE_TOKEN: "watcher-enterprise-fixture-token",
               TSX_DISABLE_CACHE: "1",
               ...envOverrides,
               NODE_OPTIONS: `${parentEnv.NODE_OPTIONS ?? ""} --import=${pathToFileURL(clockPath).href}`,

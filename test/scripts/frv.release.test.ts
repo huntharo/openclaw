@@ -241,6 +241,9 @@ if (${endpoint.includes("/jobs?")}) {
       import {createClient} from ${JSON.stringify(moduleUrl)};
       import {existsSync} from "node:fs";
       import {releaseGhRateLimitRetryAt, classifyReleaseGhTransportError} from ${JSON.stringify(pathToFileURL(join(process.cwd(), "scripts/full-release-validation-policy.mjs")).href)};
+      // The test launcher strips inherited credentials; this fixture owns synthetic values.
+      process.env.GH_TOKEN = "synthetic-frv-fixture-token";
+      ${enterprise ? `process.env.GH_CONFIG_DIR = ${JSON.stringify(root)}; process.env.GH_ENTERPRISE_TOKEN = "synthetic-frv-enterprise-token";` : ""}
       const throttled = ["403", "429"].includes(${JSON.stringify(failure)});
       // Load the shared owner before clock/timer traps, which are about FRV retries.
       const {tsImport} = await import(${JSON.stringify(tsxUrl)});
@@ -292,10 +295,6 @@ if (${endpoint.includes("/jobs?")}) {
         env: {
           HOME: root,
           PATH: `${root}${delimiter}${process.env.PATH ?? ""}`,
-          GH_TOKEN: "synthetic-frv-fixture-token",
-          ...(enterprise
-            ? { GH_CONFIG_DIR: root, GH_ENTERPRISE_TOKEN: "synthetic-frv-enterprise-token" }
-            : {}),
         },
       },
     );
@@ -628,6 +627,7 @@ async function runPublicationCli(
     `import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { appendFileSync } from "node:fs";
+${legacy || explicitBinary ? `process.env.GH_TOKEN = ${JSON.stringify(explicitBinary ? "synthetic-fixture-token" : "synthetic-frv-fixture-token")};` : ""}
 const fsAppend = (value) => appendFileSync("verifier-calls.jsonl", value + "\\n");
 ${
   legacy
@@ -711,8 +711,7 @@ else process.stdout.write(JSON.stringify(value));
         env: {
           HOME: directory,
           PATH: directory,
-          ...(legacy ? { GH_TOKEN: "synthetic-frv-fixture-token" } : {}),
-          ...(explicitBinary ? { OPENCLAW_GH_BIN: gh, GH_TOKEN: "synthetic-fixture-token" } : {}),
+          ...(explicitBinary ? { OPENCLAW_GH_BIN: gh } : {}),
         },
       },
     );
