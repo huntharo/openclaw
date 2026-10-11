@@ -117,6 +117,52 @@ navigation outside the app is outside its control. Production connection setting
 and `pnpm ui:dev` behavior are unchanged; use that command when you intentionally
 need a real Gateway or external integration.
 
+## Gateway traffic capture
+
+To inspect an already-open Control UI tab in a Chromium browser with remote
+debugging enabled, run:
+
+```bash
+node --import ./scripts/tsx.mjs scripts/gateway-traffic.mts \
+  --cdp http://127.0.0.1:9222 --page http://127.0.0.1:18789/chat --seconds 60
+```
+
+`--page` must match exactly one existing tab URL. The recorder observes that tab
+without opening pages, navigating, issuing Gateway RPCs, or reconnecting its
+WebSocket. Stop early with Ctrl+C. Detaching leaves the browser and tab open.
+
+The JSON report contains sent/received frame counts, decoded payload bytes,
+rates, largest payloads, and counts grouped by request method or event name.
+These are application payload bytes, excluding WebSocket headers, TLS, and
+compression. Other WebSockets on the selected page, such as Vite hot reload or
+remote desktops, contribute to totals and appear in non-Gateway buckets.
+
+Repeated requests compare method and parameters independently of request IDs
+and object-key order. Repeated events ignore their outer sequence number;
+payload timestamps and nested identifiers remain meaningful. Connections are
+kept separate. An intentional repeated poll or identical chunk can count as a
+repeat; use an action's expected traffic shape rather than treating every repeat
+as a defect. Replies observed after recording starts can be unmatched when their
+request predates the capture.
+
+Authentication handshakes are counted without fingerprinting their contents.
+Text frames above 1 MiB are counted as `oversized-text` without parsing or
+fingerprinting; deeply nested JSON that exceeds the serializer stack still
+contributes its exact byte count. `oversizedFrames` and `fingerprintFailures`
+disclose these gaps in repeat analysis.
+
+Payloads, URLs, request/session IDs, and fingerprints are not exported. The
+recorder retains at most 128 named buckets plus two overflow buckets, 1,024
+pending request correlations, and 4,096 fingerprints. Eviction is reported;
+repeat detection covers only the retained fingerprint window. Capture is
+explicit, lasts at most ten minutes, and changes no Gateway or renderer
+application code.
+
+New traffic budgets should record the same bounded workload on unchanged pinned
+`main` and the candidate, including idle intervals and the actions/events under
+test. Distinguish intentional polling and required final snapshots from
+redundant refreshes or replayed cumulative text.
+
 ## Chat input ownership
 
 `ChatOutboxGatewayOwner` owns queued-input admission, updates, removal, and the
