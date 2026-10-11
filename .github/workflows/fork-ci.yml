@@ -61,8 +61,18 @@ jobs:
       - name: Install WebKit
         if: matrix.lane == 'e2e'
         run: pnpm --dir ui exec playwright install --with-deps webkit
+      - name: Build E2E runtime
+        if: matrix.lane == 'e2e'
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: "1"
+          OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1"
+          VITEST: "1"
+        run: pnpm build qaRuntime
       - name: Keyless E2E tests
         if: matrix.lane == 'e2e'
         env:
+          OPENCLAW_BUILD_PRIVATE_QA: "1"
+          OPENCLAW_E2E_USE_PREBUILT_DIST: "1"
+          OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1"
           OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: "1"
         run: pnpm test:e2e

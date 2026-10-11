@@ -316,8 +316,10 @@ The complete [startup corpus](/ci/pipeline) uses eight state test files so exist
 `fork-ci.yml` runs on fork `main` pushes, pull requests (including drafts), and
 manual dispatches. Its four Linux jobs use GitHub-hosted Ubuntu runners and need
 no repository secrets: `pnpm lint`, `pnpm tsgo:prod`, `pnpm test:unit`, and
-`pnpm test:e2e`. The E2E job installs Chromium and WebKit and uses local mock
-providers; it omits the separate real-Gateway browser profile. This is a basic
+`pnpm test:e2e`. The E2E job installs Chromium and WebKit, builds the private QA
+runtime with `pnpm build qaRuntime`, and uses local mock providers. It reuses
+that runtime without generating SDK declarations and omits the separate
+real-Gateway browser profile. This is a basic
 development baseline, not the complete upstream CI or release suite. The unit
 command omits the heavier owner suites and isolated/fake-timer unit-fast lanes.
 
