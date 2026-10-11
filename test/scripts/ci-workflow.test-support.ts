@@ -175,22 +175,24 @@ export function evaluateWorkflowExpression(
       workflow_sha: context.workflowSha,
       workspace: context.workspace,
       token: context.workflowToken,
-      event:
-        context.githubEvent ??
-        (context.headRepository || context.eventName === "pull_request"
-          ? {
-              action: context.action,
-              pull_request: {
-                author_association: context.authorAssociation ?? "CONTRIBUTOR",
-                draft: context.draft ?? false,
-                number: context.pullRequestNumber,
-                head: {
-                  sha: context.headSha,
-                  repo: { full_name: context.headRepository ?? context.repository },
+      event: {
+        repository: { fork: false },
+        ...(context.githubEvent ??
+          (context.headRepository || context.eventName === "pull_request"
+            ? {
+                action: context.action,
+                pull_request: {
+                  author_association: context.authorAssociation ?? "CONTRIBUTOR",
+                  draft: context.draft ?? false,
+                  number: context.pullRequestNumber,
+                  head: {
+                    sha: context.headSha,
+                    repo: { full_name: context.headRepository ?? context.repository },
+                  },
                 },
-              },
-            }
-          : {}),
+              }
+            : {})),
+      },
     },
     inputs: {
       dispatch_id: context.dispatchId ?? "",

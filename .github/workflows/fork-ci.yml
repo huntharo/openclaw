@@ -1,0 +1,60 @@
+name: Fork CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  checks:
+    if: github.event.repository.fork
+    name: Fork CI (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        lane: [lint, types, unit, e2e]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ripgrep
+      - uses: ./.github/actions/setup-node-env
+        with:
+          semantic-checks: "true"
+      - name: Lint
+        if: matrix.lane == 'lint'
+        run: pnpm lint
+      - name: Check production types
+        if: matrix.lane == 'types'
+        run: pnpm tsgo:prod
+      - name: Unit tests
+        if: matrix.lane == 'unit'
+        run: pnpm test:unit
+      - uses: ./.github/actions/setup-playwright-chromium
+        if: matrix.lane == 'e2e'
+        with:
+          cache-mode: off
+      - name: Install WebKit
+        if: matrix.lane == 'e2e'
+        run: pnpm --dir ui exec playwright install --with-deps webkit
+      - name: Keyless E2E tests
+        if: matrix.lane == 'e2e'
+        env:
+          OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: "1"
+        run: pnpm test:e2e

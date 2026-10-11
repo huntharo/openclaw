@@ -22,9 +22,30 @@ env:
 permissions: {}
 
 jobs:
+  availability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check GitHub App configuration
+        id: check
+        env:
+          IS_FORK: ${{ github.event.repository.fork }}
+          PRIMARY_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          FALLBACK_KEY: ${{ secrets.GH_APP_PRIVATE_KEY_FALLBACK }}
+        run: |
+          if [[ "$IS_FORK" != "true" || -n "$PRIMARY_KEY" || -n "$FALLBACK_KEY" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Labeler skipped: this fork has neither GitHub App private key." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   label:
+    needs: availability
     if: >-
-      ${{ (
+      ${{ needs.availability.outputs.enabled == 'true' && (
         github.event_name == 'pull_request_target' &&
         (
           github.event.action != 'edited' ||
@@ -513,7 +534,8 @@ jobs:
             }
 
   backfill-pr-labels:
-    if: github.event_name == 'workflow_dispatch'
+    needs: availability
+    if: needs.availability.outputs.enabled == 'true' && github.event_name == 'workflow_dispatch'
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
       cancel-in-progress: false
@@ -845,8 +867,9 @@ jobs:
             core.info(`Processed ${processed} pull requests.`);
 
   label-issues:
+    needs: availability
     if: >-
-      ${{ (github.event_name == 'issues' &&
+      ${{ needs.availability.outputs.enabled == 'true' && (github.event_name == 'issues' &&
         (github.event.action != 'edited' || !github.event.changes || github.event.changes.title)) }}
     concurrency:
       group: ${{ github.workflow }}-issue-${{ github.event.issue.number }}
