@@ -3,7 +3,8 @@ import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 
 const mocks = vi.hoisted(() => ({ callGatewayFromCli: vi.fn() }));
 
-vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
+// mock-isolation: This adapter fixture owns the RPC sink and must not initialize host setup/state.
+vi.mock("openclaw/plugin-sdk/setup-runtime", () => ({
   callGatewayFromCli: mocks.callGatewayFromCli,
 }));
 

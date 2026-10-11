@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createChannelAutostartRecovery } from "../../channels/runtime/autostart-recovery.js";
 import { createGatewayCrashLoopRecovery } from "../../cli/gateway-cli/crash-loop-recovery.js";
 import type { InternalSessionEntry } from "../../config/sessions.js";
 import {
@@ -12,7 +13,6 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { callGateway } from "../../gateway/call.js";
-import { createChannelAutostartRecovery } from "../../gateway/server-channel-autostart-recovery.js";
 import { createGatewayInstanceRuntime } from "../../gateway/server-instance-runtime.js";
 import { markGatewayStartupMainSessionOrphans } from "../../gateway/server-startup-observers.js";
 import * as transcriptReaders from "../../gateway/session-transcript-readers.js";

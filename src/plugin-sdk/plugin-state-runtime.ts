@@ -61,3 +61,6 @@ export type {
   PluginBlobEntryInfo,
   PluginBlobStore,
 } from "../plugin-state/plugin-blob-store.js";
+
+// Carry the existing host-admitted state owner through bundled plugin effects.
+export { runWithLocalStateMutationOwner } from "../gateway/server-methods/local-state-owner.js";

@@ -22,6 +22,7 @@ import {
   type PersistedPluginModelCatalog,
 } from "../agents/plugin-model-catalog.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import { prepareConfigRuntimeEnv } from "../config/config-env-vars.js";
 import type { ConfigWriteNotification } from "../config/config.js";
 import { applyModelDefaults } from "../config/defaults.js";
@@ -112,7 +113,6 @@ import {
 } from "./config-reload.test-support.js";
 import { installWatcherMock } from "./config-reload.watcher.test-support.js";
 import { applyHookMappings, commitHookTransformMappingReload } from "./hooks-mapping.js";
-import { createChannelManager } from "./server-channels.js";
 import { createLazyGatewayCronState } from "./server-cron-lazy.js";
 import type { GatewayCronState } from "./server-cron.js";
 import {

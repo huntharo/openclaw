@@ -4,14 +4,14 @@ import type {
   ChannelId,
   ChannelPlugin,
 } from "../channels/plugins/types.public.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
+import { evaluateChannelHealth } from "../channels/status/health-policy.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { createEmptyPluginRegistry, type PluginRegistry } from "../plugins/registry.js";
 import { requireActivePluginChannelRegistry } from "../plugins/runtime.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
-import { evaluateChannelHealth } from "./channel-health-policy.js";
-import { createChannelManager } from "./server-channels.js";
 
 export type TestAccount = {
   enabled?: boolean;

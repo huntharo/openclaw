@@ -1964,7 +1964,6 @@ src/gateway/probe.ts	1
 src/gateway/restart-trace.ts	2
 src/gateway/secret-input-paths.ts	1
 src/gateway/server-broadcast.ts	1
-src/gateway/server-channels.ts	1
 src/gateway/server-chat-state.ts	1
 src/gateway/server-chat.ts	3
 src/gateway/server-core-runtime.ts	1
@@ -1984,7 +1983,6 @@ src/gateway/server-methods/approval-shared.ts	1
 src/gateway/server-methods/approval.ts	2
 src/gateway/server-methods/attachment-normalize.ts	1
 src/gateway/server-methods/base-hash.ts	1
-src/gateway/server-methods/channels.ts	2
 src/gateway/server-methods/chat-abort-authorization.ts	3
 src/gateway/server-methods/chat-assistant-content.ts	1
 src/gateway/server-methods/chat-broadcast.ts	1
@@ -2011,7 +2009,6 @@ src/gateway/server-methods/open-path.ts	1
 src/gateway/server-methods/plugin-approval.ts	1
 src/gateway/server-methods/plugin-host-hooks.ts	1
 src/gateway/server-methods/restart-request.ts	1
-src/gateway/server-methods/send.ts	1
 src/gateway/server-methods/session-create-initial-turn.ts	2
 src/gateway/server-methods/session-recovery-continuation.ts	1
 src/gateway/server-methods/sessions-compact.ts	1
@@ -2020,7 +2017,6 @@ src/gateway/server-methods/sessions-patch-engine.ts	1
 src/gateway/server-methods/system-agent-chat-params.ts	2
 src/gateway/server-methods/system-changes.ts	9
 src/gateway/server-methods/task-suggestions.ts	5
-src/gateway/server-methods/web.ts	1
 src/gateway/server-node-events.ts	1
 src/gateway/server-plugin-in-process-dispatch.ts	3
 src/gateway/server-plugins-node-runtime.ts	1

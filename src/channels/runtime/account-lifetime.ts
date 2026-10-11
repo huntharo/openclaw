@@ -1,19 +1,19 @@
-import { resolveChannelAccount } from "../channels/account-resolution.js";
-import type { ChannelGatewayContextV2 } from "../channels/plugins/types.adapters.js";
-import type { AnyChannelPlugin as ChannelPlugin } from "../channels/plugins/types.plugin.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import {
   createPluginRuntimeCapabilityLease,
   type PluginRuntimeCapabilityLease,
-} from "../plugins/capability-lease.js";
-import { withPluginHttpRouteRegistry } from "../plugins/http-registry.js";
-import { getPluginValueInstance, runPluginCleanup } from "../plugins/plugin-instance-scope.js";
-import type { PluginRegistry } from "../plugins/registry.js";
-import { withPluginServiceScheduler } from "../plugins/service-scheduler-binding.js";
-import { createPluginServiceSchedulerRunner } from "../plugins/service-scheduler-context.js";
-import { createPluginServiceScheduler } from "../plugins/service-scheduler.js";
-import type { PluginServiceSchedulerV1 } from "../plugins/service-scheduler.types.js";
+} from "../../plugins/capability-lease.js";
+import { withPluginHttpRouteRegistry } from "../../plugins/http-registry.js";
+import { getPluginValueInstance, runPluginCleanup } from "../../plugins/plugin-instance-scope.js";
+import type { PluginRegistry } from "../../plugins/registry.js";
+import { withPluginServiceScheduler } from "../../plugins/service-scheduler-binding.js";
+import { createPluginServiceSchedulerRunner } from "../../plugins/service-scheduler-context.js";
+import { createPluginServiceScheduler } from "../../plugins/service-scheduler.js";
+import type { PluginServiceSchedulerV1 } from "../../plugins/service-scheduler.types.js";
+import { resolveChannelAccount } from "../account-resolution.js";
+import type { ChannelGatewayContextV2 } from "../plugins/types.adapters.js";
+import type { AnyChannelPlugin as ChannelPlugin } from "../plugins/types.plugin.js";
 
 export type ChannelAccountLifetime = {
   plugin: ChannelPlugin;

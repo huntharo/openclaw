@@ -8,6 +8,7 @@ import {
   listChannelPlugins,
   normalizeChannelId,
 } from "../channels/plugins/index.js";
+import type { ChannelAccountStartOutcome } from "../channels/runtime/snapshot.types.js";
 import { resolveInstallableChannelPlugin } from "../commands/channel-setup/channel-plugin-resolution.js";
 import { parseAccountSelector } from "../commands/channels/account-selector.js";
 import { parseChannelSelector } from "../commands/channels/channel-selector.js";
@@ -15,7 +16,6 @@ import { requireValidConfigForWrite } from "../commands/config-validation.js";
 import { getRuntimeConfig, type OpenClawConfig } from "../config/config.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import { callGateway } from "../gateway/call.js";
-import type { ChannelAccountStartOutcome } from "../gateway/server-channel-runtime.types.js";
 import { setVerbose } from "../globals.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";

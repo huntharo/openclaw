@@ -1,11 +1,11 @@
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
-import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   channelBlockedPatch,
   channelReadyPatch,
   channelStoppedPatch,
   createTransportActivityStatusPatch,
-} from "openclaw/plugin-sdk/gateway-runtime";
+} from "openclaw/plugin-sdk/channel-status";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { isMatrixAccessTokenInvalidatedError } from "../sdk/client-support.js";
 import {
   isMatrixDisconnectedSyncState,

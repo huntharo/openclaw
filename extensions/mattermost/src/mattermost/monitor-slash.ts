@@ -1,5 +1,5 @@
 import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
-import { isLoopbackHost } from "openclaw/plugin-sdk/gateway-runtime";
+import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
 import type { ResolvedMattermostAccount } from "./accounts.js";
 import {
   fetchMattermostUserTeams,

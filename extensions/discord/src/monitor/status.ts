@@ -1,5 +1,5 @@
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
-import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 
 type DiscordMonitorStatusPatch = Pick<
   ChannelAccountSnapshot,

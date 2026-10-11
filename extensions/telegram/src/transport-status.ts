@@ -2,7 +2,7 @@ import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contrac
 import {
   channelReadyPatch,
   createTransportActivityStatusPatch,
-} from "openclaw/plugin-sdk/gateway-runtime";
+} from "openclaw/plugin-sdk/channel-status";
 
 type TelegramStatusSink = (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
 

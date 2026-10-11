@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { channelReadyPatch } from "openclaw/plugin-sdk/channel-status";
 import { safeParseJsonWithSchema, safeParseWithSchema } from "openclaw/plugin-sdk/extension-shared";
-import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import * as proxyCaptureSdk from "openclaw/plugin-sdk/proxy-capture";
 import {
   createDebugProxyWebSocketAgent,

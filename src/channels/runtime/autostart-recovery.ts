@@ -1,5 +1,5 @@
-import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
-import { isChannelStartupSuppressedByEnvironment } from "./server-sidecar-startup-mode.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { isChannelStartupSuppressedByEnvironment } from "./startup-mode.js";
 
 export function createChannelAutostartRecovery(params: {
   getSuppression: () => object | null;

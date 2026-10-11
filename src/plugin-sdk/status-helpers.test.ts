@@ -1,6 +1,6 @@
 // Status helper tests cover plugin status normalization and user-facing summaries.
 import { describe, expect, it } from "vitest";
-import { evaluateChannelHealth } from "../gateway/channel-health-policy.js";
+import { evaluateChannelHealth } from "../channels/status/health-policy.js";
 import {
   asString,
   createAsyncComputedAccountStatusAdapter,

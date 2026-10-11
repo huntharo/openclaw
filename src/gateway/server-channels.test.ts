@@ -14,6 +14,12 @@ import type {
   ChannelGatewayContext,
 } from "../channels/plugins/types.adapters.js";
 import type { ChannelAccountSnapshot, ChannelId } from "../channels/plugins/types.public.js";
+import { createChannelManager, type ChannelManager } from "../channels/runtime/manager.js";
+import {
+  channelBlockedPatch,
+  channelReadyPatch,
+  createTransportActivityStatusPatch,
+} from "../channels/status/patches.js";
 import { formatGatewayChannelsStatusLines } from "../commands/channels/status.runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getGatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime-context.js";
@@ -45,14 +51,8 @@ import {
 } from "../secrets/runtime-degraded-state.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
-import {
-  channelBlockedPatch,
-  channelReadyPatch,
-  createTransportActivityStatusPatch,
-} from "./channel-status-patches.js";
 import { restartRunningChannelAccounts } from "./channel-thaw-restart.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
-import { createChannelManager, type ChannelManager } from "./server-channels.js";
 import { registerChannelAutostartRecoveryTests } from "./server-channels.recovery.test-support.js";
 import {
   createTestPlugin,

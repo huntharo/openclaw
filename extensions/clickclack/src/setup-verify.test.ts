@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   workspaces: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
+// mock-isolation: This adapter fixture owns the RPC sink and must not initialize host setup/state.
+vi.mock("openclaw/plugin-sdk/setup-runtime", () => ({
   callGatewayFromCli: mocks.callGatewayFromCli,
 }));
 

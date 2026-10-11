@@ -13,6 +13,7 @@ import { visitModuleSpecifiers } from "./ts-guard-utils.mts";
 const sourceFilePattern = /\.[cm]?[jt]sx?$/;
 
 type ImportReference = {
+  typeOnly?: boolean;
   kind: string;
   specifier: string;
   resolutionMode?: "import" | "require";
@@ -146,8 +147,8 @@ export function createRuntimeImportGraph(
           if (resolve(file) === configFileName) {
             return configText();
           }
-          if (isDeclaration(file)) {
-            return sourceImports ? undefined : null;
+          if (!sourceImports && isDeclaration(file)) {
+            return null;
           }
           if (!/\.[cm]?[jt]sx?$/.test(file) || file.split(/[\\/]/).includes("node_modules")) {
             return undefined;
@@ -186,6 +187,7 @@ export function createRuntimeImportGraph(
                 return;
               }
               selected.push({
+                typeOnly: isTypeOnlyReference(node) || ts.isImportTypeNode(node),
                 kind,
                 specifier: normalizeSpecifier(specifier),
                 resolutionMode: resolutionMode(node, kind),

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { requestDiscord } from "@openclaw/discord/api.js";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
 import { sleep } from "openclaw/plugin-sdk/runtime-env";
 import { assertLiveScenarioReply as assertDiscordScenarioReply } from "../shared/live-scenario-reply.js";
 import {
@@ -14,6 +14,9 @@ import {
   waitForDiscordVoiceState,
 } from "./discord-live.runtime.js";
 import type { DiscordQaScenarioEnvironment } from "./scenario-environment.js";
+
+const { requestDiscord } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
 
 export const discordQaTranscriptsVoiceAuthorizationScenario: DiscordQaScenarioImplementation = {
   buildRun: () => {

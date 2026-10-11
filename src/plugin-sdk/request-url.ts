@@ -1,5 +1,5 @@
 // Host classification does not need HTTP clients or dispatcher construction.
-export { isLoopbackHost } from "../gateway/net.js";
+export { isLoopbackHost } from "../../packages/gateway-client/src/client-address-utils.js";
 
 /** Extract a string URL from the common request-like inputs accepted by fetch helpers. */
 export function resolveRequestUrl(input: RequestInfo | URL): string {

@@ -29,4 +29,7 @@ export {
   ssrfPolicyFromPrivateNetworkOptIn,
   ssrfPolicyFromAllowPrivateNetwork,
 } from "./ssrf-policy.js";
-export { isLoopbackHost, isPrivateOrLoopbackHost } from "../gateway/net.js";
+export {
+  isLoopbackHost,
+  isPrivateOrLoopbackHost,
+} from "../../packages/gateway-client/src/client-address-utils.js";

@@ -43,7 +43,7 @@ export async function verifyBuzzAfterSetup(params: {
   runtime: RuntimeEnv;
 }): Promise<void> {
   try {
-    const { callGatewayFromCli } = await import("openclaw/plugin-sdk/gateway-runtime");
+    const { callGatewayFromCli } = await import("openclaw/plugin-sdk/setup-runtime");
     const reloadDeadline = Date.now() + GATEWAY_RELOAD_WAIT_MS;
     let reloadPending = false;
     while (true) {

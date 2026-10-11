@@ -225,7 +225,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // resolveCommandAuthorization, createApproverRestrictedNativeApprovalCapability,
       // createChannelApprovalNativeRuntimeAdapter, and createLazyChannelApprovalNativeRuntimeAdapter.
       // +7: approved portable model-menu exports and read-only publication capture (2026-10-03).
-      3668,
+      // +4: channel-owned status helpers replace all bundled Gateway-runtime imports.
+      // +1: existing CLI RPC helper for explicit channel setup verification.
+      3673,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -244,7 +246,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: runWithLocalStateMutationOwner shares the existing transport authority scope.
       // +5: the five awaited inspection, authorization, and approval factory replacements above.
       // +4: approved pure model-menu functions and read-only publication capture (2026-10-03).
-      2131,
+      // +4: channel-owned status helpers replace all bundled Gateway-runtime imports.
+      // +1: existing CLI RPC helper for explicit channel setup verification.
+      2136,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

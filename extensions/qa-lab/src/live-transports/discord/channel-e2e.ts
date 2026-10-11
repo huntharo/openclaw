@@ -3,11 +3,14 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DiscordApiError, requestDiscord } from "@openclaw/discord/api.js";
+import { loadQaRunnerChannelApi } from "openclaw/plugin-sdk/qa-runner-runtime";
 import type { QaChannelE2eDriver, QaChannelE2eMessage } from "../shared/channel-e2e.types.js";
 import { inspectDiscordE2eReadiness, type DiscordE2eChannel } from "./channel-e2e-doctor.js";
 import { createDiscordE2eRecorder, type DiscordE2eNativeMessage } from "./channel-e2e-recorder.js";
 import type { DiscordQaRuntimeEnv } from "./discord-live.runtime.js";
+
+const { DiscordApiError, requestDiscord } =
+  loadQaRunnerChannelApi<typeof import("@openclaw/discord/api.js")>("discord");
 
 type OwnedMessage = { id: string; channelId: string; actor: "driver" | "sut" };
 type ReplyWait = { channelId: string; trigger: string; textIncludes?: string };

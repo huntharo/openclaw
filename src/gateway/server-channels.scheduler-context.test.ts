@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import type { ChannelGatewayContextV2 } from "../channels/plugins/types.adapters.js";
+import { createChannelManager } from "../channels/runtime/manager.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { createAuthRateLimiter } from "../plugin-sdk/webhook-ingress.js";
 import { registerPluginHttpRoute } from "../plugins/http-registry.js";
@@ -25,7 +26,6 @@ import {
   readOperatorToolGatewayAuthority,
   runWithOperatorToolGatewayAuthority,
 } from "./operator-tool-gateway-authority.js";
-import { createChannelManager } from "./server-channels.js";
 import { createTestPlugin, type TestAccount } from "./server-channels.test-support.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import { createGatewayRequestContext } from "./server-request-context.js";

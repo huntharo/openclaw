@@ -1,6 +1,6 @@
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
-import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/channel-status";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
 import { createA2aHttpHandler } from "./http.js";

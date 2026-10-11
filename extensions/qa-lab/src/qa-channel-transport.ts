@@ -1,4 +1,5 @@
 import type { QaBusState } from "./bus-state.js";
+import { createQaRunnerRuntime } from "./harness-runtime.js";
 import { getQaProvider } from "./providers/index.js";
 import {
   createQaTransportStateMethods,
@@ -76,7 +77,7 @@ function createQaChannelReportNotes(params: QaTransportReportParams) {
 }
 
 async function handleQaChannelAction(params: Parameters<QaTransportAdapter["handleAction"]>[0]) {
-  const { qaChannelPlugin } = await import("openclaw/plugin-sdk/qa-channel");
+  const { qaChannelPlugin } = await import("openclaw/plugin-sdk/qa-runner-runtime");
   return await qaChannelPlugin.actions?.handleAction?.({
     channel: QA_CHANNEL_ID,
     action: params.action,
@@ -141,4 +142,48 @@ export function createQaChannelTransport(state: QaBusState, transportPolicy?: Qa
     handleAction: handleQaChannelAction,
     createReportNotes: createQaChannelReportNotes,
   } satisfies QaTransportAdapter;
+}
+
+export async function startQaChannelGatewayLoop(params: { baseUrl: string }) {
+  const { qaChannelPlugin, setQaChannelRuntime } =
+    await import("openclaw/plugin-sdk/qa-runner-runtime");
+  const runtime = createQaRunnerRuntime();
+  setQaChannelRuntime(runtime);
+  const cfg = createQaChannelGatewayConfig({ baseUrl: params.baseUrl });
+  const account = qaChannelPlugin.config.resolveAccount(cfg, "default");
+  const abort = new AbortController();
+  const task = Promise.resolve().then(
+    async () =>
+      await qaChannelPlugin.gateway?.startAccount?.({
+        accountId: account.accountId,
+        account,
+        cfg,
+        runtime: {
+          log: () => undefined,
+          error: () => undefined,
+          exit: () => undefined,
+        },
+        abortSignal: abort.signal,
+        log: {
+          info: () => undefined,
+          warn: () => undefined,
+          error: () => undefined,
+          debug: () => undefined,
+        },
+        getStatus: () => ({
+          accountId: account.accountId,
+          configured: true,
+          enabled: true,
+          running: true,
+        }),
+        setStatus: () => undefined,
+      }),
+  );
+  return {
+    cfg,
+    async stop() {
+      abort.abort();
+      await task;
+    },
+  };
 }

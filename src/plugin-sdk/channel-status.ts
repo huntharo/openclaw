@@ -12,3 +12,10 @@ export {
   buildTokenChannelStatusSummary,
   collectStatusIssuesFromLastError,
 } from "./status-helpers.js";
+
+export {
+  channelBlockedPatch,
+  channelReadyPatch,
+  channelStoppedPatch,
+  createTransportActivityStatusPatch,
+} from "../channels/status/patches.js";

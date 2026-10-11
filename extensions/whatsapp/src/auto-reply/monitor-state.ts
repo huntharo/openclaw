@@ -2,7 +2,7 @@ import {
   channelReadyPatch,
   channelStoppedPatch,
   createTransportActivityStatusPatch,
-} from "openclaw/plugin-sdk/gateway-runtime";
+} from "openclaw/plugin-sdk/channel-status";
 import type { WebChannelHealthState, WebChannelStatus } from "./types.js";
 
 const LIFECYCLE_BY_HEALTH_STATE = {

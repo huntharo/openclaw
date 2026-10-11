@@ -38,7 +38,8 @@ vi.mock("./live-transports/cli.js", () => ({
   listLiveTransportQaAdapterFactories: liveTransportMock.listAdapterFactories,
 }));
 
-vi.mock("openclaw/plugin-sdk/qa-channel", () => ({
+// mock-isolation: The lab server owns a synthetic QA transport, not the real channel registration.
+vi.mock("openclaw/plugin-sdk/qa-runner-runtime", () => ({
   qaChannelPlugin: {
     config: {
       resolveAccount: qaChannelMock.resolveAccount,
