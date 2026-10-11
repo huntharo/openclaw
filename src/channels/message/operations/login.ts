@@ -1,13 +1,25 @@
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
-import { ErrorCodes, errorShape, validateWebLoginStartParams, validateWebLoginWaitParams, type WebLoginStartParams, type WebLoginWaitParams } from "../../../../packages/gateway-protocol/src/index.js";
-import { listChannelPlugins, normalizeChannelId } from "../../plugins/index.js";
-import { listLoadedChannelPluginsForRegistry } from "../../plugins/registry-loaded.js";
+import {
+  ErrorCodes,
+  errorShape,
+  validateWebLoginStartParams,
+  validateWebLoginWaitParams,
+  type WebLoginStartParams,
+  type WebLoginWaitParams,
+} from "../../../../packages/gateway-protocol/src/index.js";
+import { respondUnavailable } from "../../../gateway/server-methods/response.js";
+import type {
+  GatewayRequestContext,
+  GatewayRequestHandler,
+  GatewayRequestHandlers,
+  RespondFn,
+} from "../../../gateway/server-methods/types.js";
+import { assertValidParams, type Validator } from "../../../gateway/server-methods/validation.js";
 import { resolveMissingOfficialExternalChannelPluginRepairHints } from "../../../plugins/official-external-plugin-repair-hints.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
+import { listChannelPlugins, normalizeChannelId } from "../../plugins/index.js";
+import { listLoadedChannelPluginsForRegistry } from "../../plugins/registry-loaded.js";
 import { resolveRuntimeAccountSnapshot } from "./account.js";
-import { respondUnavailable } from "../../../gateway/server-methods/response.js";
-import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "../../../gateway/server-methods/types.js";
-import { assertValidParams, type Validator } from "../../../gateway/server-methods/validation.js";
 
 const WEB_LOGIN_METHODS = new Set(["web.login.start", "web.login.wait"]);
 
@@ -94,7 +106,7 @@ function webLoginHandler<
     },
     respond: RespondFn,
   ) => Promise<void>,
-): GatewayRequestHandlers[string] {
+): GatewayRequestHandler {
   return async ({ params, respond, context }) => {
     if (!assertValidParams(params, validate, method, respond)) {
       return;
@@ -132,7 +144,12 @@ function webLoginHandler<
       await handle(
         params,
         context,
-        { accountId, provider, run: run.bind(gateway) as NonNullable<WebLoginGateway[M]> },
+        {
+          accountId,
+          provider,
+          // SAFETY: bind preserves the checked method's arguments and return type.
+          run: run.bind(gateway) as NonNullable<WebLoginGateway[M]>,
+        },
         respond,
       );
     } catch (err) {
@@ -141,7 +158,7 @@ function webLoginHandler<
   };
 }
 
-export const webHandlers: GatewayRequestHandlers = {
+export const webHandlers = {
   "web.login.start": webLoginHandler(
     "web.login.start",
     validateWebLoginStartParams,
@@ -192,4 +209,4 @@ export const webHandlers: GatewayRequestHandlers = {
       respond(true, result, undefined);
     },
   ),
-};
+} satisfies GatewayRequestHandlers;

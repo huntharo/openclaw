@@ -7,6 +7,7 @@ const repoRoot = resolveRepoRoot(import.meta.url);
 const jscpdBin = resolveRepoToolBinPath("jscpd", { cwd: repoRoot });
 
 const targets = [
+  ".dependency-cruiser.cjs",
   ".github/actions",
   ".github/codeql/openclaw-boundary/tests",
   "src",

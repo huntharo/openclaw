@@ -1,9 +1,9 @@
-import type { AnyChannelPlugin as ChannelPlugin } from "../../plugins/types.plugin.js";
-import type { ChannelId, ChannelStatusIssue } from "../../plugins/types.public.js";
+import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
+import { formatForLog } from "../../../gateway/ws-log.js";
 import { collectChannelStatusIssues } from "../../../infra/channels-status-issues.js";
 import { DEFAULT_ACCOUNT_ID } from "../../../routing/session-key.js";
-import { formatForLog } from "../../../gateway/ws-log.js";
-import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
+import type { AnyChannelPlugin as ChannelPlugin } from "../../plugins/types.plugin.js";
+import type { ChannelId, ChannelStatusIssue } from "../../plugins/types.public.js";
 
 export function resolveDeferredChannelReloadIssue(
   context: GatewayRequestContext,

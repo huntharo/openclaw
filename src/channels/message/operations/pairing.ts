@@ -1,20 +1,50 @@
 import { asOptionalRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeOptionalLowercaseString, normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { ErrorCodes, errorShape, type ChannelsPairingApproveResult, type ChannelsPairingRequest, validateChannelsPairingApproveParams, validateChannelsPairingDismissParams, validateChannelsPairingListParams } from "../../../../packages/gateway-protocol/src/index.js";
-import { describeChannelAccount, resolveChannelAccount, resolvePluginDmPolicy } from "../../account-resolution.js";
+import {
+  normalizeOptionalLowercaseString,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
+import {
+  ErrorCodes,
+  errorShape,
+  type ChannelsPairingApproveResult,
+  type ChannelsPairingRequest,
+  validateChannelsPairingApproveParams,
+  validateChannelsPairingDismissParams,
+  validateChannelsPairingListParams,
+} from "../../../../packages/gateway-protocol/src/index.js";
+import { hasConfiguredCommandOwners } from "../../../commands/doctor-command-owner.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { captureLocalStateMutationGuard } from "../../../gateway/server-methods/local-state-owner.js";
+import {
+  respondUnavailable,
+  respondUnavailableOnThrow,
+} from "../../../gateway/server-methods/response.js";
+import type {
+  GatewayRequestHandlerOptions,
+  GatewayRequestHandlers,
+  RespondFn,
+} from "../../../gateway/server-methods/types.js";
+import { defineValidatedGatewayHandler } from "../../../gateway/server-methods/validation.js";
+import { formatForLog } from "../../../gateway/ws-log.js";
+import { bootstrapCommandOwnerFromPairing } from "../../../pairing/command-owner.js";
+import {
+  approveChannelPairingCode,
+  approveChannelPairingRequest,
+  CHANNEL_PAIRING_PENDING_MAX,
+  CHANNEL_PAIRING_PENDING_TTL_MS,
+  dismissChannelPairingRequest,
+  listChannelPairingRequests,
+  resolveChannelPairingRequestId,
+} from "../../../pairing/pairing-store.js";
+import {
+  describeChannelAccount,
+  resolveChannelAccount,
+  resolvePluginDmPolicy,
+} from "../../account-resolution.js";
 import { resolveChannelDmPolicy } from "../../plugins/dm-access.js";
 import { listChannelPlugins } from "../../plugins/index.js";
 import { notifyPairingApproved } from "../../plugins/pairing.js";
 import type { AnyChannelPlugin as ChannelPlugin } from "../../plugins/types.plugin.js";
-import { hasConfiguredCommandOwners } from "../../../commands/doctor-command-owner.js";
-import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { bootstrapCommandOwnerFromPairing } from "../../../pairing/command-owner.js";
-import { approveChannelPairingCode, approveChannelPairingRequest, CHANNEL_PAIRING_PENDING_MAX, CHANNEL_PAIRING_PENDING_TTL_MS, dismissChannelPairingRequest, listChannelPairingRequests, resolveChannelPairingRequestId } from "../../../pairing/pairing-store.js";
-import { formatForLog } from "../../../gateway/ws-log.js";
-import { captureLocalStateMutationGuard } from "../../../gateway/server-methods/local-state-owner.js";
-import { respondUnavailable, respondUnavailableOnThrow } from "../../../gateway/server-methods/response.js";
-import type { GatewayRequestHandlerOptions, GatewayRequestHandlers, RespondFn } from "../../../gateway/server-methods/types.js";
-import { defineValidatedGatewayHandler } from "../../../gateway/server-methods/validation.js";
 
 type PairingAccount = {
   plugin: ChannelPlugin;
@@ -172,7 +202,7 @@ function capturePairingCliGuard(expectedOwnerId: string, opts: GatewayRequestHan
   }
 }
 
-export const channelPairingHandlers: GatewayRequestHandlers = {
+export const channelPairingHandlers = {
   "channels.pairing.list": defineValidatedGatewayHandler(
     "channels.pairing.list",
     validateChannelsPairingListParams,
@@ -384,4 +414,4 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
       });
     },
   ),
-};
+} satisfies GatewayRequestHandlers;
