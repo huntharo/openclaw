@@ -59,6 +59,8 @@ const repositoryScriptEntries = [
   "scripts/test-macos-native.mts!",
   "scripts/check-control-ui-performance.mts!",
   "scripts/check-control-ui-precompressed-assets.mts!",
+  // The diagnostics guide invokes this owned Chromium recorder by path.
+  "scripts/perf/control-ui-hot-cpu.mts!",
   "scripts/check-package-dist-imports.mjs!",
   "scripts/check-plugin-sdk-exports.mts!",
   // Declaration preparation and boundary checks launch this compiler worker by path.
