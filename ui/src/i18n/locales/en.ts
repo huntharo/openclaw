@@ -19,6 +19,7 @@ export const en: TranslationMap & {
     detailPanel: TranslationMap;
     welcome: TranslationMap & { suggestions: TranslationMap & { whatCanYouDo: string } };
     goals: TranslationMap;
+    imageLightbox: TranslationMap;
     messages: TranslationMap &
       Record<
         | "copySelection"

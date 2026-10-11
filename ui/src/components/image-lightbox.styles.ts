@@ -129,6 +129,113 @@ export const imageLightboxStyles = css`
     touch-action: none;
   }
 
+  .stage.stage--interactive {
+    padding: calc(76px + var(--safe-area-top, 0px)) calc(64px + var(--safe-area-right, 0px))
+      calc(76px + var(--safe-area-bottom, 0px)) calc(64px + var(--safe-area-left, 0px));
+  }
+
+  .interactive-svg {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--card);
+    border-radius: var(--radius-md);
+  }
+
+  .svg-notice {
+    position: fixed;
+    bottom: max(14px, calc(10px + var(--safe-area-bottom, 0px)));
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 48px);
+    margin: 0;
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    color: var(--media-foreground);
+    background: var(--image-lightbox-control-background);
+    font-size: 12px;
+  }
+
+  openclaw-modal-dialog.svg-script-notice {
+    --openclaw-modal-width: 480px;
+    --openclaw-modal-max-width: calc(100vw - 24px);
+    --openclaw-modal-max-height: calc(100dvh - 24px);
+  }
+
+  .svg-script-notice-content {
+    padding: 24px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--card);
+    color: var(--text);
+  }
+
+  .svg-script-notice-content h2 {
+    margin: 0 0 12px;
+    font-size: 18px;
+  }
+
+  .svg-script-notice-content p {
+    margin: 0;
+    line-height: 1.6;
+  }
+
+  .svg-script-notice-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  .svg-script-notice-actions .action {
+    color: var(--text);
+    text-shadow: none;
+  }
+
+  .svg-script-notice-actions .svg-run-once {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+
+  .svg-search {
+    position: fixed;
+    z-index: 2;
+    bottom: max(14px, calc(10px + var(--safe-area-bottom, 0px)));
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: min(420px, calc(100vw - 48px));
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    background: var(--card);
+  }
+
+  .svg-search input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    background: var(--input);
+    font: inherit;
+  }
+
+  .svg-search .action {
+    color: var(--accent-foreground);
+    background: var(--accent);
+    text-shadow: none;
+  }
+
+  .svg-search [role="alert"] {
+    flex-basis: 100%;
+    font-size: 12px;
+  }
+
   .stage.stage--video {
     padding: calc(76px + var(--safe-area-top, 0px)) calc(64px + var(--safe-area-right, 0px))
       calc(76px + var(--safe-area-bottom, 0px)) calc(64px + var(--safe-area-left, 0px));
@@ -251,6 +358,10 @@ export const imageLightboxStyles = css`
     cursor: grab;
   }
 
+  .image[role="button"]:not(.zoomed) {
+    cursor: default;
+  }
+
   .zoom-controls {
     position: fixed;
     z-index: 1;
@@ -284,6 +395,10 @@ export const imageLightboxStyles = css`
     .stage {
       padding: calc(68px + var(--safe-area-top, 0px)) calc(12px + var(--safe-area-right, 0px))
         calc(64px + var(--safe-area-bottom, 0px)) calc(12px + var(--safe-area-left, 0px));
+    }
+
+    .stage.stage--interactive {
+      padding-inline: calc(12px + var(--safe-area-right, 0px));
     }
 
     .open-original {

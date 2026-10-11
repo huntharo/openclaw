@@ -22,6 +22,7 @@ import { registerDevicesEnglish } from "../../ui/src/i18n/locales/en-devices.ts"
 import { registerDreamingEnglish } from "../../ui/src/i18n/locales/en-dreaming.ts";
 import { registerFilePreviewEnglish } from "../../ui/src/i18n/locales/en-file-preview.ts";
 import { registerGitHubEnglish } from "../../ui/src/i18n/locales/en-github.ts";
+import { registerInteractiveSvgEnglish } from "../../ui/src/i18n/locales/en-interactive-svg.ts";
 import { registerLabsEnglish } from "../../ui/src/i18n/locales/en-labs.ts";
 import { registerLinkReaderEnglish } from "../../ui/src/i18n/locales/en-link-reader.ts";
 import { registerLoginEnglish } from "../../ui/src/i18n/locales/en-login.ts";
@@ -87,6 +88,7 @@ const sourceFiles = [
   "en-dreaming.ts",
   "en-file-preview.ts",
   "en-processes.ts",
+  "en-interactive-svg.ts",
   "en-labs.ts",
   "en-login.ts",
   "en-link-reader.ts",
@@ -167,6 +169,10 @@ export function loadControlUiSourceCatalog(): TranslationMap {
         welcome: registerCommandPaletteEnglish.catalog.chat.welcome,
         messages: registerChatMessageMetadataEnglish.catalog.chat.messages,
         pullRequests: registerGitHubEnglish.catalog.chat.pullRequests,
+        imageLightbox: {
+          ...en.chat.imageLightbox,
+          ...registerInteractiveSvgEnglish.catalog.chat.imageLightbox,
+        },
       },
       sessionHovercard: registerGitHubEnglish.catalog.sessionHovercard,
       githubPublication: registerGitHubEnglish.catalog.githubPublication,
