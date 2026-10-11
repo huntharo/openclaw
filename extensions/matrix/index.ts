@@ -2,8 +2,8 @@ import {
   defineBundledChannelEntry,
   type OpenClawPluginApi,
 } from "openclaw/plugin-sdk/channel-entry-contract";
-import { runWithLocalStateMutationOwner } from "openclaw/plugin-sdk/gateway-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { runWithLocalStateMutationOwner } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { registerMatrixCliMetadata } from "./cli-metadata.js";
 import { setMatrixRuntimeLifecycle } from "./runtime-setter-api.js";
 import { registerMatrixSubagentHooks } from "./subagent-hooks-api.js";

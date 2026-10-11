@@ -39,6 +39,9 @@ admission paths.
 UI and Gateway code must not import channel provider implementations. Channel
 providers must not import UI or Gateway implementations, or another provider's
 private source. Consume narrow `openclaw/plugin-sdk/*` contracts instead.
+Bundled stateful handlers can use the private `plugin-state-runtime` surface
+to retain the existing host-admitted local state owner through their effects.
+It forwards the existing owner guard and does not grant authority or add a public SDK export.
 Account monitors import `channelBlockedPatch`, `channelReadyPatch`,
 `channelStoppedPatch`, and `createTransportActivityStatusPatch` from
 `openclaw/plugin-sdk/channel-status`. The earlier `gateway-runtime` exports
