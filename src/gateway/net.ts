@@ -14,10 +14,6 @@ import {
   isLoopbackHost,
   isPrivateOrLoopbackHost,
 } from "../../packages/gateway-client/src/client-address-utils.js";
-export {
-  isLoopbackHost,
-  isPrivateOrLoopbackHost,
-} from "../../packages/gateway-client/src/client-address-utils.js";
 import type { GatewayBindMode } from "../config/types.gateway.js";
 import { isContainerEnvironment } from "../infra/container-environment.js";
 import {
@@ -28,6 +24,11 @@ import {
 import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
 import { firstHeaderValue } from "./http-header-value.js";
 import { normalizeWebSocketProtocol } from "./websocket-protocol.js";
+
+export {
+  isLoopbackHost,
+  isPrivateOrLoopbackHost,
+} from "../../packages/gateway-client/src/client-address-utils.js";
 
 export function pickPrimaryLanIPv4(): string | undefined {
   return pickMatchingExternalInterfaceAddress(os.networkInterfaces(), {

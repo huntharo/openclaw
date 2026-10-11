@@ -5,6 +5,7 @@ import { formatGatewayCrashLoopManualChannelStartHint } from "../../infra/gatewa
 import { resetDirectoryCache } from "../../infra/outbound/target-resolver.js";
 import { runPluginCleanup } from "../../plugins/plugin-instance-scope.js";
 import type { PluginRegistry } from "../../plugins/registry.js";
+import { withPluginRuntimeGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import type { PluginRuntimeChannel } from "../../plugins/runtime/types-channel.js";
 import { normalizeAccountId } from "../../routing/session-key.js";
 import {
@@ -20,14 +21,14 @@ import { describeChannelAccount, resolveChannelAccount } from "../account-resolu
 import { getCredentialUnavailableDiagnostics } from "../account-snapshot-fields.js";
 import { getLoadedChannelPluginEntryById } from "../plugins/registry-loaded.js";
 import type { ChannelAccountSnapshot, ChannelId } from "../plugins/types.public.js";
+import { createChannelAccountLifetime } from "./account-lifetime.js";
 import type { ChannelAccountStartOutcome, StartChannelOptions } from "./snapshot.types.js";
 import { runChannelAccountStartup } from "./startup.js";
 import type { ChannelRuntimeState } from "./state.js";
 import { startChannelAccountTask } from "./task.js";
 import type { ChannelManager } from "./types.js";
+
 const CHANNEL_STARTUP_CONCURRENCY = 4;
-import { withPluginRuntimeGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
-import { createChannelAccountLifetime } from "./account-lifetime.js";
 export function createChannelStarter(state: ChannelRuntimeState) {
   const {
     opts,

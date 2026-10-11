@@ -186,15 +186,13 @@ exports.configured = ({env}) => Boolean(env.TELEGRAM_BOT_TOKEN);`,
         throw new Error("Gateway poll entry is missing");
       }
       await poll({
-        params: JSON.parse(
-          JSON.stringify({
-            channel: "telegram",
-            to: "fixture-chat",
-            question: "Selected provider?",
-            options: ["Yes", "No"],
-            idempotencyKey: "messaging-bus-poll",
-          }),
-        ),
+        params: {
+          channel: "telegram",
+          to: "fixture-chat",
+          question: "Selected provider?",
+          options: ["Yes", "No"],
+          idempotencyKey: "messaging-bus-poll",
+        },
         respond,
         context,
         client: null,

@@ -1,4 +1,22 @@
+import type { Command } from "commander";
 import { loadQaRuntimeModule } from "../channels/testing/qa-runtime.js";
+import { formatErrorMessage } from "../infra/errors.js";
+import { loadBundledPluginManifestRegistry } from "../plugins/manifest-registry-build.js";
+import { loadPluginManifestRegistryCore } from "../plugins/manifest-registry.js";
+import type { PluginManifestRecord } from "../plugins/manifest-registry.types.js";
+import type { OpenClawConfig } from "./config-contracts.js";
+import {
+  loadBundledPluginPublicSurfaceModuleSync,
+  tryLoadActivatedBundledPluginPublicSurfaceModuleSync,
+} from "./facade-runtime.js";
+import { resolvePrivateQaBundledPluginsEnv } from "./private-qa-bundled-env.js";
+import type {
+  QaBusEditMessageInput,
+  QaBusInboundMessageInput,
+  QaBusMessage,
+  QaBusOutboundMessageInput,
+} from "./qa-channel-protocol.js";
+
 export { loadQaRuntimeModule, isQaRuntimeAvailable } from "../channels/testing/qa-runtime.js";
 export {
   loadQaRunnerChannelApi,
@@ -21,23 +39,6 @@ export {
   sendQaBusMessage,
   setQaChannelRuntime,
 } from "../channels/testing/qa-channel.js";
-import type { Command } from "commander";
-import { formatErrorMessage } from "../infra/errors.js";
-import { loadBundledPluginManifestRegistry } from "../plugins/manifest-registry-build.js";
-import { loadPluginManifestRegistryCore } from "../plugins/manifest-registry.js";
-import type { PluginManifestRecord } from "../plugins/manifest-registry.types.js";
-import type { OpenClawConfig } from "./config-contracts.js";
-import {
-  loadBundledPluginPublicSurfaceModuleSync,
-  tryLoadActivatedBundledPluginPublicSurfaceModuleSync,
-} from "./facade-runtime.js";
-import { resolvePrivateQaBundledPluginsEnv } from "./private-qa-bundled-env.js";
-import type {
-  QaBusEditMessageInput,
-  QaBusInboundMessageInput,
-  QaBusMessage,
-  QaBusOutboundMessageInput,
-} from "./qa-channel-protocol.js";
 
 type QaRunnerTransportPolicy = {
   directMessageOnly?: true;
