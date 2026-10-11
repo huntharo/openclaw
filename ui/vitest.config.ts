@@ -75,7 +75,10 @@ const sharedUiTestConfig = {
   testTimeout: 60_000,
   hookTimeout: 60_000,
 } as const;
-const nodeSetupFiles = ["./src/test-helpers/dom.setup.ts", "./src/test-helpers/github-network.setup.ts"];
+const nodeSetupFiles = [
+  "./src/test-helpers/dom.setup.ts",
+  "./src/test-helpers/github-network.setup.ts",
+];
 const nodeDrivenBrowserLayoutTests = relativizeScopedPatterns(uiNodeDrivenBrowserTestFiles, "ui");
 const timingTests = relativizeScopedPatterns(uiTimingTestFiles, "ui");
 const mockRegistryUnitTests = uiIsolatedTestFiles.map((testFile) => testFile.slice("ui/".length));
