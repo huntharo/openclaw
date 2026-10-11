@@ -97,6 +97,8 @@ export type ControlUiMockRequestHandler = (request: {
 }) => void;
 
 export type ControlUiMockGateway = {
+  readonly wireFrames: Array<{ socketId: number; direction: "sent" | "received"; data: string }>;
+  readonly wireFramesDropped: number;
   readonly online: boolean;
   closeLatest: (code?: number, reason?: string) => void;
   deliverLatest: (frame: unknown) => void;
