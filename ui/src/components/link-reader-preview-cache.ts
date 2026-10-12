@@ -7,7 +7,7 @@ import {
   previewContextFor,
   type CacheEntry,
   type PreviewContext,
-} from "./link-reader-preview.ts";
+} from "./link-reader-preview.tsx";
 import { linkReaderResponseMatchesTarget } from "./link-reader-response.ts";
 import { linkReaderTargetKey, type LinkReaderTarget } from "./link-reader-target.ts";
 

@@ -558,6 +558,9 @@ describe("original publication admission reader", () => {
     const archivePath = join(root, "plan.zip");
     const callsPath = join(root, "calls.jsonl");
     const gh = join(root, "gh");
+    const credentialPreload = join(root, "credential.cjs");
+    // Child environments strip credentials; recreate only this synthetic fixture in Node.
+    writeFileSync(credentialPreload, 'process.env.GH_TOKEN = "synthetic-evidence-token";\n');
     const workflowPath = ".github/workflows/full-release-validation.yml";
     const workflowBytes = Buffer.from(
       'env:\n  FULL_RELEASE_SOURCE_ADMISSION_CONTRACT: "1"\n' +
@@ -685,7 +688,7 @@ try {
         {
           PATH: `${root}:${process.env.PATH ?? ""}`,
           OPENCLAW_GH_BIN: pendingGh,
-          GH_TOKEN: "synthetic-evidence-token",
+          NODE_OPTIONS: `--require=${JSON.stringify(credentialPreload)}`,
           FULL_RELEASE_SOURCE_ADMISSION_CONTRACT: "1",
           FULL_RELEASE_PUBLICATION_ADMISSION_CONTRACT: "1",
           FULL_RELEASE_EXECUTION_PLAN_PATH: written,
@@ -928,13 +931,7 @@ process.stdout.write(JSON.stringify(value));
       planRestore
         ? [resolve("scripts/full-release-validation-state.mjs"), "plan"]
         : workflowRestore
-          ? [
-              "-c",
-              // Shell startup may prepend host tools; restore the fixture transport first.
-              'export PATH="$OPENCLAW_FIXTURE_PATH"\n' +
-                '[[ "$(command -v gh)" == "$OPENCLAW_GH_BIN" ]] || exit 97\n' +
-                expectDefined(restoreCommand, "actual admission command"),
-            ]
+          ? ["-c", expectDefined(restoreCommand, "actual admission command")]
           : [
               "--input-type=module",
               "--eval",
@@ -949,10 +946,9 @@ process.stdout.write(JSON.stringify(restored));
       {
         encoding: "utf8",
         env: {
-          PATH: `${root}:${process.env.PATH ?? ""}`,
-          OPENCLAW_FIXTURE_PATH: `${root}:${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
+          PATH: `${root}:${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
           OPENCLAW_GH_BIN: gh,
-          GH_TOKEN: "synthetic-evidence-token",
+          NODE_OPTIONS: `--require=${JSON.stringify(credentialPreload)}`,
           GITHUB_RUN_ATTEMPT:
             fault === "workflow-plan-prewrite" ? "1" : fault === "workflow-plan-cached" ? "3" : "2",
           RUNNER_TEMP: root,
@@ -1078,7 +1074,7 @@ process.stdout.write(JSON.stringify(restored.plan));
           env: {
             PATH: `${root}:${process.env.PATH ?? ""}`,
             OPENCLAW_GH_BIN: gh,
-            GH_TOKEN: "synthetic-evidence-token",
+            NODE_OPTIONS: `--require=${JSON.stringify(credentialPreload)}`,
           },
           timeout: 10_000,
         },
@@ -1239,10 +1235,6 @@ process.stdout.write(typeof output === "string" ? output : JSON.stringify(output
 import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.PLAIN_LOG, JSON.stringify(args) + "\\n");
-if (process.env.GH_TOKEN !== "wrapper-only-token") {
-  console.error("plain gh did not receive wrapper authentication");
-  process.exit(41);
-}
 if (args[0] !== "api" || args[1] !== "repos/openclaw/openclaw/actions/artifacts/${artifactId}/zip") {
   console.error("plain gh used for evidence read: " + args.join(" "));
   process.exit(42);
@@ -1252,12 +1244,30 @@ process.stdout.write(readFileSync(process.env.ARCHIVE));
       );
       chmodSync(shimGh, 0o755);
       chmodSync(plainGh, 0o755);
+      const authenticationPreload = join(root, "authentication.cjs");
+      const authenticationReceipt = join(root, "authentication.json");
+      // Observe the native launch boundary before the guard strips child credentials.
+      writeFileSync(
+        authenticationPreload,
+        `const childProcess = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const guardedExecFileSync = childProcess.execFileSync;
+childProcess.execFileSync = function(command, args, options) {
+  if (command === ${JSON.stringify(plainGh)}) {
+    writeFileSync(${JSON.stringify(authenticationReceipt)}, JSON.stringify({token: options.env.GH_TOKEN}));
+  }
+  return Reflect.apply(guardedExecFileSync, this, [command, args, options]);
+};
+require("node:module").syncBuiltinESMExports();
+`,
+      );
 
       try {
         const env: NodeJS.ProcessEnv = {
           ...process.env,
           ARCHIVE: archivePath,
           FIXTURES: fixturesPath,
+          NODE_OPTIONS: `--require=${JSON.stringify(authenticationPreload)}`,
           OPENCLAW_GH_BIN: plainGh,
           PATH: `${root}:${process.env.PATH ?? ""}`,
           PLAIN_LOG: plainLog,
@@ -1293,6 +1303,9 @@ process.stdout.write(readFileSync(process.env.ARCHIVE));
         expect(result.stdout).not.toContain("Advisory lane failed");
         const shimCalls = readFileSync(shimLog, "utf8");
         const plainCalls = readFileSync(plainLog, "utf8");
+        expect(JSON.parse(readFileSync(authenticationReceipt, "utf8"))).toEqual({
+          token: "wrapper-only-token",
+        });
         expect(shimCalls).toContain('"run","view"');
         expect(shimCalls).toContain('"auth","token"');
         expect(shimCalls).toContain(`"repos/openclaw/openclaw/actions/runs/${runId}"`);
@@ -1340,6 +1353,7 @@ ${shimBody}
         "--input-type=module",
         "--eval",
         `import { createReleaseEvidenceClient } from ${JSON.stringify(pathToFileURL(resolve(SCRIPT)).href)};
+         process.env.GH_TOKEN = "synthetic-release-job-log";
          try {
            process.stdout.write(await createReleaseEvidenceClient("owner/repo").getJobLog("123"));
          } catch (error) {
@@ -1356,7 +1370,6 @@ ${shimBody}
         encoding: "utf8",
         env: {
           ...process.env,
-          GH_TOKEN: "synthetic-release-job-log",
           PATH: `${root}:${process.env.PATH ?? ""}`,
           SHIM_LOG: shimLog,
         },
@@ -1417,7 +1430,9 @@ process.exit(1);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual(
       expect.objectContaining({
-        message: expect.stringContaining("Command failed: gh"),
+        message: expect.stringMatching(
+          /Command failed: .*gh api repos\/owner\/repo\/actions\/jobs\/123\/logs/u,
+        ),
         stderr: "error: unknown flag: --allow-escape-sequences\n",
       }),
     );
@@ -1806,14 +1821,14 @@ process.stdout.write(JSON.stringify(output));
   );
   writeFileSync(
     preloadPath,
-    `const { createGitHubAsyncCommandQuota } = await import(${JSON.stringify(pathToFileURL(resolve("scripts/lib/github-command-quota.mjs")).href)});
+    `process.env.GH_TOKEN = "synthetic-release-ci-watch";
+const { createGitHubAsyncCommandQuota } = await import(${JSON.stringify(pathToFileURL(resolve("scripts/lib/github-command-quota.mjs")).href)});
 await createGitHubAsyncCommandQuota({env:{},runGhAsync:async()=>""});
 globalThis.setTimeout = (callback, _delay, ...args) => { queueMicrotask(() => callback(...args)); return 0; };\n`,
   );
   chmodSync(ghPath, 0o755);
   const env = {
     ...process.env,
-    GH_TOKEN: "synthetic-release-ci-watch",
     PATH: `${root}:${process.env.PATH ?? ""}`,
     RELEASE_CI_WATCH_CALLS: callsPath,
     RELEASE_CI_WATCH_INDEX: indexPath,

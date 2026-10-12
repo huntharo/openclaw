@@ -64,6 +64,7 @@ export async function prepareControlUiGitHubIdentity(
         config,
         sourceConfig: getActiveSecretsRuntimeConfigSnapshot()?.sourceConfig ?? config,
         agentId,
+        allowStale: true,
         getCurrentConfig: () => context.getRuntimeConfig(),
         assertActive,
         refresh: () => requestCurrentGitHubOAuthRefresh(agentId),

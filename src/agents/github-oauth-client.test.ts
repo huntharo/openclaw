@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withinTest } from "../../test/helpers/promise.js";
 import { clearRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { redactRegisteredSecretValues } from "../logging/secret-redaction-registry.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -89,6 +90,44 @@ describe("GitHub OAuth client", () => {
     expect(probe).toHaveBeenCalledTimes(3);
   });
 
+  it("serves stale display facts while strict verification waits for revocation", async ({
+    signal,
+  }) => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const refresh = createDeferredCore<Response>();
+    const probe = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ id: 204, login: "display-account" }))
+      .mockReturnValueOnce(refresh.promise)
+      .mockResolvedValue(jsonResponse({}, 401));
+    const token = "synthetic-stale-display-token";
+    const first = await verifyGitHubCredential(token);
+    now.mockReturnValue(61_001);
+    try {
+      expect(await withinTest(verifyGitHubCredential(token, { allowStale: true }), signal)).toEqual(
+        { ...first, stale: true },
+      );
+      expect(await verifyGitHubCredential(token, { allowStale: true })).toEqual({
+        ...first,
+        stale: true,
+      });
+      let settled = false;
+      const strict = verifyGitHubCredential(token).then((result) => {
+        settled = true;
+        return result;
+      });
+      expect(settled).toBe(false);
+      refresh.resolve(jsonResponse({}, 401));
+      expect(await strict).toEqual({ status: "unavailable" });
+      expect(await verifyGitHubCredential(token, { allowStale: true })).toEqual({
+        status: "unavailable",
+      });
+      expect(probe).toHaveBeenCalledTimes(3);
+    } finally {
+      refresh.resolve(jsonResponse({}, 401));
+    }
+  });
+
   it("keeps different tokens separate while sharing concurrent probes for one token", async () => {
     const probe = vi
       .spyOn(globalThis, "fetch")
@@ -109,11 +148,16 @@ describe("GitHub OAuth client", () => {
 
   it("does not let an in-flight probe repopulate cleared verification state", async () => {
     const upstream = createDeferredCore<Response>();
+    const started = createDeferredCore<void>();
     const probe = vi
       .spyOn(globalThis, "fetch")
-      .mockReturnValueOnce(upstream.promise)
+      .mockImplementationOnce(() => {
+        started.resolve();
+        return upstream.promise;
+      })
       .mockImplementation(async () => jsonResponse({ id: 202, login: "after-clear" }));
     const first = verifyGitHubCredential("synthetic-inflight-clear");
+    await started.promise;
     clearGitHubCredentialVerificationCache();
     const second = await verifyGitHubCredential("synthetic-inflight-clear");
     upstream.resolve(jsonResponse({ id: 202, login: "before-clear" }));

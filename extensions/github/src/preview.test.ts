@@ -300,14 +300,18 @@ describe("loadControlUiGitHubPreview", () => {
     });
     const first = loadControlUiGitHubPreview(target, identity, fetchMock);
     await started.promise;
-    const second = loadControlUiGitHubPreview(target, { ...identity }, fetchMock);
+    const second = loadControlUiGitHubPreview(target, { ...identity, stale: true }, fetchMock);
     item.resolve(githubJson(previewPayload({ user: { login: "octocat" } })));
-    expect(await first).toEqual(await second);
+    const firstPreview = await first;
+    expect(firstPreview.stale).toBeUndefined();
+    expect(await second).toEqual({ ...firstPreview, stale: true });
     const itemRequests = () =>
       fetchMock.mock.calls.filter(([input]) => requestUrl(input).includes("/issues/")).length;
     expect(itemRequests()).toBe(1);
     now += 59_999;
-    await loadControlUiGitHubPreview(target, identity, fetchMock);
+    await expect(loadControlUiGitHubPreview(target, identity, fetchMock)).resolves.toEqual(
+      firstPreview,
+    );
     expect(itemRequests()).toBe(1);
     now += 1;
     await loadControlUiGitHubPreview(target, identity, fetchMock);

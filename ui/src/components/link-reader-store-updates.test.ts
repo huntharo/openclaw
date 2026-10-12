@@ -86,8 +86,9 @@ describe("Shared reader fact invalidations", () => {
     vi.useFakeTimers();
     vi.stubGlobal("localStorage", createStorageMock());
   });
-  afterEach(() => {
+  afterEach(async () => {
     document.body.replaceChildren();
+    await Promise.resolve();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -105,9 +106,10 @@ describe("Shared reader fact invalidations", () => {
     anchor.textContent = "Pull request";
     provider.append(anchor);
     document.body.append(provider);
+    await provider.updateComplete;
     anchor.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, composed: true }));
     await vi.advanceTimersByTimeAsync(250);
-    expect(f.panels.map((p) => p.renderRoot.querySelector("h1")?.textContent)).toEqual([
+    expect(f.panels.map((p) => p.querySelector("h1")?.textContent)).toEqual([
       "Open pull request",
       "Open pull request",
     ]);
@@ -118,7 +120,7 @@ describe("Shared reader fact invalidations", () => {
     f.setTitle("Merged pull request");
     f.changed();
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.panels.map((p) => p.renderRoot.querySelector("h1")?.textContent)).toEqual([
+    expect(f.panels.map((p) => p.querySelector("h1")?.textContent)).toEqual([
       "Merged pull request",
       "Merged pull request",
     ]);
@@ -128,6 +130,7 @@ describe("Shared reader fact invalidations", () => {
     expect(f.request).toHaveBeenCalledTimes(3);
     expect(f.request.mock.calls.every(([, params]) => params.url === url)).toBe(true);
     document.body.replaceChildren();
+    await Promise.resolve();
     expect(f.listeners.size).toBe(0);
   });
 
@@ -142,6 +145,6 @@ describe("Shared reader fact invalidations", () => {
     f.changed();
     await vi.advanceTimersByTimeAsync(0);
     expect(f.request).not.toHaveBeenCalled();
-    expect(f.panels[0]!.renderRoot.querySelector("h1")?.textContent).toBe("Open pull request");
+    expect(f.panels[0]!.querySelector("h1")?.textContent).toBe("Open pull request");
   });
 });

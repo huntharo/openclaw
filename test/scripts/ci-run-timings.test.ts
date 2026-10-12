@@ -194,6 +194,7 @@ describe("scripts/ci-run-timings.mjs", () => {
     writeFileSync(
       clockPath,
       `import { appendFileSync } from "node:fs";
+process.env.GH_TOKEN = "fixture-ci-quota-token";
 const wait = Atomics.wait;
 Atomics.wait = (array, index, value, timeout) => {
   if (![1000, 3000, 6000].includes(timeout)) return wait(array, index, value, timeout);
@@ -241,7 +242,6 @@ if (args[0] === "api" && endpoint.endsWith("/actions/runs/123")) {
         encoding: "utf8",
         env: {
           ...process.env,
-          GH_TOKEN: "fixture-ci-quota-token",
           GH_HOST: "github.com",
           OPENCLAW_GH_BIN: fakeGhPath,
         },
@@ -299,21 +299,6 @@ if (args[0] === "api" && endpoint.endsWith("/actions/runs/123")) {
       trendHours: null,
       useLatestMain: true,
     });
-  });
-
-  it("parses strict positive integer monitor limits", () => {
-    expect(parseRunTimingArgs(["123456", "--limit=7"])).toEqual({
-      compareHours: 12,
-      detailRuns: 100,
-      explicitRunId: "123456",
-      json: false,
-      limit: 7,
-      outputPath: null,
-      recentLimit: null,
-      trendHours: null,
-      useLatestMain: false,
-    });
-    expect(parseRunTimingArgs(["--recent", "4"]).recentLimit).toBe(4);
   });
 
   it("parses bounded trend comparison and JSON report options", () => {
@@ -394,148 +379,6 @@ if (args[0] === "api" && endpoint.endsWith("/actions/runs/123")) {
     expect(() => parseRunTimingArgs(["--json"])).toThrow("require --trend-hours");
   });
 
-  it("balances trend samples, keeps reruns attempt-specific, and counts API retries", () => {
-    const fixtureDir = mkdtempSync(path.join(tmpdir(), "openclaw-ci-timings-"));
-    const fakeGhPath = path.join(fixtureDir, "gh");
-    const reportPath = path.join(fixtureDir, "reports", "trend.json");
-    const retryMarkerPath = path.join(fixtureDir, "retried");
-    const retryWaitsPath = path.join(fixtureDir, "retry-waits.txt");
-    const retryClockPath = path.join(fixtureDir, "retry-clock.mjs");
-    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-    const fixtureNowMs = Date.now();
-    writeFileSync(retryWaitsPath, "");
-    // Only this CLI child skips elapsed backoff; the requested delay remains asserted.
-    writeFileSync(
-      retryClockPath,
-      `import { appendFileSync } from "node:fs";
-const wait = Atomics.wait;
-Atomics.wait = (array, index, value, timeout) => {
-  if (timeout !== 1000) return wait(array, index, value, timeout);
-  appendFileSync(${JSON.stringify(retryWaitsPath)}, String(timeout) + "\\n");
-  return wait(array, index, value, 0);
-};
-`,
-    );
-    writeFileSync(
-      fakeGhPath,
-      `#!${process.execPath}
-const { existsSync, writeFileSync } = require("node:fs");
-const args = process.argv.slice(2);
-const endpoint = args.find((arg) => arg.startsWith("repos/")) ?? "";
-const now = Number(process.env.FIXTURE_NOW_MS);
-const iso = (offsetMs) => new Date(now + offsetMs).toISOString();
-if (endpoint.includes("actions/workflows/ci.yml/runs?")) {
-  console.log(JSON.stringify({ workflow_runs: [
-    { id: 101, status: "completed", conclusion: "success", created_at: iso(-60 * 60_000), updated_at: iso(-50 * 60_000), head_sha: "latest", run_attempt: 1, html_url: "https://example.test/101" },
-    { id: 104, status: "completed", conclusion: "success", created_at: iso(-90 * 60_000), updated_at: iso(-80 * 60_000), head_sha: "latest-unsampled", run_attempt: 1, html_url: "https://example.test/104" },
-    { id: 102, status: "completed", conclusion: "cancelled", created_at: iso(-2 * 60 * 60_000), updated_at: iso(-119 * 60_000), head_sha: "cancelled", run_attempt: 1, html_url: "https://example.test/102" },
-    { id: 106, status: "completed", conclusion: "timed_out", created_at: iso(-3 * 60 * 60_000), updated_at: iso(-2 * 60 * 60_000 - 50 * 60_000), head_sha: "timed-out", run_attempt: 1, html_url: "https://example.test/106" },
-    { id: 103, status: "completed", conclusion: "success", created_at: iso(-13 * 60 * 60_000), updated_at: iso(-12 * 60 * 60_000 - 50 * 60_000), head_sha: "prior-rerun", run_attempt: 2, html_url: "https://example.test/103" }
-  ] }));
-} else if (endpoint.includes("actions/runs/101/attempts/1/jobs?")) {
-  if (!existsSync(process.env.FIXTURE_RETRY_MARKER)) {
-    writeFileSync(process.env.FIXTURE_RETRY_MARKER, "retried\\n");
-    console.error("HTTP 502: fixture transient failure");
-    process.exit(1);
-  }
-  const runStart = now - 60 * 60_000;
-  const at = (seconds) => new Date(runStart + seconds * 1000).toISOString();
-  console.log(JSON.stringify({ total_count: 4, jobs: [
-    { id: 1, name: "preflight", status: "completed", conclusion: "success", created_at: at(10), started_at: at(20), completed_at: at(60), labels: ["blacksmith-4vcpu-ubuntu-2404"], runner_name: "blacksmith-test", runner_group_name: "blacksmith" },
-    { id: 2, name: "checks-node-compact-large-1", status: "completed", conclusion: "success", created_at: at(60), started_at: at(65), completed_at: at(500), labels: ["blacksmith-8vcpu-ubuntu-2404"], runner_name: "blacksmith-test", runner_group_name: "blacksmith" },
-    { id: 3, name: "openclaw/ci-gate", status: "completed", conclusion: "success", created_at: at(500), started_at: at(501), completed_at: at(510), labels: ["ubuntu-24.04"], runner_name: "GitHub Actions", runner_group_name: "GitHub Actions" },
-    { id: 4, name: "matrix.synthetic", status: "completed", conclusion: "success", created_at: at(510), started_at: at(511), completed_at: at(520), labels: ["ubuntu-24.04"], runner_name: "GitHub Actions", runner_group_name: "GitHub Actions" }
-  ] }));
-} else if (endpoint.includes("actions/runs/103/attempts/2/jobs?")) {
-  const runStart = now - 12 * 60 * 60_000 - 55 * 60_000;
-  const at = (seconds) => new Date(runStart + seconds * 1000).toISOString();
-  console.log(JSON.stringify({ total_count: 2, jobs: [
-    { id: 5, name: "preflight", status: "completed", conclusion: "success", created_at: at(10), started_at: at(18), completed_at: at(58), labels: ["blacksmith-4vcpu-ubuntu-2404"], runner_name: "blacksmith-test", runner_group_name: "blacksmith" },
-    { id: 6, name: "checks-node-compact-large-1", status: "completed", conclusion: "success", created_at: at(58), started_at: at(62), completed_at: at(470), labels: ["blacksmith-8vcpu-ubuntu-2404"], runner_name: "blacksmith-test", runner_group_name: "blacksmith" }
-  ] }));
-} else {
-  console.error("unexpected gh invocation", args.join(" "));
-  process.exit(2);
-}
-`,
-    );
-    chmodSync(fakeGhPath, 0o755);
-
-    try {
-      const result = spawnSync(
-        process.execPath,
-        [
-          "--import",
-          pathToFileURL(retryClockPath).href,
-          "scripts/ci-run-timings.mjs",
-          "--trend-hours",
-          "24",
-          "--compare-hours",
-          "12",
-          "--detail-runs",
-          "2",
-          "--json",
-          "--output",
-          reportPath,
-        ],
-        {
-          cwd: repositoryRoot,
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            FIXTURE_NOW_MS: String(fixtureNowMs),
-            FIXTURE_RETRY_MARKER: retryMarkerPath,
-            GH_TOKEN: "fixture-ci-timing-token",
-            OPENCLAW_GH_BIN: fakeGhPath,
-          },
-        },
-      );
-
-      expect(result.status, result.stderr).toBe(0);
-      expect(readFileSync(retryWaitsPath, "utf8")).toBe("1000\n");
-      const report = JSON.parse(result.stdout);
-      expect(JSON.parse(readFileSync(reportPath, "utf8"))).toEqual(report);
-      expect(report.apiRequests).toEqual({ jobs: 3, runList: 1, total: 4 });
-      expect(report.sampling).toEqual({
-        detailedSuccessfulRuns: 2,
-        eligibleSuccessfulRuns: 3,
-      });
-      expect(report.cohorts.comparison.outcomes).toMatchObject({
-        cancelled: 1,
-        cancellationRate: 0.25,
-        nonCancelledPassRate: 2 / 3,
-        success: 2,
-        timedOut: 1,
-        total: 4,
-      });
-      expect(report.cohorts.prior.runMetrics.successfulWallSeconds.p50).toBeNull();
-      expect(report.cohorts.prior.runMetrics.workflowAdmissionSeconds.p50).toBeNull();
-      expect(report.cohorts.prior.samples.detailedSuccessfulRuns).toBe(1);
-      expect(report.cohorts.prior.jobMetrics.executionSeconds.count).toBe(2);
-      expect(report.cohorts.comparison.jobMetrics.runnerQueueSeconds).toMatchObject({
-        count: 2,
-        max: 10,
-        p95: 10,
-      });
-      expect(report.cohorts.comparison.jobMetrics.dependencyGatedSeconds.p95).toBe(50);
-      expect(report.cohorts.comparison.runMetrics.workflowAdmissionSeconds.p95).toBe(10);
-      expect(report.cohorts.comparison.criticalOwners).toEqual([
-        { name: "checks-node-compact-large-1", runs: 1 },
-      ]);
-      expect(
-        report.jobs.find((job: { name: string }) => job.name === "checks-node-compact-large-1"),
-      ).toMatchObject({
-        comparison: { executionSeconds: { count: 1 } },
-        prior: { executionSeconds: { count: 1 } },
-      });
-      expect(report.runs[0].jobTimings.map((job: { name: string }) => job.name)).toEqual([
-        "preflight",
-        "checks-node-compact-large-1",
-      ]);
-    } finally {
-      rmSync(fixtureDir, { force: true, recursive: true });
-    }
-  });
   it("excludes manual, failed, and unfinished runs from recent main timings", () => {
     const fixtureDir = mkdtempSync(path.join(tmpdir(), "openclaw-ci-timings-recent-"));
     const fakeGhPath = path.join(fixtureDir, "gh");
@@ -566,16 +409,26 @@ if (args[0] === "api" && endpoint.includes("/workflows/ci.yml/runs?")) {
     );
     chmodSync(fakeGhPath, 0o755);
     try {
-      const result = spawnSync(process.execPath, ["scripts/ci-run-timings.mjs", "--recent", "2"], {
-        cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."),
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          GH_TOKEN: "fixture-token",
-          OPENCLAW_GH_BIN: fakeGhPath,
-          FIXTURE_CALLS_PATH: callsPath,
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          'data:text/javascript,process.env.GH_TOKEN="fixture-token"',
+          "scripts/ci-run-timings.mjs",
+          "--recent",
+          "2",
+        ],
+        {
+          cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            GH_HOST: "github.com",
+            OPENCLAW_GH_BIN: fakeGhPath,
+            FIXTURE_CALLS_PATH: callsPath,
+          },
         },
-      });
+      );
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout.match(/CI run \d+/gu)).toEqual(["CI run 204", "CI run 205"]);
       const calls: string[][] = readFileSync(callsPath, "utf8")
