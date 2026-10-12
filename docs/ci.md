@@ -320,8 +320,9 @@ E2E checks. The E2E job installs Chromium and WebKit, builds the private QA
 runtime with `pnpm build qaRuntime`, and uses local mock providers. It reuses
 that runtime without generating SDK declarations. It runs the CLI configuration,
 Gateway network runtime, and Gateway wizard suites through `pnpm test:e2e:gateway`,
-then `pnpm test:e2e:agent-plugin-gateway` and `pnpm test:ui:e2e` with the separate
-real-Gateway browser profile omitted. Docker sandbox, package acceptance, and
+then `pnpm test:e2e:agent-plugin-gateway` and the mock chat-flow messaging suite
+through `pnpm test:ui:e2e`. Broader UI coverage, including the separate
+real-Gateway browser profile, Docker sandbox, package acceptance, and
 broader Gateway/QA campaigns remain outside this basic fork baseline. This is a basic
 development baseline, not the complete upstream CI or release suite. The unit
 command omits the heavier owner suites and isolated/fake-timer unit-fast lanes.

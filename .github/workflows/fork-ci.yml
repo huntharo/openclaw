@@ -78,4 +78,4 @@ jobs:
         run: |
           pnpm test:e2e:gateway test/cli-json-stdout.config.e2e.test.ts src/gateway/server-network-runtime.e2e.test.ts src/gateway/gateway-wizard.e2e.test.ts
           pnpm test:e2e:agent-plugin-gateway
-          pnpm test:ui:e2e
+          pnpm test:ui:e2e ui/src/e2e/chat-flow.messaging.e2e.test.ts
