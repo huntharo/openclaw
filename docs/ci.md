@@ -311,6 +311,34 @@ The complete [startup corpus](/ci/pipeline) uses eight state test files so exist
 | [Scheduled and maintenance workflows](/ci/scheduled-workflows) | OpenClaw Performance, QA Lab, CodeQL, the maintenance jobs, and ClawSweeper activity forwarding.                    |
 | [Local checks and Testbox](/ci/local-proof)                    | Reproduce a lane locally, keep the shrink-only ratchets, and run Crabbox or Testbox proof.                          |
 
+## Fork repositories
+
+`fork-ci.yml` runs on fork `main` pushes, pull requests (including drafts), and
+manual dispatches. Its four Linux jobs use GitHub-hosted Ubuntu runners and need
+no repository secrets: `pnpm lint`, `pnpm tsgo:prod`, `pnpm test:unit`, and basic
+E2E checks. The E2E job installs Chromium and WebKit, builds the private QA
+runtime with `pnpm build qaRuntime`, and uses local mock providers. It reuses
+that runtime without generating SDK declarations. It runs the CLI configuration,
+Gateway network runtime, and Gateway wizard suites through `pnpm test:e2e:gateway`,
+then `pnpm test:e2e:agent-plugin-gateway` and the mock chat-flow messaging suite
+through `pnpm test:ui:e2e`. Broader UI coverage, including the separate
+real-Gateway browser profile, Docker sandbox, package acceptance, and
+broader Gateway/QA campaigns remain outside this basic fork baseline. This is a basic
+development baseline, not the complete upstream CI or release suite. The unit
+command omits the heavier owner suites and isolated/fake-timer unit-fast lanes.
+
+The main `CI` workflow skips fork repositories unless the existing
+`OPENCLAW_CI_RUNNER_BACKEND` repository variable is set. A fork that intentionally
+configures the full pipeline can select `github`, or configure its own supported
+runner backend. Other existing admission rules, including `OPENCLAW_CI_ON_PUSH`,
+still apply. Pull requests from forks **targeting `openclaw/openclaw`** continue
+to use upstream CI.
+
+Labeler skips its PR, issue, and backfill jobs on forks without either
+`GH_APP_PRIVATE_KEY` or `GH_APP_PRIVATE_KEY_FALLBACK`. Its summary records the
+reason. Configured forks and the upstream repository retain the existing App
+token flow; a key must belong to the configured App and repository installation.
+
 ## Where each section moved
 
 Every section heading from the previous single-page version keeps its anchor here, so an existing link such as `/ci#pipeline-overview` still resolves. Each entry points at the page that now holds the content.
