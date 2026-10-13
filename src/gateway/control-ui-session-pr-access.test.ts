@@ -815,7 +815,7 @@ it("keeps warm default-loader SQL constant as readers join without a native row 
   });
 });
 
-it("drops cached subscription hydration after physical database replacement", async () => {
+it("revalidates a replaced source before reusing shared GitHub facts", async () => {
   try {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       vi.stubEnv("GH_TOKEN", "");
@@ -874,12 +874,16 @@ it("drops cached subscription hydration after physical database replacement", as
           {
             payload: {
               sessions: {
-                [sessionKey]: { pullRequests: [], rateLimited: true, status: "rate-limited" },
+                [sessionKey]: {
+                  pullRequests: [{ number: 300 }],
+                  rateLimited: false,
+                  status: "ready",
+                },
               },
             },
           },
         ]);
-        expect(provider).toHaveBeenCalledTimes(requestsBeforeReplacement + 1);
+        expect(provider).toHaveBeenCalledTimes(requestsBeforeReplacement);
       } finally {
         await f.close();
       }

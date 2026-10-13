@@ -17,7 +17,7 @@ import type { GatewayClient, RespondFn } from "./types.js";
 
 const requestOptions = createControlUiRequestOptions(() => ({}));
 
-describe("GitHub preview background refresh authority", () => {
+describe("GitHub preview shared refresh authority", () => {
   afterEach(() => {
     clearRuntimeConfigSnapshot();
     vi.restoreAllMocks();
@@ -26,7 +26,7 @@ describe("GitHub preview background refresh authority", () => {
   });
 
   it.for(["unchanged", "removed", "rotated"] as const)(
-    "keeps real managed identity checks on stale preview refreshes (%s)",
+    "waits for a fresh preview and preserves managed identity authority (%s)",
     async (change, { signal }) => {
       await withOpenClawTestState(
         { layout: "state-only", label: `preview-refresh-${change}` },
@@ -58,12 +58,10 @@ describe("GitHub preview background refresh authority", () => {
           const release = createDeferred();
           const rejected = createDeferred<unknown>();
           const forbiddenDispatch = createDeferred();
-          const refreshed = createDeferred();
           const trace: Array<{ path: string; credential: string }> = [];
           let holdRepository = false;
           let retired = false;
           let refreshing = false;
-          let refreshedItem = false;
           const realPrepare = githubIdentity.prepareGitHubReadIdentity;
           vi.spyOn(githubIdentity, "prepareGitHubReadIdentity").mockImplementation(
             async (params) => {
@@ -108,13 +106,10 @@ describe("GitHub preview background refresh authority", () => {
                   refreshing = true;
                   held.resolve();
                   await release.promise;
-                } else if (refreshing && refreshedItem) {
-                  refreshed.resolve();
                 }
                 return Response.json({ id: 765, private: false, visibility: "public" });
               }
               if (path === item) {
-                refreshedItem = refreshing;
                 return Response.json({
                   created_at: "2026-09-01T08:00:00Z",
                   updated_at: "2026-09-01T09:00:00Z",
@@ -156,16 +151,14 @@ describe("GitHub preview background refresh authority", () => {
             const [ok, payload] = expectDefined(respond.mock.calls[0], "preview RPC response");
             return { ok, payload };
           };
+          let refreshRequest: ReturnType<typeof rpc> | undefined;
           try {
             expect(await rpc()).toMatchObject({ ok: true, payload: { title: "Initial preview" } });
             now += 60_001;
             holdRepository = true;
-            const staleRequest = rpc();
+            refreshRequest = rpc();
             await withinTest(held.promise, signal);
-            expect(await withinTest(staleRequest, signal)).toMatchObject({
-              ok: true,
-              payload: { title: "Initial preview", stale: true },
-            });
+            // Expired content waits for the shared read; change authority before it completes.
             if (change === "removed") {
               await githubIdentity.removeManagedGitHubProfile(profileDir);
             } else if (change === "rotated") {
@@ -189,9 +182,16 @@ describe("GitHub preview background refresh authority", () => {
                 signal,
               );
               expect(failure).toMatchObject({ reason: "changed" });
+              expect(await withinTest(refreshRequest, signal)).toEqual({
+                ok: false,
+                payload: undefined,
+              });
               expect(trace.slice(afterChange)).toEqual([]);
             } else {
-              await withinTest(refreshed.promise, signal);
+              expect(await withinTest(refreshRequest, signal)).toMatchObject({
+                ok: true,
+                payload: { title: "Refreshed preview" },
+              });
               expect(trace.slice(afterChange)).toEqual([
                 { path: item, credential: "original" },
                 { path: repository, credential: "original" },
@@ -203,6 +203,7 @@ describe("GitHub preview background refresh authority", () => {
             );
           } finally {
             release.resolve();
+            await refreshRequest;
             clearGitHubCredentialVerificationCache();
           }
         },

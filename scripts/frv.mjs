@@ -42,6 +42,7 @@ import {
   inspectActionsArtifactZipWithPolicy,
   sha256Digest,
 } from "./lib/actions-artifact-archive.mjs";
+import { createGitHubAsyncCommandQuota } from "./lib/github-command-quota.mjs";
 import { execPlainGh, plainGhAuthenticatedEnv, resolvePlainGhBin } from "./lib/plain-gh.mjs";
 import {
   RELEASE_PRIORITY_VARIABLE,
@@ -252,11 +253,31 @@ async function execCommand(command, args, options = {}) {
   return result.stdout;
 }
 
-function execGh(args, options = {}) {
-  return execCommand(resolvePlainGhBin(), args, {
-    ...options,
-    env: plainGhAuthenticatedEnv(),
+async function execGh(args, options = {}) {
+  const env = plainGhAuthenticatedEnv();
+  const ghBin = resolvePlainGhBin();
+  const execute = await createGitHubAsyncCommandQuota({
+    env,
+    ...(options.operationDeadline === undefined
+      ? {}
+      : { remainingMs: () => remainingOperationTime(options.operationDeadline) }),
+    runGhAsync: (commandArgs) => {
+      const remaining =
+        options.operationDeadline === undefined
+          ? Number.MAX_SAFE_INTEGER
+          : remainingOperationTime(options.operationDeadline);
+      return execCommand(ghBin, commandArgs, {
+        ...options,
+        env,
+        timeoutMs: Math.min(options.timeoutMs ?? 60_000, remaining),
+      });
+    },
   });
+  const result = await execute(args);
+  if (result.error) {
+    throw result.error;
+  }
+  return result.body.trim();
 }
 
 function verifierEvidenceNeedsRefresh(error) {
@@ -316,22 +337,15 @@ async function execGhRead(args, options = {}) {
 async function readGhApi(repository, path, args = [], options = {}, fresh = true) {
   // Rerun decisions require current attempts and jobs, not a relay's earlier snapshot.
   // Polling watchers keep the relay's own freshness policy.
-  const include = !path.endsWith("/logs");
-  const output = await execGhRead(
+  return execGhRead(
     [
       "api",
-      ...(include ? ["--include"] : []),
       `repos/${repository}/${path}`,
       ...(fresh ? ["-H", "Cache-Control: max-age=0"] : []),
       ...args,
     ],
     options,
   );
-  // gh emits a header block for each paginated response, even with --jq.
-  // Keep successful JSON rows intact while retaining failed-response retry headers.
-  return include
-    ? output.replace(/^HTTP\/\d+(?:\.\d+)? [^\r\n]+\r?\n(?:[^\r\n]+\r?\n)*\r?\n/gmu, "").trim()
-    : output.trim();
 }
 
 async function ghJson(repository, path, options, fresh) {

@@ -114,7 +114,10 @@ type GatewayRequestContextRuntime = Pick<
     connectionWork: Pick<GatewayCoreRuntime["connectionWork"], "track">;
     runtimeState: Pick<
       GatewayCoreRuntime["runtimeState"],
-      "cronState" | "controlUiSessionPullRequests" | "sessionViewerPresence"
+      | "cronState"
+      | "controlUiSessionPullRequests"
+      | "controlUiLinkReaderNotifications"
+      | "sessionViewerPresence"
     > & {
       configReloader: Pick<
         GatewayCoreRuntime["runtimeState"]["configReloader"],
@@ -293,6 +296,7 @@ export function createGatewayRequestContext(
       return runtime.gatewayTls.enabled ? runtime.gatewayTls.fingerprintSha256 : undefined;
     },
     controlUiSessionPullRequests: runtimeState.controlUiSessionPullRequests,
+    controlUiLinkReaderNotifications: runtimeState.controlUiLinkReaderNotifications,
     sessionViewerPresence: runtimeState.sessionViewerPresence,
     sessionCompanion: runtime.sessionCompanion,
     sessionObserver,
@@ -550,6 +554,7 @@ export function createGatewayRequestContext(
       sessionObserver.removeConnection(connId);
       // PR replace-sets share this websocket cleanup boundary with session events.
       runtimeState.controlUiSessionPullRequests?.unsubscribe(connId);
+      runtimeState.controlUiLinkReaderNotifications?.unsubscribe(connId);
       runtimeState.sessionViewerPresence?.unsubscribe(connId);
     },
     getSessionEventSubscriberConnIds: sessionEventSubscribers.getAll,

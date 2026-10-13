@@ -450,9 +450,11 @@ least one closed daily report.
 status and the report. Failed-run errors name each affected period and source
 (for example, `day/2026-08-20/github`). Check GitHub token access, organization/team names,
 excluded repositories, and Discord bot access to each configured channel and
-its history. Rate limits can delay a run. Regenerate affected days once access
-or rate limits recover, then refresh aggregates. After rotating a file, exec, or
-store secret, run `openclaw plugins reload team-reports`; environment changes
+its history. GitHub requests share the host's credential budget with readers,
+identity checks, and publication. Local admission can delay a run; a GitHub rate
+limit stops collection with a warning and preserves its retry deadline. Regenerate
+affected days once access or rate limits recover, then refresh aggregates. After
+rotating a file, exec, or store secret, run `openclaw plugins reload team-reports`; environment changes
 require a Gateway restart with the updated environment.
 
 Repository advisories are optional. An advisory request returning HTTP 403 or

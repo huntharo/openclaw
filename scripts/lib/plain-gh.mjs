@@ -18,6 +18,76 @@ const PLAIN_GH_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 
 /**
+ * Match gh's native default host without reading or extracting its credentials.
+ * Keep config parsing lazy for the stdlib-only synchronous reader import path.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {Promise<string>}
+ */
+export async function resolvePlainGhHost(env = process.env) {
+  if (env.GH_HOST) {
+    return env.GH_HOST;
+  }
+  const windows = process.platform === "win32";
+  const appData = env.AppData || env.APPDATA;
+  const home = (windows ? env.USERPROFILE : env.HOME) || "";
+  const directory =
+    env.GH_CONFIG_DIR ||
+    (env.XDG_CONFIG_HOME && path.join(env.XDG_CONFIG_HOME, "gh")) ||
+    (windows && appData && path.join(appData, "GitHub CLI")) ||
+    path.join(home, ".config", "gh");
+  try {
+    const { extractErrorCode } =
+      process.versions.bun || import.meta.url.endsWith(".js")
+        ? await import("../../packages/normalization-core/src/error-coercion.js")
+        : await (
+            await import("tsx/esm/api")
+          ).tsImport(
+            new URL("../../packages/normalization-core/src/error-coercion.js", import.meta.url)
+              .href,
+            import.meta.url,
+          );
+    const readConfig = (name) =>
+      fs.promises
+        .readFile(path.join(directory, name), "utf8")
+        .catch((/** @type {unknown} */ error) => {
+          if (extractErrorCode(error) === "ENOENT") {
+            return undefined;
+          }
+          throw error;
+        });
+    const hostsText = await readConfig("hosts.yml");
+    const generalText = await readConfig("config.yml");
+    if (hostsText === undefined && generalText === undefined) {
+      return "github.com";
+    }
+    const { isMap, isScalar, parseDocument } = await import("yaml");
+    const hostsDocument = parseDocument(hostsText ?? "", { prettyErrors: false });
+    const generalDocument = parseDocument(generalText ?? "", { prettyErrors: false });
+    for (const document of [hostsDocument, generalDocument]) {
+      if (
+        document.errors.length ||
+        document.warnings.length ||
+        (document.contents && !isMap(document.contents))
+      ) {
+        return "github.com";
+      }
+    }
+    const hosts =
+      isMap(hostsDocument.contents) && hostsDocument.contents.items.length
+        ? hostsDocument.contents
+        : generalDocument.get("hosts", true);
+    if (!isMap(hosts) || hosts.items.length !== 1) {
+      return "github.com";
+    }
+    const [{ key }] = hosts.items;
+    return isScalar(key) && typeof key.value === "string" ? key.value : "github.com";
+  } catch {
+    // Native gh also falls back to its public host when config loading fails.
+    return "github.com";
+  }
+}
+
+/**
  * @param {string} filePath
  * @returns {boolean}
  */

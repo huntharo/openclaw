@@ -1,3 +1,4 @@
+import { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import type { SqliteWorkerCommand } from "openclaw/plugin-sdk/sqlite-runtime";
 import { serveWorkerTasks } from "openclaw/plugin-sdk/worker-task-server";
 import type {
@@ -5,12 +6,13 @@ import type {
   ReportWorkerLog,
   ReportWorkerOperation,
   ReportWorkerResponse,
+  ReportGithubResponse,
 } from "./run-worker-contract.js";
 import { createReportSources, generateReportPeriods } from "./run.js";
 import type { TeamReportsOperations } from "./store-contract.js";
 import { TeamReportsStore } from "./store.js";
 import type { SummaryLlm } from "./summaries.js";
-import type { Person, SourceRuntime } from "./types.js";
+import type { GithubReadStats, Person, SourceRuntime } from "./types.js";
 
 serveWorkerTasks(async (value, channel, control) => {
   if (!channel) {
@@ -20,7 +22,10 @@ serveWorkerTasks(async (value, channel, control) => {
   const input = value as ReportWorkerInput;
   const logs: ReportWorkerLog[] = [];
   let roster: Person[] | undefined;
-  const request = async (operation: ReportWorkerOperation): Promise<unknown> => {
+  const request = async (
+    operation: ReportWorkerOperation,
+    recordStats?: (stats: GithubReadStats) => void,
+  ): Promise<unknown> => {
     control.throwIfCancelled();
     const reply = await channel.request({ ...operation, logs: logs.splice(0), roster });
     roster = undefined;
@@ -28,7 +33,19 @@ serveWorkerTasks(async (value, channel, control) => {
     const response = reply.input as ReportWorkerResponse;
     reply.consumed();
     control.throwIfCancelled();
+    if (response.githubStats) {
+      recordStats?.(response.githubStats);
+    }
     if (!response.ok) {
+      if (response.quota) {
+        const failure = response.quota;
+        throw new ApiQuotaError(
+          failure.reason,
+          failure.retryAtMs,
+          failure.upstreamStatus,
+          failure.resource,
+        );
+      }
       throw new Error(response.error);
     }
     return response.value;
@@ -37,6 +54,16 @@ serveWorkerTasks(async (value, channel, control) => {
     info: (message, meta) => logs.push({ level: "info", message, meta }),
     warn: (message, meta) => logs.push({ level: "warn", message, meta }),
     error: (message, meta) => logs.push({ level: "error", message, meta }),
+  };
+  const githubRead: NonNullable<SourceRuntime["githubRead"]> = async (path, options) => {
+    const result = await request({ kind: "github-read", path }, options?.recordStats);
+    // SAFETY: The credential-bound host produces this buffered API response after shared admission.
+    const response = result as ReportGithubResponse;
+    return new Response([204, 205, 304].includes(response.status) ? null : response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   };
   const signal = new AbortController().signal;
   const store = new TeamReportsStore({
@@ -58,7 +85,7 @@ serveWorkerTasks(async (value, channel, control) => {
     return await generateReportPeriods({
       ...input,
       store,
-      runtime: { logger, signal },
+      runtime: { logger, signal, githubRead },
       sources: (runtime) => createReportSources(runtime, Boolean(input.resolved.discord)),
       llm: {
         complete: async ({ signal: _signal, ...params }) => {

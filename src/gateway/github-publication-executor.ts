@@ -4,6 +4,7 @@ import type { SessionGitHubPublicationResult } from "../../packages/gateway-prot
 import { githubRepositoryUrl } from "../agents/github-host.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import { gitNullConfigPath } from "../infra/git-exec.js";
+import { invalidateGitReads } from "../infra/git-read-cache.js";
 import type { GitHubPublicationExecutionRow } from "../state/github-publication-read.types.js";
 import { readLocalGitHubPublicationWorktreeOwner } from "./github-publication-availability.js";
 import { prepareGitHubPublicationContent } from "./github-publication-content.js";
@@ -572,6 +573,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       run: custodyCommands.require,
       ...(updateBranchRef ? { updateRef: updateBranchRef } : {}),
     });
+    invalidateGitReads(worktree.path);
     row = await params.updatePublishingFacts({
       row,
       repository,

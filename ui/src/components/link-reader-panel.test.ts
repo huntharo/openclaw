@@ -68,7 +68,7 @@ async function mount(
   > = {},
 ) {
   const panel = document.createElement("openclaw-link-reader-panel");
-  panel.client = { request } as unknown as GatewayBrowserClient;
+  panel.client = { addEventListener: () => () => {}, request } as unknown as GatewayBrowserClient;
   panel.available = true;
   panel.readers = [reader];
   Object.assign(panel, options);
@@ -186,6 +186,7 @@ describe("Plugin link reader panel", () => {
     const oldImage = panel.querySelector("img")!;
     expect(oldImage.hasAttribute("src")).toBe(false);
     panel.client = {
+      addEventListener: () => () => {},
       request: vi.fn().mockResolvedValue(item()),
     } as unknown as GatewayBrowserClient;
     await panel.updateComplete;
@@ -597,7 +598,10 @@ describe("Plugin link reader panel", () => {
     await panel.updateComplete;
     expect(panel.querySelector("h1")).toBeNull();
     const replacement = vi.fn(async () => ({ ...item(2), title: "New gateway" }));
-    panel.client = { request: replacement } as unknown as GatewayBrowserClient;
+    panel.client = {
+      addEventListener: () => () => {},
+      request: replacement,
+    } as unknown as GatewayBrowserClient;
     await expectTitle(panel, "New gateway");
     expect(request.mock.calls[1]?.[2]?.signal?.aborted).toBe(true);
     second.resolve(item(2));

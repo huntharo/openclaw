@@ -1,12 +1,16 @@
-import { parseRetryAfterHeaderSeconds } from "openclaw/plugin-sdk/retry-runtime";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import { z } from "zod";
 import type { GithubSourceConfig, SourceRuntime, SourceStatus } from "../../types.js";
 import { checkAbort, createResponseParser, parseApiBase, wait } from "../http.js";
+import {
+  ABORT_LABEL,
+  createGithubApiReader,
+  GithubSourceError,
+  resolveGithubApiUrl,
+} from "./api-reader.js";
 
-export const ABORT_LABEL = "GitHub collection aborted";
-
-export class GithubSourceError extends Error {}
+export { ABORT_LABEL, GithubSourceError } from "./api-reader.js";
+const GithubErrorBodySchema = z.object({ message: z.string() });
 
 export class GithubHttpError extends GithubSourceError {
   constructor(readonly status: number) {
@@ -24,6 +28,7 @@ export function pathWithQuery(path: string, query: Record<string, string>): stri
 
 export class GithubClient {
   private readonly base: URL;
+  private readonly read;
 
   constructor(
     private readonly cfg: GithubSourceConfig,
@@ -32,6 +37,7 @@ export class GithubClient {
   ) {
     try {
       this.base = parseApiBase(cfg.apiBaseUrl, "GitHub");
+      this.read = runtime.githubRead ?? createGithubApiReader(cfg, runtime);
     } catch {
       throw new GithubSourceError(
         "GitHub API base URL must be HTTPS without credentials, query, or fragment",
@@ -63,121 +69,65 @@ export class GithubClient {
   }
 
   private url(path: string): URL {
-    const url = new URL(path.replace(/^\/(?!\/)/, ""), this.base);
-    if (
-      url.origin !== this.base.origin ||
-      !url.pathname.startsWith(this.base.pathname) ||
-      url.username ||
-      url.password
-    ) {
-      throw new GithubSourceError("Refused API pagination outside the configured base URL");
-    }
-    return url;
+    return resolveGithubApiUrl(this.base, path);
   }
 
   async get(path: string): Promise<{ data: unknown; next?: string }> {
     const url = this.url(path);
     for (let failures = 0; ;) {
       checkAbort(this.runtime.signal, ABORT_LABEL);
-      this.status.stats.apiCalls = Number(this.status.stats.apiCalls) + 1;
       let response: Response;
       let data: unknown;
-      let release: (() => Promise<void>) | undefined;
-      const controller = new AbortController();
-      const signal = this.runtime.signal
-        ? AbortSignal.any([this.runtime.signal, controller.signal])
-        : controller.signal;
-      const timeout = setTimeout(() => controller.abort(), 30_000);
+      let errorMessage: string | undefined;
       try {
-        const init: RequestInit = {
-          headers: {
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            Authorization: `Bearer ${this.cfg.token}`,
+        response = await this.read(url.href, {
+          signal: this.runtime.signal,
+          recordStats: (stats) => {
+            this.status.stats.apiCalls = Number(this.status.stats.apiCalls) + stats.apiCalls;
+            if (stats.rateLimitRemaining !== undefined) {
+              this.status.stats.rateLimitRemaining = stats.rateLimitRemaining;
+            }
           },
-          signal,
-          redirect: "error",
-        };
-        if (this.runtime.fetchImpl) {
-          response = await this.runtime.fetchImpl(url, init);
-        } else {
-          const result = await fetchWithSsrFGuard({
-            url: url.href,
-            init,
-            signal: this.runtime.signal,
-            requireHttps: true,
-            timeoutMs: 30_000,
-            maxRedirects: 0,
-            capture: false,
-          });
-          release = result.release;
-          response = result.response;
+        });
+        const remaining = response.headers.get("x-ratelimit-remaining");
+        if (remaining !== null && Number.isFinite(Number(remaining))) {
+          this.status.stats.rateLimitRemaining = Number(remaining);
         }
         // Error payloads can echo credentials; neither parse errors nor API bodies escape this client.
         const body = await response.text();
-        checkAbort(this.runtime.signal, ABORT_LABEL);
         if (response.ok) {
           try {
             data = JSON.parse(body);
           } catch {
             throw new GithubSourceError("Invalid JSON API response");
           }
-        } else if (response.status === 403 || response.status === 409) {
+        } else if (response.status === 403 || response.status === 409 || response.status === 429) {
           try {
             data = JSON.parse(body);
           } catch {
             data = undefined;
           }
         }
+        const errorBody = GithubErrorBodySchema.safeParse(data);
+        errorMessage = errorBody.success ? errorBody.data.message : undefined;
+        checkAbort(this.runtime.signal, ABORT_LABEL);
       } catch (error) {
         checkAbort(this.runtime.signal, ABORT_LABEL);
+        if (error instanceof ApiQuotaError) {
+          if (error.reason === "admission") {
+            await wait(error.retryAfterMs, this.runtime.signal, ABORT_LABEL);
+            continue;
+          }
+          throw new GithubSourceError(
+            `API rate limited; retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds`,
+          );
+        }
         if (error instanceof GithubSourceError) {
           throw error;
         }
-        throw new GithubSourceError(
-          controller.signal.aborted
-            ? "API request timed out"
-            : "Request failed; check API access and connectivity",
-        );
-      } finally {
-        clearTimeout(timeout);
-        if (release) {
-          await release().catch(() => {
-            checkAbort(this.runtime.signal, ABORT_LABEL);
-            throw new GithubSourceError("Could not release API response");
-          });
-        }
+        throw new GithubSourceError("Request failed; check API access and connectivity");
       }
       checkAbort(this.runtime.signal, ABORT_LABEL);
-      const remaining = response.headers.get("x-ratelimit-remaining");
-      if (remaining !== null && Number.isFinite(Number(remaining))) {
-        this.status.stats.rateLimitRemaining = Number(remaining);
-      }
-      const retryAfter = parseRetryAfterHeaderSeconds(response.headers.get("retry-after"));
-      const resetHeader = response.headers.get("x-ratelimit-reset");
-      const resetDelay =
-        resetHeader === null ? 0 : Math.max(0, Number(resetHeader) * 1000 - Date.now());
-      const errorBody = z.object({ message: z.string() }).safeParse(data);
-      const limited =
-        response.status === 429 ||
-        (response.status === 403 &&
-          (remaining === "0" ||
-            retryAfter !== undefined ||
-            (errorBody.success &&
-              /(?:secondary )?rate limit|abuse detection/i.test(errorBody.data.message))));
-      if (limited) {
-        await wait(
-          Math.max(
-            1000,
-            (retryAfter ?? 0) * 1000,
-            Number.isFinite(resetDelay) ? resetDelay : 0,
-            retryAfter === undefined && remaining !== "0" ? 60_000 : 0,
-          ),
-          this.runtime.signal,
-          ABORT_LABEL,
-        );
-        continue;
-      }
       if (response.status >= 500 && failures < 3) {
         failures += 1;
         await wait(1000 * 2 ** (failures - 1), this.runtime.signal, ABORT_LABEL);
@@ -189,8 +139,7 @@ export class GithubClient {
         if (
           response.status === 409 &&
           /^repos\/[^/]+\/[^/]+\/commits$/u.test(url.pathname.slice(this.base.pathname.length)) &&
-          errorBody.success &&
-          errorBody.data.message === "Git Repository is empty."
+          errorMessage === "Git Repository is empty."
         ) {
           return { data: [] };
         }

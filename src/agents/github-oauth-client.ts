@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { ApiQuotaError, getSharedApiStore } from "../infra/http-api-quota.js";
+import { apiStoreRequestKey } from "../infra/http-api-read-store.js";
 import { readResponseWithLimit } from "../infra/http-body.js";
 import { createStaleWhileRevalidateCache } from "../infra/stale-while-revalidate-cache.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
@@ -37,10 +39,14 @@ const verifiedCredentials = createStaleWhileRevalidateCache<GitHubCredentialVeri
   ttlMs: GITHUB_CREDENTIAL_VERIFICATION_TTL_MS,
   cacheable: (result) => result.status === "available",
 });
+let verificationLifetime = new AbortController();
 
 export function clearGitHubCredentialVerificationCache(): void {
   clearNativeGitHubTokenCache();
   verifiedCredentials.clear();
+  // Retire this cache's shared-read subscriptions as well as its display facts.
+  verificationLifetime.abort();
+  verificationLifetime = new AbortController();
 }
 
 type GitHubOAuthRequestOptions = {
@@ -299,29 +305,35 @@ export async function verifyGitHubCredential(
     const apiBaseUrl = options.apiBaseUrl ?? resolveConfiguredGitHubApiBaseUrl();
     const key = createHash("sha256").update(`${apiBaseUrl}\0${token}`).digest("hex");
     const create = async (): Promise<GitHubCredentialVerificationResult> => {
+      const quota = getSharedApiStore({ apiBaseUrl, token });
       const timeoutMs = resolveTimerTimeoutMs(
         options.timeoutMs,
         GITHUB_OAUTH_REQUEST_TIMEOUT_MS,
         1,
       );
       const timeout = AbortSignal.timeout(timeoutMs);
-      const response = await fetch(`${apiBaseUrl}/user`, {
-        method: "GET",
-        redirect: "error",
-        headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
-        signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
-      });
+      const signal = AbortSignal.any([
+        verificationLifetime.signal,
+        timeout,
+        ...(options.signal ? [options.signal] : []),
+      ]);
+      const url = `${apiBaseUrl}/user`;
+      const response = await quota.responses.read(
+        apiStoreRequestKey(url),
+        (ownerSignal) =>
+          quota.dispatch("core", () =>
+            fetch(url, {
+              method: "GET",
+              redirect: "error",
+              headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
+              signal: ownerSignal,
+            }),
+          ),
+        { signal, freshnessMs: 0 },
+      );
       if (response.status !== 200) {
         void response.body?.cancel().catch(() => undefined);
-        const rateLimited =
-          response.status === 429 ||
-          (response.status === 403 &&
-            (response.headers.get("x-ratelimit-remaining") === "0" ||
-              response.headers.has("retry-after")));
-        return {
-          status:
-            response.status === 401 ? "unavailable" : rateLimited ? "rate_limited" : "unverified",
-        };
+        return { status: response.status === 401 ? "unavailable" : "unverified" };
       }
       const body = await readGitHubResponse(response, "account", timeoutMs);
       const accountId = readPositiveInteger(body.id, "account", Number.MAX_SAFE_INTEGER);
@@ -347,9 +359,9 @@ export async function verifyGitHubCredential(
       allowStale: options.allowStale === true,
     });
     return stale && value.status === "available" ? { ...value, stale: true } : value;
-  } catch {
+  } catch (error) {
     // Network errors, response bodies, and abort reasons can contain credentials.
-    return { status: "unverified" };
+    return { status: error instanceof ApiQuotaError ? "rate_limited" : "unverified" };
   }
 }
 

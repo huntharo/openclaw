@@ -76,7 +76,7 @@ function observeSharedReadAdmission() {
   vi.spyOn(lazyPromise, "getOrCreatePromise").mockImplementation((cache, key, create, options) => {
     const pending = cache.get(key);
     const shared = getOrCreatePromise(cache, key, create, options);
-    // Credential verification precedes filesystem awaits; wait for actual singleflight admission.
+    // Wait for the caller to join existing work before changing its authority.
     if (pending === shared) {
       joined.resolve();
     }
@@ -186,11 +186,12 @@ describe("board authenticated GitHub Actions", () => {
       harness?: ReturnType<typeof createBoardHarness>;
       name?: string;
       agentId?: string;
+      sessionKey?: string;
     } = {},
   ) {
     const harness = options.harness ?? createGitHubBoardHarness();
     const name = options.name ?? "runs";
-    const sessionKey = boardSessionKey(options.agentId);
+    const sessionKey = options.sessionKey ?? boardSessionKey(options.agentId);
     const saved = await harness.invoke("board.widget.put", {
       sessionKey,
       name,
@@ -506,7 +507,7 @@ describe("board authenticated GitHub Actions", () => {
     expect(actionCalls()).toHaveLength(0);
   });
 
-  it("coalesces successful reads and scopes cache entries to filters and current credentials", async () => {
+  it("shares Actions facts across board sessions while filters and credentials stay separate", async () => {
     const started = createDeferred();
     const release = createDeferred();
     actions = async () => {
@@ -514,9 +515,10 @@ describe("board authenticated GitHub Actions", () => {
       await release.promise;
       return json(result);
     };
-    const { read } = await reader();
+    const { read, harness } = await reader();
+    const other = await reader({ harness, sessionKey: `agent:main:other-runs-${caseNumber}` });
     const first = read();
-    const second = read();
+    const second = other.read();
     await started.promise;
     release.resolve();
     expect((await first).mock.calls[0]).toEqual([true, result]);
@@ -544,7 +546,7 @@ describe("board authenticated GitHub Actions", () => {
     });
     const freshGateway = await reader();
     await freshGateway.read();
-    expect(actionCalls()).toHaveLength(4);
+    expect(actionCalls()).toHaveLength(3);
   });
 
   it.for(["success", "failure"] as const)(

@@ -1,4 +1,3 @@
-import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import type { ControlUiLinkReaderDocument } from "openclaw/plugin-sdk/control-ui-link-reader";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { fetchPullChecks } from "./detail-checks.js";
@@ -7,7 +6,6 @@ import {
   fetchGitHubApi,
   GITHUB_API_ORIGIN,
   githubRestApiPath,
-  githubApiCredentialCacheScope,
   isRecord,
   optionalNumber,
   readGitHubJsonResponse,
@@ -38,19 +36,11 @@ const COMMENT_MAX_CHARS = 4 * 1024;
 const FILE_LIMIT = 30;
 const PATCH_MAX_CHARS = 16 * 1024;
 const PATCH_TOTAL_MAX_CHARS = 96 * 1024;
-const SUCCESS_CACHE_MS = 5 * 60_000;
-const PARTIAL_CACHE_MS = 30_000;
-const CACHE_LIMIT = 32;
 type CachedDocument = {
   document: GitHubDocument;
   repositoryId?: number;
   repositoryUrls: string[];
 };
-const detailCache = new Map<
-  string,
-  { expiresAt: number; settled: boolean; promise: Promise<CachedDocument> }
->();
-
 type JsonPage = { value: unknown; hasNextPage: boolean };
 type ReadDetailPage = (url: string) => Promise<JsonPage>;
 
@@ -415,8 +405,6 @@ async function loadGitHubDetailWithIdentity(
   }
   await identity?.revalidate();
   identity?.assertSelected();
-  const id = parsed.kind === "commit" ? parsed.sha : parsed.number;
-  const key = `${parsed.kind}:${parsed.owner.toLowerCase()}/${parsed.repo.toLowerCase()}#${id}\0${identity?.cacheScope ?? "anonymous"}\0${githubApiCredentialCacheScope(identity?.token)}`;
   const assertDelivery = async (result: CachedDocument) => {
     if (identity?.token) {
       for (const url of result.repositoryUrls) {
@@ -426,15 +414,6 @@ async function loadGitHubDetailWithIdentity(
     await identity?.revalidate();
     identity?.assertSelected();
   };
-  const cached = detailCache.get(key);
-  if (!refresh && cached && cached.expiresAt > Date.now() && (!identity || cached.settled)) {
-    detailCache.delete(key);
-    detailCache.set(key, cached);
-    const result = await cached.promise;
-    await assertDelivery(result);
-    return result.document;
-  }
-  detailCache.delete(key);
   const load = async (): Promise<CachedDocument> => {
     const repositoryUrl = `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`;
     const repositoryUrls = new Set([repositoryUrl]);
@@ -462,6 +441,7 @@ async function loadGitHubDetailWithIdentity(
         undefined,
         undefined,
         GITHUB_API_ORIGIN,
+        { refresh, freshnessMs: parsed.kind === "pull" ? 30_000 : 5 * 60_000 },
       );
       return {
         hasNextPage: /;\s*rel="next"/u.test(response.headers.get("link") ?? ""),
@@ -475,34 +455,7 @@ async function loadGitHubDetailWithIdentity(
     await assertDelivery(result);
     return result;
   };
-  const entry = {
-    expiresAt: Date.now() + SUCCESS_CACHE_MS,
-    settled: false,
-    promise: load()
-      .then((result) => {
-        entry.settled = true;
-        // PR checks and heads change independently of the body.
-        if (parsed.kind === "pull" || result.document.partial) {
-          entry.expiresAt = Date.now() + PARTIAL_CACHE_MS;
-        }
-        return result;
-      })
-      .catch((error: unknown) => {
-        // Caller-lifetime failures must not poison another reader's cache.
-        if (error instanceof ControlUiGitHubError && error.statusCode !== 409) {
-          entry.settled = true;
-          entry.expiresAt = Date.now() + PARTIAL_CACHE_MS;
-        } else if (detailCache.get(key) === entry) {
-          detailCache.delete(key);
-        }
-        throw error;
-      }),
-  };
-  // Track the newest request immediately so older completions cannot replace a
-  // refresh. Prepared identities reuse only settled, caller-independent results.
-  detailCache.set(key, entry);
-  pruneMapToMaxSize(detailCache, CACHE_LIMIT);
-  const result = await entry.promise;
+  const result = await load();
   identity?.assertSelected();
   return result.document;
 }

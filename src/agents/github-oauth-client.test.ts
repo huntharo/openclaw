@@ -148,11 +148,16 @@ describe("GitHub OAuth client", () => {
 
   it("does not let an in-flight probe repopulate cleared verification state", async () => {
     const upstream = createDeferredCore<Response>();
+    const started = createDeferredCore<void>();
     const probe = vi
       .spyOn(globalThis, "fetch")
-      .mockReturnValueOnce(upstream.promise)
+      .mockImplementationOnce(() => {
+        started.resolve();
+        return upstream.promise;
+      })
       .mockImplementation(async () => jsonResponse({ id: 202, login: "after-clear" }));
     const first = verifyGitHubCredential("synthetic-inflight-clear");
+    await started.promise;
     clearGitHubCredentialVerificationCache();
     const second = await verifyGitHubCredential("synthetic-inflight-clear");
     upstream.resolve(jsonResponse({ id: 202, login: "before-clear" }));
@@ -169,6 +174,32 @@ describe("GitHub OAuth client", () => {
       );
       const token = `synthetic-http-${code}-${status}-${headers.get("retry-after") ?? headers.get("x-ratelimit-remaining") ?? "none"}`;
       expect(await verifyGitHubCredential(token)).toEqual({ status });
+    },
+  );
+
+  it.each([
+    { headers: new Headers({ "retry-after": "90" }), delayMs: 90_000 },
+    { headers: new Headers(), delayMs: 60_000 },
+  ])(
+    "retains secondary-limit cooldowns across credential probes ($delayMs ms)",
+    async ({ headers, delayMs }) => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      const probe = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ message: "You have exceeded a secondary rate limit." }), {
+            status: 403,
+            headers,
+          }),
+        )
+        .mockResolvedValue(jsonResponse({ id: 202, login: "after-cooldown" }));
+      const token = "synthetic-secondary-verification-" + delayMs;
+      expect(await verifyGitHubCredential(token)).toEqual({ status: "rate_limited" });
+      expect(await verifyGitHubCredential(token)).toEqual({ status: "rate_limited" });
+      expect(probe).toHaveBeenCalledOnce();
+      now.mockReturnValue(1_800_000_000_000 + delayMs);
+      expect(await verifyGitHubCredential(token)).toMatchObject({ status: "available" });
+      expect(probe).toHaveBeenCalledTimes(2);
     },
   );
 

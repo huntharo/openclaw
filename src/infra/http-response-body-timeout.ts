@@ -1,6 +1,6 @@
 // Applies idle and overall deadlines to fetch response-body reads.
-import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
-import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+import { toErrorObject } from "../../packages/normalization-core/src/error-coercion.js";
+import { resolveTimerTimeoutMs } from "../../packages/normalization-core/src/number-coercion.js";
 
 type TimeoutErrorFactory = (params: { timeoutMs: number }) => Error;
 
