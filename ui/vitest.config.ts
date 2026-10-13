@@ -9,6 +9,7 @@ import type { Plugin } from "vite";
 import { defineConfig, defineProject, type ViteUserConfig } from "vitest/config";
 import type { Vitest } from "vitest/node";
 import { mermaidClassicBundlePlugin } from "../packages/mermaid-renderer/vite-plugin.ts";
+import { installGitHubChromiumGuard } from "../test/helpers/github-browser-guard.mjs";
 import {
   filterFilesByPatterns,
   intersectIncludePatterns,
@@ -36,7 +37,10 @@ import {
 } from "../test/vitest/vitest.ui-paths.mjs";
 import { controlUiLocaleModulesPlugin } from "./config/control-ui-locales.ts";
 import { controlUiSolidPlugin } from "./config/control-ui-solid.ts";
+import { overlayEmulateMedia } from "./test/overlay-browser-commands.ts";
 import { UiRuntimePartitionSequencer } from "./test/vitest-runtime-sequencer.ts";
+
+installGitHubChromiumGuard(chromium);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -76,7 +80,10 @@ const sharedUiTestConfig = {
   testTimeout: 60_000,
   hookTimeout: 60_000,
 } as const;
-const nodeSetupFiles = ["./src/test-helpers/lit-warnings.setup.ts"];
+const nodeSetupFiles = [
+  "./src/test-helpers/lit-warnings.setup.ts",
+  "./src/test-helpers/github-network.setup.ts",
+];
 const nodeDrivenBrowserLayoutTests = relativizeScopedPatterns(uiNodeDrivenBrowserTestFiles, "ui");
 const timingTests = relativizeScopedPatterns(uiTimingTestFiles, "ui");
 const mockRegistryUnitTests = uiIsolatedTestFiles.map((testFile) => testFile.slice("ui/".length));
@@ -113,8 +120,7 @@ function resolveChromiumLaunchOptions(): { executablePath: string } | undefined 
 
 let chromiumLaunchOptions: ReturnType<typeof resolveChromiumLaunchOptions> | null = null;
 
-// Re-add modal-dialog.browser (CDP media emulation) and web-awesome-accessibility.node
-// (CDP accessibility tree) after their browser-neutral replacements land.
+// The accessibility-tree suite remains Chromium-only until its CDP probe is replaced.
 const webkitTestFiles = [
   "src/components/web-awesome-dropdown.browser.test.ts",
   "src/components/web-awesome-dropdown-owner.browser.test.ts",
@@ -123,6 +129,7 @@ const webkitTestFiles = [
   "src/components/web-awesome.test.ts",
   "src/components/web-awesome-theme.browser.test.ts",
   "src/components/menu-surface.browser.test.ts",
+  "src/components/session-progress-hovercard.browser.test.ts",
   "src/components/modal-dialog.test.ts",
   "src/components/tooltip.test.ts",
   "src/components/tooltip.browser.test.ts",
@@ -131,9 +138,20 @@ const webkitTestFiles = [
   "src/components/tooltip-title.browser.test.ts",
   "src/pages/chat/chat-composer-context.browser.test.ts",
   "src/pages/chat/chat-composer-context.palette.browser.test.ts",
-  "src/pages/chat/chat-composer-overflow.browser.test.ts",
-  "src/pages/chat/components/chat-effort-picker.browser.test.ts",
-  "src/pages/chat/components/chat-model-picker.browser.test.ts",
+  "src/pages/chat/chat-composer-overflow.browser.test.tsx",
+  "src/pages/chat/components/chat-effort-picker.browser.test.tsx",
+  "src/pages/chat/components/chat-details.browser.test.ts",
+  "src/pages/chat/components/chat-model-picker.browser.test.tsx",
+  "src/pages/chat/components/chat-pane-header.browser.test.ts",
+  "src/pages/chat/components/chat-pane-versions-menu.browser.test.ts",
+  "src/components/overlay-anchor.browser.test.ts",
+  "src/components/overlay-lifecycle.browser.test.ts",
+  "src/components/overlay-shadow.browser.test.ts",
+  "src/components/solid/*.browser.test.tsx",
+  "src/components/image-lightbox.browser.test.ts",
+  "src/components/modal-dialog.browser.test.ts",
+  "src/components/sessions-hub-header.browser.test.ts",
+  "src/components/transient-container.browser.test.ts",
 ].map((file) => resolveUiTypeScriptPath(file, here));
 
 export function createUiBrowserVitestConfig(
@@ -216,6 +234,7 @@ export function createUiBrowserVitestConfig(
         "@openclaw/normalization-core > libphonenumber-js/min/metadata",
         "@openclaw/uirouter",
         "@panzoom/panzoom",
+        "@solidjs/signals",
         "@solidjs/testing-library",
         "@tanstack/lit-virtual",
         "@tanstack/virtual-core",
@@ -226,6 +245,8 @@ export function createUiBrowserVitestConfig(
         "ipaddr.js",
         "json5",
         "jsonc-parser",
+        "lit",
+        "lit/decorators.js",
         "lit/async-directive.js",
         "lit/directive.js",
         "lit/directive-helpers.js",
@@ -237,6 +258,7 @@ export function createUiBrowserVitestConfig(
         "lit/directives/repeat.js",
         "lit/directives/style-map.js",
         "lit/directives/unsafe-html.js",
+        "lit/directives/unsafe-svg.js",
         "lit/directives/until.js",
         "lit/static-html.js",
         "markdown-it",
@@ -247,6 +269,8 @@ export function createUiBrowserVitestConfig(
         "micromark-extension-gfm-table",
         "remend",
         "string-width",
+        "typebox",
+        "typebox/schema",
         "typebox/compile",
         "typebox/guard",
         "typebox/value",
@@ -271,6 +295,7 @@ export function createUiBrowserVitestConfig(
       browser: {
         enabled: true,
         provider,
+        commands: { overlayEmulateMedia },
         instances: [{ browser, name: browser }],
         headless: true,
         ui: false,

@@ -143,8 +143,8 @@ export function createFixture(groups: readonly string[], root: string) {
   for (const name of [
     ".bin",
     "@openclaw/fs-safe",
+    "@openclaw/proc-safe",
     "@silvia-odwyer/photon-node",
-    "koffi",
     "playwright-core",
     "web-tree-sitter",
     "tree-sitter-bash",
@@ -206,7 +206,6 @@ export function createFixture(groups: readonly string[], root: string) {
   const runtimeEntryOwners = new Set([
     ...Object.values(runtimeProcessDeclarationEntries),
     "scripts/lib/managed-windows-job-launcher.mts",
-    "src/process/supervisor/service-child-windows-job-native.ts",
     "src/process/exec-result.ts",
     "src/infra/update-managed-service-handoff-runtime-assets.ts",
     "src/infra/update-managed-service-handoff-native-loader.ts",
@@ -251,6 +250,7 @@ export function createFixture(groups: readonly string[], root: string) {
     "packages/gateway-client/src/websocket.ts",
     "src/gateway/desktop/node-stream-broker.ts",
     "src/gateway/desktop/observe-bridge.ts",
+    "src/gateway/control-ui-public-session-card-render.ts",
     "src/gateway/server-runtime-state.ts",
     "src/realtime-transcription/websocket-session.ts",
   ]) {

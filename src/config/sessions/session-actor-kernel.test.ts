@@ -203,6 +203,39 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     }
     expect(cachedEntries().entries.get(scope.sessionKey)?.label).toBe("actor committed");
     const committed = projectSessionActorHotState(state);
+    const projectionState = {
+      ...state,
+      hot: {
+        ...state.hot,
+        participants: [
+          {
+            identity: { type: "profile" as const, id: "owner" },
+            contributionCount: 1,
+            firstPromptedAt: 1,
+            lastPromptedAt: 2,
+          },
+        ],
+        members: [{ identityId: "owner", addedBy: "owner", addedAt: 1 }],
+      },
+    };
+    const retained = structuredClone(projectionState);
+    const detached = projectSessionActorHotState(projectionState);
+    const original = structuredClone(detached);
+    detached.entry!.label = "caller edit";
+    Object.assign(detached.target.database, { birthtime: "caller edit" });
+    Object.assign(detached.version, { sequence: -1 });
+    detached.participants[0]!.identity.id = "caller edit";
+    detached.members[0]!.identityId = "caller edit";
+    detached.pendingInputs[0]!.input_id = "caller edit";
+    detached.transcript.version.rawSeq = -1;
+    detached.transcript.watermark.maxSeq = -1;
+    Object.assign(detached.transcript.anchors[0]!, { entryId: "caller edit" });
+    detached.transcript.idempotency[0]!.eventId = "caller edit";
+    if (detached.transcript.modelContext.kind === "resident") {
+      detached.transcript.modelContext.entries[0]!.eventId = "caller edit";
+    }
+    expect(projectionState).toEqual(retained);
+    expect(projectSessionActorHotState(projectionState)).toEqual(original);
     const abandoned = cloneSessionActorStoredState(state);
     expect(() =>
       runOpenClawAgentWriteTransaction(
@@ -375,8 +408,19 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         initialWriterRunId: "first-run",
       },
     };
-    const retainedReads = trackSqliteStatementExecutions(database.db, ["entry"], (query) =>
-      query.toLowerCase().includes('from "session_nodes"') ? "entry" : null,
+    const retainedReads = trackSqliteStatementExecutions(
+      database.db,
+      ["entry", "newer", "parents", "projection"],
+      (query) =>
+        query.toLowerCase().includes('from "session_nodes"')
+          ? "entry"
+          : query.includes('"serialized_bytes"') && query.includes('"identity"."seq" >')
+            ? "newer"
+            : query.includes('"parent"."event_id" as "parent_id"')
+              ? "parents"
+              : query.includes('"reset_active_position"')
+                ? "projection"
+                : null,
     );
     const committed = (() => {
       try {
@@ -392,6 +436,9 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
       }
     })();
     expect(retainedReads.counts.entry).toBe(0);
+    expect(retainedReads.counts.newer).toBe(0);
+    expect(retainedReads.counts.parents).toBe(0);
+    expect(retainedReads.counts.projection).toBe(0);
     expect(committed.kind).toBe("metadata");
     if (committed.kind !== "metadata") {
       throw new Error("Expected prepared metadata append");
@@ -420,6 +467,10 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         snapshot: {
           version: { rawSeq: 2 },
           events: [{ id: scope.sessionId }, { id: "retained-user" }, { id: "prepared-assistant" }],
+          parents: new Map([
+            ["retained-user", null],
+            ["prepared-assistant", "retained-user"],
+          ]),
         },
       },
     });
@@ -510,5 +561,116 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         hydrateSessionActorState(database, target, state.hot.version, state.hot.writeToken),
       ),
     ).toEqual(projectSessionActorHotState(state));
+    rejectFresh = false;
+    const advanced = runOpenClawAgentWriteTransaction(
+      (db) =>
+        withSessionActorTransactionState(db, state, () =>
+          applySessionActorAppend(
+            {
+              kind: "metadata",
+              input: {
+                ...append.input,
+                event: {
+                  type: "message",
+                  id: "newer-user",
+                  parentId: "prepared-assistant",
+                  timestamp: "2026-01-01T00:00:04.000Z",
+                },
+                message: {
+                  ...append.input.message!,
+                  messageJson: JSON.stringify({ role: "user", content: "a different turn" }),
+                  validateTurn: false,
+                },
+              },
+            },
+            state,
+            context,
+          ),
+        ),
+      options,
+    );
+    expect(advanced).toMatchObject({
+      kind: "metadata",
+      value: {
+        reload: {
+          ok: true,
+          value: {
+            kind: "bounded",
+            snapshot: {
+              parents: new Map([
+                ["retained-user", null],
+                ["prepared-assistant", "retained-user"],
+                ["newer-user", "prepared-assistant"],
+              ]),
+            },
+          },
+        },
+      },
+    });
+    expect(() =>
+      runOpenClawAgentWriteTransaction(
+        (db) =>
+          withSessionActorTransactionState(db, state, () =>
+            applySessionActorAppend(
+              {
+                kind: "metadata",
+                input: {
+                  ...append.input,
+                  event: {
+                    type: "message",
+                    id: "stale-assistant",
+                    parentId: "prepared-assistant",
+                    timestamp: "2026-01-01T00:00:05.000Z",
+                  },
+                },
+              },
+              state,
+              context,
+            ),
+          ),
+        options,
+      ),
+    ).toThrow("changed");
+    expect(f.events().at(-1)).toMatchObject({ id: "newer-user" });
+    const reset = runOpenClawAgentWriteTransaction(
+      (db) =>
+        withSessionActorTransactionState(db, state, () =>
+          applySessionActorAppend(
+            {
+              kind: "metadata",
+              input: {
+                ...append.input,
+                event: JSON.stringify({
+                  type: "reset",
+                  id: "reset",
+                  parentId: "newer-user",
+                  timestamp: "2026-01-01T00:00:06.000Z",
+                  reason: "new",
+                }),
+                message: undefined,
+                view: { ...append.input.view!, limits: { maxBytes: 10_000, maxEvents: 1 } },
+              },
+            },
+            state,
+            context,
+          ),
+        ),
+      options,
+    );
+    expect(reset).toMatchObject({
+      kind: "metadata",
+      value: {
+        reload: {
+          ok: true,
+          value: {
+            kind: "bounded",
+            snapshot: {
+              events: [{ id: scope.sessionId }, { id: "reset" }],
+              parents: new Map([["reset", "newer-user"]]),
+            },
+          },
+        },
+      },
+    });
   });
 });

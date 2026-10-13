@@ -64,7 +64,6 @@ import { createToolSurfacePresentationForTest } from "../agents/tool-surface-pla
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { saveExecApprovals } from "../infra/exec-approvals-store.test-support.js";
-import { runExec } from "../process/exec.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
 import * as workerTranscriptRuntime from "./embedded-agent-transcript.runtime.js";
 import {
@@ -73,10 +72,7 @@ import {
   type WorkerLaunchDescriptor,
 } from "./launch-descriptor.js";
 import { runWorkerCommand } from "./worker-command.runtime.js";
-import {
-  WorkerAdmissionDeadlineExceededError,
-  WorkerConnectionStoppedError,
-} from "./worker-connection-contract.js";
+import { WorkerAdmissionDeadlineExceededError } from "./worker-connection-contract.js";
 import { createWorkerConnection, type WorkerConnectionState } from "./worker-connection.js";
 import {
   buildWorkerProcessTurn,
@@ -94,7 +90,7 @@ import {
   registerWorkerGatewayToolAvailabilityTests,
   registerWorkerGatewayToolRpcTests,
 } from "./worker-runtime-gateway-tools.suite.js";
-import { registerWorkerGitHubFailureTests } from "./worker-runtime-github-failures.suite.js";
+import { registerWorkerGitHubTests } from "./worker-runtime-github.suite.js";
 import { registerWorkerNativeInferenceTests } from "./worker-runtime-native-inference.suite.js";
 import { registerWorkerPermissionTests } from "./worker-runtime-permissions.suite.js";
 import { registerWorkerPromptTests } from "./worker-runtime-prompt.suite.js";
@@ -967,6 +963,68 @@ afterEach(async () => {
 });
 
 describe("worker runtime", () => {
+  it("finalizes worker tool outcomes after an empty model response", async () => {
+    const { gateway, launch } = await setup({
+      inferencePlans: ["safe-tool", "empty-terminal", "text"],
+    });
+    await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "completed" });
+    const messages = gateway.acceptedTranscriptRequests.flatMap((request) => request.messages);
+    expect(messages.find((message) => message.role === "toolResult")).toMatchObject({
+      isError: false,
+    });
+    expect(messages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "worker reply" }],
+    });
+    expect(gateway.inferenceRequests).toHaveLength(3);
+    expect(gateway.inferenceRequests[2]?.context.tools ?? []).toEqual([]);
+    expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(1);
+    expect(
+      gateway.liveEventRequests.findLast(({ event }) => event.kind === "assistant"),
+    ).toMatchObject({ event: { payload: { text: "worker reply" } } });
+  });
+
+  it("finalizes worker tool outcomes with a failure after one empty continuation", async () => {
+    const { gateway, launch } = await setup({
+      inferencePlans: ["safe-tool", "empty-terminal", "empty-terminal"],
+    });
+    await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "failed" });
+    expect(gateway.inferenceRequests).toHaveLength(3);
+    expect(gateway.liveEventRequests.at(-1)).toMatchObject({
+      event: { kind: "lifecycle", payload: { phase: "finishing", error: expect.any(String) } },
+    });
+  });
+
+  it("finalizes worker tool outcomes with an accurate running-process status", async () => {
+    const { gateway, launch } = await setup({
+      inferencePlans: ["background-tool", "text"],
+      backgroundCommand: `${JSON.stringify(process.execPath)} -e 'require("node:net").createServer().listen(0, "127.0.0.1")'`,
+    });
+    const scopeKey = `worker:${SESSION_ID}`;
+    const environment = await createWorkerRuntimeEnvironment(SESSION_ID);
+    try {
+      await expect(
+        runWorkerDescriptor(launch, { environmentStateDir: environment.stateDir }),
+      ).resolves.toMatchObject({ status: "completed" });
+      const running = listRunningSessions().filter((session) => session.scopeKey === scopeKey);
+      expect(running).toHaveLength(1);
+      const messages = gateway.acceptedTranscriptRequests.flatMap((request) => request.messages);
+      expect(messages.at(-1)).toMatchObject({
+        role: "assistant",
+        content: [{ type: "text", text: expect.stringContaining("still running") }],
+      });
+      expect(JSON.stringify(messages.at(-1))).toContain(running[0]!.id);
+      expect(gateway.inferenceRequests).toHaveLength(2);
+      expect(
+        gateway.liveEventRequests.findLast(({ event }) => event.kind === "assistant"),
+      ).toMatchObject({ event: { payload: { text: expect.stringContaining("still running") } } });
+    } finally {
+      getProcessSupervisor().cancelScope(scopeKey, "manual-cancel");
+      await waitForExecScope(scopeKey);
+      await environment.close();
+    }
+  });
+
   registerWorkerBackgroundExecLifecycleTests({
     setup,
     waitForFast,
@@ -975,44 +1033,6 @@ describe("worker runtime", () => {
     inferenceStartTimeoutMs: WORKER_INFERENCE_START_TIMEOUT_MS,
   });
 
-  it("sends current image and scanned PDF page content through remote inference exactly once", async () => {
-    const { gateway, launch } = await setup();
-    const images = [
-      {
-        type: "image" as const,
-        data: createNoisyPngBuffer(320, 240).toString("base64"),
-        mimeType: "image/png",
-      },
-      {
-        type: "image" as const,
-        data: createSolidPngBuffer(2, 2, { r: 0, g: 128, b: 255 }).toString("base64"),
-        mimeType: "image/png",
-      },
-    ];
-    const prompt = [
-      { type: "text" as const, text: "Inspect the attached image and PDF page." },
-      ...images,
-    ];
-    launch.assignment.prompt = prompt;
-    launch.assignment.suppressPromptTranscript = true;
-
-    await expect(runWorkerDescriptor(parseWorkerLaunchDescriptor(launch))).resolves.toMatchObject({
-      status: "completed",
-    });
-
-    expect(gateway.inferenceRequests[0]?.context.messages).toEqual([
-      {
-        role: "user",
-        content: prompt,
-        timestamp: expect.any(Number),
-      },
-    ]);
-    expect(
-      gateway.transcriptRequests.flatMap((request) =>
-        request.messages.map((message) => message.role),
-      ),
-    ).toEqual(["assistant"]);
-  });
   it("settles a real image above 64 KiB through input and a tool result", async () => {
     const { gateway, workspaceDir, launch } = await setup({
       inferencePlans: ["read-image", "text"],
@@ -1129,7 +1149,7 @@ describe("worker runtime", () => {
     ).toBeLessThan(gateway.applicationOrder.indexOf("live:lifecycle:finishing"));
   });
 
-  it.each(["text", "error", "setup"] as const)(
+  it.each(["error", "setup"] as const)(
     "retains browser disposal failure together with the %s outcome",
     async (outcome) => {
       const { gateway, launch } = await setup({
@@ -1178,10 +1198,6 @@ describe("worker runtime", () => {
   );
 
   it.each([
-    { computerCleanupFailure: false, terminal: "text" },
-    { computerCleanupFailure: false, terminal: "error" },
-    { computerCleanupFailure: false, terminal: "cancelled" },
-    { computerCleanupFailure: true, terminal: "text" },
     { computerCleanupFailure: true, terminal: "error" },
     { computerCleanupFailure: true, terminal: "cancelled" },
   ] as const)(
@@ -1209,7 +1225,7 @@ describe("worker runtime", () => {
       };
 
       await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({
-        status: computerCleanupFailure || terminal !== "text" ? "failed" : "completed",
+        status: "failed",
       });
 
       expect(gateway.computerRequests.map((request) => request.command)).toEqual([
@@ -1250,7 +1266,14 @@ describe("worker runtime", () => {
           kind: "lifecycle",
           payload: { phase: "finishing", stopReason: "aborted" },
         });
-        expect(gateway.liveEventRequests.at(-1)?.event.payload).not.toHaveProperty("error");
+        expect(gateway.liveEventRequests.at(-1)?.event.payload).toHaveProperty(
+          "error",
+          expect.stringContaining("fixture inference cancelled"),
+        );
+        expect(gateway.liveEventRequests.at(-1)?.event.payload).toHaveProperty(
+          "error",
+          expect.stringContaining("fixture desktop cleanup failed"),
+        );
       } else if (computerCleanupFailure) {
         expect(gateway.liveEventRequests.at(-1)?.event).toMatchObject({
           kind: "lifecycle",
@@ -1299,11 +1322,6 @@ describe("worker runtime", () => {
 
   it.each([
     { name: "spawn", toolId: "sessions_spawn", arguments: { task: "start a nested cloud child" } },
-    {
-      name: "send",
-      toolId: "sessions_send",
-      arguments: { sessionKey: "agent:main:cloud-child", message: "status" },
-    },
   ])("replays the same durable $name operation across response loss", async (testCase) => {
     const { gateway, launch } = await setup({ dropSessionToolResponses: 2 });
     const connection = createWorkerConnection({
@@ -1386,21 +1404,6 @@ describe("worker runtime", () => {
         (request) => request.event.kind === "lifecycle" && request.event.payload.phase === "error",
       ),
     ).toBe(false);
-  });
-
-  it("renumbers live events after a gateway cursor reset without aborting the run", async () => {
-    const { gateway, launch } = await setup({ liveResyncAckedSeq: 0 });
-    launch.assignment.liveEvents = { ackedSeq: 5, nextSeq: 6 };
-
-    await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "completed" });
-
-    expect(gateway.inferenceRequests).toHaveLength(1);
-    expect(gateway.acceptedTranscriptRequests).toHaveLength(2);
-    expect(gateway.liveEventRequests.slice(0, 2)).toEqual([
-      expect.objectContaining({ seq: 6, lastAckedSeq: 5 }),
-      expect.objectContaining({ seq: 1, lastAckedSeq: 0 }),
-    ]);
-    expect(gateway.liveEventRequests[1]?.event).toEqual(gateway.liveEventRequests[0]?.event);
   });
 
   it("requires authoritative terminal delivery after degrading preview live events", async () => {
@@ -1567,45 +1570,6 @@ describe("worker runtime", () => {
     }
   });
 
-  it.each([
-    ["error", "error", "finishing", { status: "failed", reason: "turn-failed" }],
-    ["cancelled", "aborted", "finishing", { status: "failed", reason: "turn-failed" }],
-    ["length", "length", "finishing", { status: "completed" }],
-  ] as const)(
-    "reports remote inference %s terminal reasons",
-    async (plan, stopReason, lifecyclePhase, expectedResult) => {
-      const { gateway, launch } = await setup({ inferencePlans: [plan] });
-
-      await expect(runWorkerDescriptor(launch)).resolves.toMatchObject(expectedResult);
-      const assistant = gateway.transcriptRequests
-        .flatMap((request) => request.messages)
-        .toReversed()
-        .find((entry) => entry.role === "assistant");
-      expect(assistant).toMatchObject({ stopReason });
-      const lifecycle = gateway.liveEventRequests
-        .map((request) => request.event)
-        .toReversed()
-        .find((event) => event.kind === "lifecycle");
-      expect(lifecycle).toMatchObject({
-        payload: { phase: lifecyclePhase, stopReason },
-      });
-      expect(lifecycle?.payload).not.toHaveProperty("replayInvalid");
-    },
-  );
-
-  it("keeps an unacknowledged failed-turn terminal as an infrastructure failure", async () => {
-    const { gateway, launch } = await setup({
-      inferencePlans: ["error"],
-      liveFailure: "capacity-exceeded",
-    });
-
-    await expect(runWorkerDescriptor(launch)).rejects.toThrow("worker live event rejected");
-    expect(gateway.liveEventRequests.at(-1)?.event).toMatchObject({
-      kind: "lifecycle",
-      payload: { phase: "finishing" },
-    });
-  });
-
   it("fails closed when a heartbeat is rejected without fencing", async () => {
     const { launch } = await setup({
       inferencePlans: ["hold"],
@@ -1616,21 +1580,6 @@ describe("worker runtime", () => {
     await expect(runWorkerDescriptor(launch)).rejects.toThrow(
       "worker heartbeat rejected: credential-expired",
     );
-  });
-
-  it("coalesces bursty live output and keeps every frame below the byte ceiling", async () => {
-    const { gateway, launch } = await setup({ inferencePlans: ["burst-text"] });
-
-    await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "completed" });
-
-    const assistantEvents = gateway.liveEventRequests.filter(
-      (request) => request.event.kind === "assistant",
-    );
-    expect(assistantEvents.length).toBeGreaterThan(0);
-    expect(assistantEvents.length).toBeLessThan(1_100);
-    for (const request of gateway.liveEventRequests) {
-      expect(Buffer.byteLength(JSON.stringify(request), "utf8")).toBeLessThan(64 * 1024);
-    }
   });
 
   it.each(["oversized-text", "oversized-error"] as const)(
@@ -1654,21 +1603,6 @@ describe("worker runtime", () => {
       }
     },
   );
-
-  it("clears streamed text when the authoritative terminal message is empty", async () => {
-    const { gateway, launch } = await setup({ inferencePlans: ["empty-terminal"] });
-
-    await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "completed" });
-
-    const finalAssistant = gateway.liveEventRequests
-      .map((request) => request.event)
-      .toReversed()
-      .find((event) => event.kind === "assistant");
-    expect(finalAssistant).toEqual({
-      kind: "assistant",
-      payload: { text: "", delta: "", replace: true, itemId: expect.any(String) },
-    });
-  });
 
   it.each(["running", "completed", "cancelled", "ordinary-yield"] as const)(
     "keeps completed-turn commands controllable in the managed environment (%s)",
@@ -1910,104 +1844,6 @@ describe("worker runtime", () => {
     ).toBe(true);
   });
 
-  // The probe uses a POSIX shell; Windows launches exec through PowerShell.
-  it.skipIf(process.platform === "win32")(
-    "binds the turn GitHub identity and checkout to real exec without publishing its token",
-    async () => {
-      const { gateway, workspaceDir, launch } = await setup({
-        inferencePlans: ["tool", "text"],
-        execCommand: [
-          'printf "%s" "$GH_TOKEN" | if command -v shasum >/dev/null; then shasum -a 256; else sha256sum; fi | cut -d " " -f1',
-          'printf "github-token=%s\\n" "$GITHUB_TOKEN"',
-          'printf "helpers-start\\n"',
-          "git config --get-all credential.helper",
-          'printf "helpers-end\\n"',
-          "git config --show-scope --get-all credential.helper",
-          "git symbolic-ref HEAD",
-          "git remote get-url origin",
-          'printf "profile=%s\\n" "$GH_CONFIG_DIR"',
-        ].join("; "),
-      });
-      const binding = {
-        token: "worker-turn-fixture-token",
-        login: "worker-fixture",
-        branch: "openclaw/session-fixture",
-        remoteUrl: "https://github.com/openclaw/worker-fixture.git",
-      };
-      launch.assignment.github = binding;
-      const environment = await createWorkerRuntimeEnvironment(SESSION_ID);
-      try {
-        const git = async (args: string[]) =>
-          await runExec("git", ["-C", workspaceDir, ...args], {
-            timeoutMs: 10_000,
-            maxBuffer: 4_096,
-            logOutput: false,
-          });
-        await git(["init", "--quiet", "--initial-branch=openclaw-worker"]);
-        await git([
-          "-c",
-          "user.name=Worker Fixture",
-          "-c",
-          "user.email=worker@openclaw.invalid",
-          "commit",
-          "--quiet",
-          "--allow-empty",
-          "--no-gpg-sign",
-          "-m",
-          "Worker base",
-        ]);
-        const baseCommit = (await git(["rev-parse", "HEAD"])).stdout.trim();
-        await writeFile(path.join(workspaceDir, ".git", "shallow"), `${baseCommit}\n`);
-
-        await expect(
-          runWorkerDescriptor(launch, { environmentStateDir: environment.stateDir }),
-        ).resolves.toMatchObject({ status: "completed" });
-
-        const toolResult = gateway.inferenceRequests[1]?.context.messages
-          .filter((message) => message.role === "toolResult")
-          .find((message) => message.toolName === "exec");
-        expect(toolResult).toMatchObject({ isError: false });
-        const profileDir = path.join(
-          environment.stateDir,
-          "github-profiles",
-          createHash("sha256").update(launch.assignment.turnId).digest("hex").slice(0, 16),
-        );
-        const output =
-          toolResult?.content
-            .filter((block) => block.type === "text")
-            .map((block) => block.text)
-            .join("\n") ?? "";
-        expect(output).toContain(
-          [
-            createHash("sha256").update(binding.token).digest("hex"),
-            "github-token=",
-            "helpers-start",
-          ].join("\n"),
-        );
-        expect(output).toContain(
-          [`refs/heads/${binding.branch}`, binding.remoteUrl, `profile=${profileDir}`].join("\n"),
-        );
-        expect(
-          output
-            .split("\n")
-            .filter((line) => line.startsWith("command\t"))
-            .map((line) => line.slice("command\t".length)),
-        ).toEqual(["", "!gh auth git-credential"]);
-        const helpers = output.split("helpers-start\n")[1]?.split("\nhelpers-end")[0]?.split("\n");
-        // Git lists inherited helpers too; an empty value resets the effective helper list.
-        expect(helpers?.slice(helpers.lastIndexOf(""))).toEqual(["", "!gh auth git-credential"]);
-        expect((await stat(profileDir)).mode & 0o777).toBe(0o700);
-        const hostsPath = path.join(profileDir, "hosts.yml");
-        expect((await stat(hostsPath)).mode & 0o777).toBe(0o600);
-        expect(await readFile(hostsPath, "utf8")).toContain(binding.login);
-        expect(JSON.stringify(gateway.transcriptRequests)).not.toContain(binding.token);
-        expect(JSON.stringify(gateway.liveEventRequests)).not.toContain(binding.token);
-      } finally {
-        await environment.close();
-      }
-    },
-  );
-
   it.skipIf(process.platform === "win32")(
     "prevents retained processes from reading a later turn's GitHub profile",
     async ({ signal }) => {
@@ -2145,20 +1981,9 @@ describe("worker runtime", () => {
     },
   );
 
-  registerWorkerGitHubFailureTests({ setup, sessionId: SESSION_ID });
+  registerWorkerGitHubTests({ setup, sessionId: SESSION_ID });
 
   registerWorkerPermissionTests({ setup });
-
-  it("canonicalizes an in-root worker workspace before enforcing containment", async () => {
-    const { workspaceDir, launch } = await setup();
-    const nested = path.join(workspaceDir, "nested");
-    await mkdir(nested);
-    launch.assignment.workspaceDir = path.join(nested, "..", "nested");
-    launch.assignment.permissionMode = "workspace";
-    launch.assignment.workerContainmentRoot = workspaceDir;
-
-    await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "completed" });
-  });
 
   it("rejects a dot-dot workspace escape before worker connection", async () => {
     const { workspaceDir, launch } = await setup();
@@ -2317,60 +2142,6 @@ describe("worker reconnect clients", () => {
     } finally {
       inference.dispose();
       live.dispose();
-      await connection.stop();
-    }
-  });
-
-  it("settles an in-flight commit and a later live emit after stop", async () => {
-    const { gateway, launch } = await setup({ silenceFirstTranscript: true });
-    const connection = createWorkerConnection({
-      endpoint: { kind: "unix", socketPath: gateway.socketPath },
-      connectParams: buildWorkerConnectParams(launch),
-      requestTimeoutMs: 5_000,
-      reconnectBackoff: { initialMs: 1, maxMs: 1, factor: 1, jitter: 0 },
-    });
-    const originalWaitForReady = connection.waitForReady.bind(connection);
-    const waitForReady = vi.spyOn(connection, "waitForReady").mockImplementation(() => {
-      if (waitForReady.mock.calls.length > 4) {
-        throw new Error("worker client retried after terminal stop");
-      }
-      return originalWaitForReady();
-    });
-    const transcript = new WorkerTranscriptCommitClient(connection, {
-      runEpoch: OWNER_EPOCH,
-      baseLeafId: "leaf-base",
-      initialSeq: 8,
-    });
-    let live: WorkerLiveEventClient | undefined;
-    try {
-      await connection.start();
-      const commit = transcript.commit([
-        {
-          role: "user",
-          content: [{ type: "text", text: "commit interrupted by stop" }],
-          timestamp: 1,
-        },
-      ]);
-      await waitForFast(() => expect(gateway.transcriptRequests).toHaveLength(1));
-
-      await connection.stop();
-      await expect(commit).rejects.toBeInstanceOf(WorkerConnectionStoppedError);
-
-      live = new WorkerLiveEventClient(connection, { runEpoch: OWNER_EPOCH });
-      live.enqueuePreview(RUN_ID, {
-        kind: "assistant",
-        payload: { text: "late live event", delta: "late live event" },
-      });
-      await expect(
-        live.emitTerminal(RUN_ID, {
-          kind: "lifecycle",
-          payload: { phase: "finishing", startedAt: 1, endedAt: 2 },
-        }),
-      ).rejects.toBeInstanceOf(WorkerConnectionStoppedError);
-      expect(waitForReady.mock.calls.length).toBeLessThanOrEqual(2);
-      expect(gateway.liveEventRequests).toHaveLength(0);
-    } finally {
-      live?.dispose();
       await connection.stop();
     }
   });

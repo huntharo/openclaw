@@ -10,7 +10,6 @@ import type { SessionTranscriptCorpusEntry } from "openclaw/plugin-sdk/memory-co
 import {
   formatMemoryIndexRebuildGuidance,
   MEMORY_CHUNKING_VERSION,
-  MEMORY_INDEX_VECTOR_TABLE,
   type MemorySyncParams,
   type MemorySyncProgressUpdate,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
@@ -19,10 +18,10 @@ import { withMemoryWorkspaceLock } from "../memory-workspace-lock.js";
 import {
   createEmbeddingProvider,
   type EmbeddingProvider,
+  type EmbeddingProviderResult,
   type EmbeddingProviderRuntime,
 } from "./embeddings.js";
 import { MemoryIndexDatabase } from "./manager-database-context.js";
-import { memoryDatabaseTableExists } from "./manager-db-kernel.js";
 import { cleanupAgedMemoryReindexTempFiles, removeMemoryDatabaseFiles } from "./manager-db.js";
 import { isMemoryEmbeddingOperationError } from "./manager-embedding-errors.js";
 import { withMemoryIndexGeneration } from "./manager-index-generation-lease.js";
@@ -52,7 +51,6 @@ export type { MemoryIndexWorkItem } from "./manager-sync-base.js";
 
 type MemorySyncProviderGenerationBase = {
   database: MemoryIndexDatabase;
-  databaseRevision: number;
   cacheWritesInvalidated: boolean;
   providerKey: string;
   identities: MemoryIndexProviderIdentity[];
@@ -98,6 +96,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
 
   protected abstract readonly createProvider: MemoryManagerProviderFactory;
   protected fallbackProviderInitPromise: Promise<boolean> | null = null;
+  protected providerInitialized = false;
   protected syncProviderGeneration: MemorySyncProviderGeneration | null = null;
 
   protected abstract beginSyncProviderGeneration(options?: { forceFtsOnly?: boolean }): void;
@@ -120,6 +119,18 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
   }
 
   protected abstract retireCurrentProvider(): Promise<void>;
+
+  protected applyProviderResult(result: EmbeddingProviderResult): void {
+    this.provider = result.provider;
+    this.fallbackFrom = result.fallbackFrom;
+    this.fallbackReason = result.fallbackReason;
+    this.providerUnavailableReason = result.providerUnavailableReason;
+    this.providerLifecycle = resolveMemoryProviderLifecycle(result);
+    this.providerRuntime = result.runtime;
+    this.providerInitialized = true;
+    this.providerKey = this.computeProviderKey();
+    this.batch = this.resolveBatchConfig();
+  }
 
   protected createConfiguredEmbeddingProvider(
     request = resolveMemoryPrimaryProviderRequest({ settings: this.settings }),
@@ -529,20 +540,13 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       return false;
     }
 
-    this.providerLifecycle = resolveMemoryProviderLifecycle({
-      provider: fallbackResult.provider,
-      runtime: fallbackResult.runtime,
+    this.applyProviderResult({
+      ...fallbackResult,
       requestedProvider: currentProviderId,
       fallbackFrom: currentProviderId,
       fallbackReason: reason,
+      providerUnavailableReason: undefined,
     });
-    this.fallbackFrom = currentProviderId;
-    this.fallbackReason = reason;
-    this.provider = fallbackResult.provider;
-    this.providerRuntime = fallbackResult.runtime;
-    this.providerUnavailableReason = undefined;
-    this.providerKey = this.computeProviderKey();
-    this.batch = this.resolveBatchConfig();
     log.warn(`memory embeddings: switched to fallback provider (${fallbackRequest.provider})`, {
       reason,
     });
@@ -623,7 +627,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
           return {
             nextMeta,
             vectorIndexComplete,
-            hasVectors: memoryDatabaseTableExists(shadow.db, "main", MEMORY_INDEX_VECTOR_TABLE),
+            hasVectors: shadow.facts.hasVectorTable,
           };
         } finally {
           // Escaped continuations must fail closed, never write to the live DB.

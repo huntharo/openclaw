@@ -7,6 +7,10 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import * as commandRunner from "../../process/exec-runner.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -99,6 +103,7 @@ describe("ManagedWorktreeService", () => {
       runLeaseTesting.resetForTest();
       await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
+      clearRuntimeConfigSnapshot();
       cleanup();
     }),
   );
@@ -601,6 +606,7 @@ describe("ManagedWorktreeService", () => {
 
   describe("run-end cleanup", () => {
     beforeEach(() => {
+      setRuntimeConfigSnapshot({});
       service = new ManagedWorktreeService({ env, now: () => now });
     });
     async function materialize(name: string) {
@@ -949,7 +955,7 @@ describe("ManagedWorktreeService", () => {
       const moduleHead = await git(moduleRepo, "rev-parse", "HEAD");
       await git(repo, "-c", "protocol.file.allow=always", "submodule", "add", moduleRepo, "module");
       await git(repo, "commit", "-m", "add active submodule");
-      await git(repo, "push", "origin", "main");
+      await git(repo, "push", "--recurse-submodules=no", "origin", "main");
       await git(repo, "config", "submodule.recurse", "true");
       expect(await git(repo, "config", "--bool", "submodule.module.active")).toBe("true");
       expect(await git(path.join(repo, "module"), "rev-parse", "HEAD")).toBe(moduleHead);
