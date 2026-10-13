@@ -1,3 +1,13 @@
+export function commandResult(stdout = "", code = 0) {
+  return {
+    code,
+    signal: null,
+    killed: false,
+    stdout: Buffer.from(stdout),
+    stderr: Buffer.alloc(0),
+  };
+}
+
 /** Add CLI response framing while retaining each publication fixture's command behavior. */
 export function createPublicationCommandMock(
   runCommand: typeof import("../process/exec.js").runCommandBuffered,

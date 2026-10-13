@@ -779,6 +779,56 @@ describe("loadControlUiGitHubPreview", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it("isolates preview content across transports, token rotations, and anonymous fallback", async () => {
+    const target = previewTarget(940002);
+    const itemCredentials: (string | null)[] = [];
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      if (requestUrl(input).endsWith("/repos/openclaw/openclaw")) {
+        return publicRepository();
+      }
+      const credential = new Headers(init?.headers).get("Authorization");
+      itemCredentials.push(credential);
+      const login =
+        credential === "Bearer rotated-fixture-token"
+          ? "rotated-account"
+          : credential
+            ? "original-account"
+            : "anonymous";
+      return githubJson(previewPayload({ user: { login } }));
+    });
+    const identity = {
+      ...managedIdentity("representation-isolation"),
+      optionalAuth: true as const,
+    };
+    await expect(loadControlUiGitHubPreview(target, identity, fetchMock)).resolves.toMatchObject({
+      login: "original-account",
+    });
+    const rotated = { ...identity, token: "rotated-fixture-token" };
+    await expect(loadControlUiGitHubPreview(target, rotated, fetchMock)).resolves.toMatchObject({
+      login: "rotated-account",
+    });
+    const secondTransport: typeof fetch = (input, init) => fetchMock(input, init);
+    await loadControlUiGitHubPreview(target, identity, secondTransport);
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      new Headers(init?.headers).has("Authorization") ? githubJson({}, 401) : normal(input, init),
+    );
+    await expect(
+      loadControlUiGitHubPreview(target, identity, fetchMock, true),
+    ).resolves.toMatchObject({ login: "anonymous" });
+    fetchMock.mockImplementation(normal);
+    await expect(
+      loadControlUiGitHubPreview(target, identity, fetchMock, true),
+    ).resolves.toMatchObject({ login: "original-account" });
+    expect(itemCredentials).toEqual([
+      `Bearer ${identity.token}`,
+      `Bearer ${rotated.token}`,
+      `Bearer ${identity.token}`,
+      null,
+      `Bearer ${identity.token}`,
+    ]);
+  });
+
   it("serves the accepted refresh when an older request fails later", async () => {
     const started = createDeferred<void>();
     const older = createDeferred<Response>();

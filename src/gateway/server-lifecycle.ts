@@ -75,6 +75,7 @@ export async function prepareGatewayLifecycle(params: {
     mentionInbox,
     broadcast,
     cfgAtStart,
+    cronStorePath,
     pluginRuntime,
     authRateLimiter,
     nodeReapprovalCoordinator,
@@ -224,6 +225,7 @@ export async function prepareGatewayLifecycle(params: {
     hookClientIpConfig: initialHookClientIpConfig,
     cronState: createLazyGatewayCronState({
       scheduler: runtime.scheduler,
+      storePath: cronStorePath,
       cfg: cfgAtStart,
       deps,
       broadcast,
@@ -548,6 +550,7 @@ export async function prepareGatewayLifecycle(params: {
         await withPluginRuntimeRegistryScope(pluginRuntime.registry, () =>
           shutdownRuntime.completeGatewayClose(
             {
+              retainSharedState: optsValue?.retainSharedState,
               resolveGatewayContext: runtime.resolvePluginGatewayContext,
               closePluginRegistry: (onRetirement) => pluginRuntime.close(onRetirement),
               pluginMetadata: {

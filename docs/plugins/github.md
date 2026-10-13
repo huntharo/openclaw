@@ -120,6 +120,8 @@ hovercard, and GitHub links open externally.
   visibility checks always read fresh metadata. Concurrent requests share a fetch,
   but each reader must still have access when the result arrives. **Refresh**
   requests a new observation while respecting the shared quota and cooldown.
+  Expired previews wait for that shared refresh. Refreshes fetch complete responses;
+  the shared owner does not currently use conditional GETs with ETag validators.
 - **Refresh** requests the current item again. Rate limits, deleted items, and
   unavailable services show their specific explanation in the reader and hovercards,
   including GitHub's retry delay when available. Cached preview details stay visible
