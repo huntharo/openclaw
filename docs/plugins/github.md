@@ -186,24 +186,22 @@ hovercard, and GitHub links open externally.
 - Uncached hover previews share a two-second upstream request budget. Slow avatars
   or co-author lookups are omitted; slow required metadata returns a retryable
   unavailable error. The full reader keeps its longer request timeout.
-- Hover previews are shared for one minute across readers using the same GitHub
-  identity. Concurrent requests share a fetch, but each reader must still have
-  access when the result arrives. Expired previews can appear with a stale marker
-  while one background refresh runs. The hovercard displays that cached response
-  immediately; reopening or prefetching it after the 30-second stale-cache backoff
-  reads the refreshed metadata. An already-open card does not poll for updates.
-  Cached delivery checks the current credential
-  once; each upstream dispatch also checks it. **Refresh** waits for current metadata.
-  Refreshes use GitHub ETags for unchanged item and commit responses; identity
-  changes, eviction, or a failed refresh retire those cached responses. Repository
-  visibility is checked again for every authenticated refresh.
-  Anonymous author and coauthor avatars are shared across previews for five minutes,
+- API content is shared across readers using the same credential and API host.
+  Each reader sets its maximum acceptable age: 30 seconds for PR details, one
+  minute for previews, and five minutes for complete issue and commit documents.
+  A response retained by another reader cannot extend that age. Repository
+  visibility checks always read fresh metadata. Concurrent requests share a fetch,
+  but each reader must still have access when the result arrives. **Refresh**
+  requests a new observation while respecting the shared quota and cooldown.
+  Expired previews wait for that shared refresh. Refreshes fetch complete responses;
+  the shared owner does not currently use conditional GETs with ETag validators.
+- Anonymous author and coauthor avatars are shared across previews for five minutes,
   including concurrent reads and previews of different items. Expired images remain
   visible while one background refresh runs; updated images appear with a subsequent
   preview load. Metadata and repository access checks remain scoped to the selected
   GitHub identity.
 - Slow preview reads (500 ms or longer) log phase durations for identity preparation,
-  cache/load wait, delivery credential checks, metadata rendering, optional decoration,
+  load wait, delivery credential checks, metadata rendering, optional decoration,
   and upstream authentication/network waits. Network timings cover response headers;
   metadata/decorations include response-body reads. These diagnostics omit URLs,
   item contents, and credentials.
@@ -212,6 +210,39 @@ hovercard, and GitHub links open externally.
   including GitHub's retry delay when available. Cached preview details stay visible
   with the failure notice. Use the reader's **Retry** action or **Open on GitHub**;
   the server's API quota is separate from your signed-in browser session.
+- API reads share a credential and API-host budget with GitHub identity checks,
+  publication, and team reports: a burst of 20 requests, refilling at 20 per
+  minute. Remaining primary quota is reserved before dispatch. Secondary limits
+  pause all API resources for that credential; the server honors `Retry-After`
+  and quota reset times. Rate-limited reads retain cached content and do not
+  switch to anonymous requests to bypass the cooldown.
+
+## Shared PR and Git observations
+
+Within one Gateway instance, session PR status, the public reader and hovercards,
+GitHub Actions reads, publication observations, and team reports use one API
+accounting and response owner per credential and API host. Branch discovery is
+shared across sessions and worktrees with the same repository and branch. PR
+facts use the destination repository and PR number, so different branch lookups
+refer to the same observed PR. A newer observation replaces older facts and
+invalidates affected session projections and open reader views. Notifications
+only reach connections that previously read that target; a reload still checks
+the current identity and repository visibility.
+
+Git reads have a separate shared owner. It joins identical pending operations
+and publishes accepted changes to interested session views. Completed publication
+Git mutations invalidate affected reads before views reload. External Git changes
+are discovered on subsequent reads and the existing polling schedule.
+
+These stores are bounded, in-memory state for one process. Restarting the Gateway
+clears them. Unused credential owners do not pin historical response caches;
+their small quota state remains until reservations and cooldowns expire. Scope
+admission is bounded and preserves held readers and their backoff. Different
+tokens currently have separate scopes, even when they belong to the same account.
+Separate Gateways, standalone CLI processes, and arbitrary commands
+launched by an agent do not share this instance's cache or budget. The native PR
+status and reader integration supports GitHub, including configured GitHub
+Enterprise endpoints; it does not provide GitLab merge-request tracking.
 
 ## Plugin author integration
 

@@ -3,6 +3,8 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 import type { SessionGitHubPullRequestBinding } from "../config/sessions/types.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import type { ApiRequestStore } from "../infra/http-api-quota.js";
+import { apiStoreRequestKey } from "../infra/http-api-read-store.js";
 import { createRetainedCache } from "../infra/retained-cache.js";
 import { registerOpenClawStateDatabaseLifecycleListener } from "../state/openclaw-state-db-cache.js";
 import type { ControlUiSessionPullRequest } from "./control-ui-contract.js";
@@ -24,10 +26,15 @@ type Entry = {
   failed?: boolean;
   promise?: Promise<ControlUiSessionPullRequest>;
   lastGood?: ControlUiSessionPullRequest;
+  store: ApiRequestStore;
+  dependencies: Map<string, { store: ApiRequestStore; revision: number; observation: number }>;
 };
 const metadata = createRetainedCache<Entry>();
 registerOpenClawStateDatabaseLifecycleListener((event) => {
   if (event.kind !== "opened") {
+    for (const entry of metadata.values()) {
+      entry.access.abort();
+    }
     metadata.clear();
   }
 });
@@ -59,28 +66,59 @@ export async function readSessionPullRequestMetadata(
   ]);
   let entry = metadata.get(key);
   const now = Date.now();
+  const refresh = options.refresh === true || read.refresh === true;
   const matches =
     !options.expected ||
     !entry?.lastGood ||
     pullRequestMetadataSignature(entry.lastGood) === options.expected;
   const reusable =
     entry &&
+    entry.store === read.store &&
+    [...entry.dependencies].every(([url, dependency]) => {
+      const revision = dependency.store.responses.revision(apiStoreRequestKey(url));
+      return revision === 0 || revision === dependency.revision;
+    }) &&
     !entry.access.signal.aborted &&
     entry.startedAt <= now &&
     entry.expiresAt > now &&
     (entry.failed || matches) &&
-    (entry.failed || !options.refresh || entry.startedAt + 10_000 > now);
-  if (!entry || entry.access.signal.aborted) {
-    entry = { access: createGitHubReadGroup(), expiresAt: 0, startedAt: 0 };
+    !refresh;
+  if (!entry || entry.store !== read.store || entry.access.signal.aborted) {
+    entry = {
+      access: createGitHubReadGroup(),
+      expiresAt: 0,
+      startedAt: 0,
+      store: read.store,
+      dependencies: new Map(),
+    };
   }
   const active = entry;
   const release = active.access.add(read.assertCurrent, options.signal);
   try {
     if (!reusable || !active.promise) {
+      active.dependencies.clear();
       const transport = prepareSessionPullRequestGitHubRead(
         read.host,
         active.access.assertCurrent,
-        { signal: active.access.signal, credential: read.credential },
+        {
+          signal: active.access.signal,
+          credential: read.credential,
+          refresh,
+          onRequest: (url, store) => {
+            active.dependencies.set(url, {
+              store,
+              revision: store.responses.revision(apiStoreRequestKey(url)),
+              observation: 0,
+            });
+          },
+          onResponse: (url, store, observation) => {
+            active.dependencies.set(url, {
+              store,
+              revision: store.responses.revision(apiStoreRequestKey(url)),
+              observation,
+            });
+          },
+        },
       );
       active.startedAt = now;
       active.failed = false;
@@ -117,6 +155,14 @@ export async function readSessionPullRequestMetadata(
       throw error;
     }
   } finally {
+    // A branch joining this projection still owns dependencies on every underlying API fact.
+    for (const [url, dependency] of active.dependencies) {
+      read.observeRequest?.(url, dependency.store);
+      // Failed reads remain dependencies, but never report an observation they did not consume.
+      if (dependency.observation > 0) {
+        read.observeResponse?.(url, dependency.store, dependency.observation);
+      }
+    }
     release();
     read.assertCurrent();
   }
@@ -228,8 +274,16 @@ export async function finishPullRequest(
       read.request,
     ).catch(rethrowRateLimit),
   ]);
+  const observed = isRecord(details)
+    ? parsePullListItem(
+        gitHubPublicApi
+          .getGitHubPullRequestStore(read.store)
+          .project(item.owner, item.repo, item.number, details),
+      )
+    : null;
+  const current = observed ?? item;
   return {
-    ...chip,
+    ...stateOnlyPullRequestChip(current, current.branch ?? branch),
     ...(isRecord(details)
       ? {
           additions: asFiniteNumber(details.additions),
@@ -237,7 +291,11 @@ export async function finishPullRequest(
           changedFiles: asFiniteNumber(details.changed_files),
         }
       : {}),
-    ...(checks ? { checks, checksUrl: `${item.url}/checks` } : {}),
+    ...(checks &&
+    current.headSha === item.headSha &&
+    (current.state === "open" || current.state === "draft")
+      ? { checks, checksUrl: `${current.url}/checks` }
+      : {}),
   };
 }
 
@@ -266,11 +324,18 @@ export async function loadBoundSessionPullRequest(
     { owner, repo, number: binding.number },
     read,
     async (transport) => {
-      const details =
-        options.preparedDetails ??
-        (await transport.request(
-          `${sessionPullRequestRepositoryApiUrl({ owner, repo, apiBaseUrl: transport.apiBaseUrl })}/pulls/${binding.number}`,
-        ));
+      const detailUrl = `${sessionPullRequestRepositoryApiUrl({ owner, repo, apiBaseUrl: transport.apiBaseUrl })}/pulls/${binding.number}`;
+      const details = options.preparedDetails ?? (await transport.request(detailUrl));
+      if (options.preparedDetails !== undefined) {
+        // Inspection already read this fact through the publication adapter's shared store.
+        // Closed PRs have no check subreads, but still depend on the accepted detail response.
+        transport.observeRequest?.(detailUrl, transport.store);
+        transport.observeResponse?.(
+          detailUrl,
+          transport.store,
+          transport.store.responses.latestObservation(apiStoreRequestKey(detailUrl)),
+        );
+      }
       const item = parsePullListItem(details);
       const base = isRecord(details) && isRecord(details.base) ? details.base : undefined;
       const head = isRecord(details) && isRecord(details.head) ? details.head : undefined;

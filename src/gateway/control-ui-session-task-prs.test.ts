@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { publishSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
@@ -16,6 +17,7 @@ import { prepareControlUiSessionPrServiceTarget } from "./control-ui-session-pr-
 import { githubJson, pullListItem, requestUrl } from "./control-ui-session-prs.test-support.js";
 import { prepareTaskPublicationSessions } from "./control-ui-session-task-prs.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
+import { gitHubPublicApi } from "./github-public-api.js";
 import { insertRepositoryGitHubPublicationFixture } from "./github-publication-store.test-support.js";
 import { repositoryGitHubPublicationDigest } from "./github-repository-publication.kernel.js";
 import { handleGatewayRequest } from "./server-methods.js";
@@ -88,13 +90,13 @@ function closedPull(number: number) {
     base: { repo: { name: "repository", owner: { login: "example" } } },
   });
 }
-function stubGitHub(branchPull = closedPull(40)) {
+function stubGitHub(branchPull = closedPull(40), detailPull = closedPull) {
   const fetcher = vi.fn<typeof fetch>(async (input) => {
     const url = requestUrl(input);
     return githubJson(
       url.includes("?head=")
         ? [branchPull]
-        : closedPull(Number(new URL(url).pathname.split("/").at(-1)) || 40),
+        : detailPull(Number(new URL(url).pathname.split("/").at(-1)) || 40),
     );
   });
   vi.stubGlobal("fetch", fetcher);
@@ -238,7 +240,9 @@ it("shares lineage work across audiences without sharing visibility or stale des
   );
 });
 
-it("projects three descendant receipts without mixing the parent's current branch", async () => {
+it("projects descendant receipts and pushes shared metadata changes without rereading GitHub", async ({
+  signal,
+}) => {
   await fixture.seedRepository();
   for (let number = 1; number <= 3; number++) {
     const key = "agent:main:child-" + number;
@@ -246,7 +250,11 @@ it("projects three descendant receipts without mixing the parent's current branc
     receipt(key, number);
   }
   receipt("agent:main:child-1", 1, "duplicate");
-  const fetcher = stubGitHub(pullListItem({ number: 40, state: "closed" }));
+  let firstTaskTitle = "Initial task title";
+  const fetcher = stubGitHub(pullListItem({ number: 40, state: "closed" }), (number) => ({
+    ...closedPull(number),
+    title: number === 1 ? firstTaskTitle : "Other task PR",
+  }));
   await fixture.subscribe();
   await fixture.subscriptions.pollNow();
   expect(latest()).toMatchObject({
@@ -267,6 +275,40 @@ it("projects three descendant receipts without mixing the parent's current branc
   const calls = fetcher.mock.calls.length;
   await fixture.subscriptions.pollNow();
   expect(fetcher).toHaveBeenCalledTimes(calls);
+
+  const updated = createDeferred();
+  const send = fixture.socket.send.getMockImplementation()!;
+  fixture.socket.send.mockImplementation((...args) => {
+    send(...args);
+    if (
+      snapshots()
+        .at(-1)
+        ?.taskPullRequests?.find((pr) => pr.number === 1)?.pullRequest?.title ===
+      "Updated by another reader"
+    ) {
+      updated.resolve();
+    }
+  });
+  firstTaskTitle = "Updated by another reader";
+  await gitHubPublicApi.readGitHubJsonResponse(
+    await gitHubPublicApi.fetchGitHubApi(
+      "https://api.github.com/repos/example/repository/pulls/1",
+      fetcher,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { refresh: true },
+    ),
+  );
+  // The public reader's accepted response updates the watched historical PR without a poll.
+  await withinTest(updated.promise, signal);
+  fixture.socket.send.mockImplementation(send);
+  expect(fetcher).toHaveBeenCalledTimes(calls + 1);
+  expect(snapshots().at(-1)?.pullRequests).toEqual(shared?.pullRequests);
 
   vi.spyOn(Date, "now").mockReturnValue(Date.now() + 100_000);
   fetcher.mockImplementation(async () => {

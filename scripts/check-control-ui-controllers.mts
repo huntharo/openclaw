@@ -440,6 +440,15 @@ function solidPatterns(root: string, sources: ReadonlyMap<string, string>) {
           if (entry === "onCleanup") {
             return imported === entry && isViewModule(file) && !inComputation(node, importedName);
           }
+          // Callback-only domain subscriptions are not DOM listeners. A spread can
+          // still supply the DOM event name and callback, so it remains counted.
+          if (
+            entry === "addEventListener" &&
+            node.arguments.length === 1 &&
+            !ts.isSpreadElement(node.arguments[0]!)
+          ) {
+            return false;
+          }
           return IMPORTED_PATTERNS.some((importedPattern) => importedPattern === entry)
             ? entry === imported
             : entry === name || (entry === "querySelector" && name === "querySelectorAll");
@@ -456,7 +465,7 @@ function solidPatterns(root: string, sources: ReadonlyMap<string, string>) {
         }
         if (
           (name === "createRenderEffect" && !file.startsWith("ui/src/lib/reactive/")) ||
-          (name === "addEventListener" && file.endsWith(".tsx")) ||
+          (pattern === "addEventListener" && file.endsWith(".tsx")) ||
           (pattern === "querySelector" && !DOM_ISLANDS.has(file))
         ) {
           forbid(node, `${name} is not allowed here`);

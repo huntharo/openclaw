@@ -64,7 +64,7 @@ it("joins caller cancellation to the existing HTTP deadline", async () => {
   const signal = await started.promise;
   expect(signal).not.toBe(controller.signal);
   controller.abort();
-  await expect(pending).rejects.toMatchObject({ statusCode: 502 });
+  await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   expect(signal.aborted).toBe(true);
   expect(fetchImpl).toHaveBeenCalledOnce();
 });
@@ -122,13 +122,23 @@ it("retains the longest concurrent cooldown and rechecks live identity before re
   vi.spyOn(Date, "now").mockReturnValue(now);
   const firstResponse = createDeferred<Response>();
   const secondResponse = createDeferred<Response>();
+  const firstStarted = createDeferred();
+  const secondStarted = createDeferred();
   const fetchMock = vi
     .fn<typeof fetch>()
-    .mockImplementationOnce(async () => firstResponse.promise)
-    .mockImplementationOnce(async () => secondResponse.promise);
-  const read = () => api.fetchGitHubJson("https://api.github.com/user/1", fetchMock).catch(caught);
-  const first = read();
-  const second = read();
+    .mockImplementationOnce(async () => {
+      firstStarted.resolve();
+      return firstResponse.promise;
+    })
+    .mockImplementationOnce(async () => {
+      secondStarted.resolve();
+      return secondResponse.promise;
+    });
+  const read = (id: number) =>
+    api.fetchGitHubJson(`https://api.github.com/user/${id}`, fetchMock).catch(caught);
+  const first = read(1);
+  const second = read(2);
+  await Promise.all([firstStarted.promise, secondStarted.promise]);
   firstResponse.resolve(new Response(null, { status: 429, headers: { "retry-after": "90" } }));
   await expect(first).resolves.toMatchObject({ retryAfterMs: 90_000 });
   secondResponse.resolve(new Response(null, { status: 429, headers: { "retry-after": "30" } }));
@@ -195,20 +205,39 @@ it("uses a bounded cooldown when HTTP 429 timing is malformed", async () => {
   expect(display.message).not.toContain("secret-upstream-header");
 });
 
-it("dispatches an admitted request before its caller can retire", async () => {
+it("rechecks surviving reader identity at dispatch after asynchronous revalidation", async () => {
   let active = true;
-  let activeAtDispatch: boolean | undefined;
-  const pending = request(
-    async () => {
-      activeAtDispatch = active;
-      return new Response("{}");
+  let verifications = 0;
+  let retirementQueued = false;
+  const retired = new Error("Selected GitHub identity retired before dispatch");
+  const identity = {
+    revalidate: async () => {
+      verifications += 1;
     },
-    { url: `${repoUrl}/actions/runs`, token: "synthetic-token" },
+    assertSelected: () => {
+      if (!active) {
+        throw retired;
+      }
+      if (verifications >= 2 && !retirementQueued) {
+        // Another owner can retire this identity while the shared revalidation promise returns.
+        retirementQueued = true;
+        queueMicrotask(() => {
+          active = false;
+        });
+      }
+    },
+  };
+  const fetchImpl = vi.fn<typeof fetch>(async () => new Response("{}"));
+  const pending = api.fetchGitHubApi(
+    "https://api.github.com/repos/owner/repo/actions/runs",
+    fetchImpl,
+    "synthetic-token",
+    undefined,
+    identity,
   );
-  active = false;
-  await pending;
-
-  expect(activeAtDispatch).toBe(true);
+  await expect(pending).rejects.toBe(retired);
+  expect(retirementQueued).toBe(true);
+  expect(fetchImpl).not.toHaveBeenCalled();
 });
 
 it("shows configured credential recovery instructions but hides unknown errors", () => {

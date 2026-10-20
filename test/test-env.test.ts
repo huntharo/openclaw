@@ -409,6 +409,8 @@ describe("installTestEnv", () => {
     ["TWILIO_PHONE_NUMBER", "hermetic"],
     ["TWILIO_SMS_FROM", "hermetic"],
     ["TWILIO_MESSAGING_SERVICE_SID", "hermetic"],
+    ["GH_ENTERPRISE_TOKEN", "hermetic"],
+    ["GITHUB_ENTERPRISE_TOKEN", "hermetic"],
   ] as const)("clears and restores %s for normal isolated test runs", (key, mode) => {
     const realHome = createTempHome();
     const callerPath = path.join(realHome, "caller-override");

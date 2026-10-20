@@ -25,10 +25,16 @@ describe("Link reader publication lifecycle", () => {
     expect(panel.querySelector("h1")).toBeNull();
     const transient = vi.fn().mockResolvedValue({ ...h.item(2), title: "Transient gateway" });
     const replacement = vi.fn().mockResolvedValue({ ...h.item(2), title: "New gateway" });
-    panel.client = { request: transient } as unknown as GatewayBrowserClient;
+    panel.client = {
+      addEventListener: () => () => {},
+      request: transient,
+    } as unknown as GatewayBrowserClient;
     panel.agentId = "transient-agent";
     panel.readers = [];
-    panel.client = { request: replacement } as unknown as GatewayBrowserClient;
+    panel.client = {
+      addEventListener: () => () => {},
+      request: replacement,
+    } as unknown as GatewayBrowserClient;
     panel.agentId = "current-agent";
     panel.readers = [h.reader];
     await h.expectTitle(panel, "New gateway");

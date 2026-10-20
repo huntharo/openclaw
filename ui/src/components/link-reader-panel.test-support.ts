@@ -61,7 +61,7 @@ export async function mount(
   > = {},
 ) {
   const panel = document.createElement("openclaw-link-reader-panel");
-  panel.client = { request } as unknown as GatewayBrowserClient;
+  panel.client = { addEventListener: () => () => {}, request } as unknown as GatewayBrowserClient;
   panel.available = true;
   panel.readers = [reader];
   Object.assign(panel, options);

@@ -1,12 +1,15 @@
 import { MessageChannel } from "node:worker_threads";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
+import { apiStoreRequestKey, getSharedApiStore } from "openclaw/plugin-sdk/retry-runtime";
 import { withTempDir } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
 import { parseTeamReportsConfig } from "./config.js";
 import { describePeriod } from "./periods.js";
+import { bindReportFetch } from "./report-network.test-support.js";
 import { completion } from "./reports.fixtures.js";
 import type { ReportRunRequest } from "./run-worker-contract.js";
+import { fetchCollectionFixture } from "./run-worker.collection-fixtures.test-support.js";
 import { TeamReportsRunner } from "./run-worker.js";
 import { teamReportsSqliteBackendEntrypoint } from "./sqlite-backend-entrypoint.test-support.js";
 import { createTeamReportsStore, TeamReportsStore } from "./store.js";
@@ -40,6 +43,108 @@ async function nextMessageTurn() {
     port2.postMessage(null);
   });
 }
+it("shares an upstream cooldown with the host across the native report worker", async () => {
+  const apiBaseUrl = "https://quota-worker.example.test";
+  const token = "synthetic-worker-quota-token";
+  const fetchImpl = vi.fn(async () => {
+    throw new Error("Unexpected API dispatch");
+  });
+  const quota = getSharedApiStore({ apiBaseUrl, token });
+  const blocked = quota.observe(
+    new Response(null, { status: 429, headers: { "retry-after": "90" } }),
+  );
+  const config = parseTeamReportsConfig({ github: { token, apiBaseUrl, orgs: ["quota-fixture"] } });
+  const runner = new TeamReportsRunner(new URL("./run-worker.test-support.ts", import.meta.url));
+  const store = new TeamReportsStore({
+    async execute() {
+      throw new Error("No storage in quota fixture");
+    },
+    async close() {},
+  });
+  try {
+    const result = await bindReportFetch({ run: runner.run.bind(runner) }, fetchImpl).run({
+      config,
+      resolved: {
+        github: { ...config.github, token, ignoreCommentPatterns: [] },
+        people: [],
+      },
+      periods: [],
+      store,
+      runtime: {
+        logger: { info() {}, warn() {}, error() {} },
+        signal: new AbortController().signal,
+      },
+      onRoster() {},
+      llm: {
+        complete: async () => {
+          throw new Error("No model calls in quota fixture");
+        },
+      },
+    });
+    expect(result.github).toMatchObject({ ok: false, stats: { retryAt: blocked?.retryAtMs } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  } finally {
+    await runner.close();
+  }
+});
+
+it("native worker reads publish host facts and reuse the same cached observation", async () => {
+  const apiBaseUrl = "https://store-worker.example.test";
+  const token = "synthetic-worker-store-token";
+  const fact = { number: 23, head: { sha: "a".repeat(40) } };
+  const fetchImpl = vi.fn(async () => Response.json(fact));
+  const owner = getSharedApiStore({ apiBaseUrl, token });
+  const changed = vi.fn();
+  const unsubscribe = owner.responses.subscribe(changed);
+  const config = parseTeamReportsConfig({ github: { token, apiBaseUrl, orgs: ["store-fixture"] } });
+  const runner = new TeamReportsRunner(new URL("./run-worker.test-support.ts", import.meta.url));
+  const store = new TeamReportsStore({
+    async execute() {
+      throw new Error("No storage in response fixture");
+    },
+    async close() {},
+  });
+  const params = {
+    config,
+    resolved: { github: { ...config.github, token, ignoreCommentPatterns: [] }, people: [] },
+    periods: [],
+    store,
+    runtime: {
+      logger: { info() {}, warn() {}, error() {} },
+      signal: new AbortController().signal,
+    },
+    onRoster() {},
+    llm: {
+      complete: async () => {
+        throw new Error("No model in response fixture");
+      },
+    },
+  };
+  try {
+    const run = bindReportFetch({ run: runner.run.bind(runner) }, fetchImpl).run;
+    const first = await run(params);
+    expect(first.github).toMatchObject({
+      ok: true,
+      stats: { apiCalls: 1, headSha: fact.head.sha },
+    });
+    expect(changed).toHaveBeenCalledOnce();
+    expect(changed.mock.calls[0]?.[0]).toMatchObject({ value: fact, changed: true });
+    const key = apiStoreRequestKey(`${apiBaseUrl}/repos/example/app/pulls/23`);
+    const response = await owner.responses.read(key, async () => {
+      throw new Error("Cached worker facts must serve host readers");
+    });
+    expect(await response.json()).toEqual(fact);
+    const second = await run(params);
+    expect(second.github).toMatchObject({
+      ok: true,
+      stats: { apiCalls: 0, headSha: fact.head.sha },
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  } finally {
+    unsubscribe();
+    await runner.close();
+  }
+});
 
 it.each([
   ["completion", new URL("./run-worker.test-support.ts", import.meta.url)],
@@ -100,7 +205,7 @@ it.each([
     );
     let runSettled = false;
     let closeSettled = false;
-    const pending = runner.run({
+    const pending = bindReportFetch({ run: runner.run.bind(runner) }, fetchCollectionFixture).run({
       config,
       store,
       periods: sqlite ? [describePeriod("day", "2026-08-19")] : [],

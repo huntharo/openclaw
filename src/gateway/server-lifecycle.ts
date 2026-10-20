@@ -24,8 +24,7 @@ import {
   removeRemoteNodeInfoForConnection,
 } from "../skills/runtime/remote.js";
 import type { RestartRecoveryCandidate } from "./chat-abort.js";
-import { createControlUiSessionPrRead } from "./control-ui-session-pr-read.js";
-import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
+import { createGatewayControlUiGitHubReaders } from "./control-ui-github-readers.js";
 import { retireDeviceTokenClients } from "./device-token-client-lifecycle.js";
 import { publishHooksTokenEnvKey } from "./hooks.js";
 import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./methods/core-method-policy.js";
@@ -348,25 +347,16 @@ export async function prepareGatewayLifecycle(params: {
       runtimeState.stopMediaCleanup = handles.stopMediaCleanup;
     },
   };
-  runtimeState.controlUiSessionPullRequests = createControlUiSessionPullRequestSubscriptions({
+  const githubReaders = createGatewayControlUiGitHubReaders({
     scheduler: runtime.scheduler,
     getSessionRowProjection: runtime.getSessionRowProjection,
     broadcastToConnIds,
     isConnectionActive,
-    prepareRead: async (connId, session) => {
-      const client = clients.getByConnectionId(connId);
-      return client
-        ? createControlUiSessionPrRead({
-            allowOwnImportedPullRequest: true,
-            client,
-            ...session,
-            getRuntimeConfig,
-            getSessionRowProjection: runtime.getSessionRowProjection,
-            isCurrentClient: () => clients.getByConnectionId(connId) === client,
-          })
-        : undefined;
-    },
+    clients,
+    getRuntimeConfig,
   });
+  runtimeState.controlUiSessionPullRequests = githubReaders.pullRequests;
+  runtimeState.controlUiLinkReaderNotifications = githubReaders.documents;
   runtimeState.sessionViewerPresence = createSessionViewerPresenceDeclarations({
     clients,
     publishPresence: runtime.publishPresence,
@@ -431,6 +421,7 @@ export async function prepareGatewayLifecycle(params: {
     void runtimeState.stopGatewayUpdateCheck().catch(() => {});
     void stopConfigReloaderForClose().catch(() => {});
     void runtimeState.controlUiSessionPullRequests?.stop();
+    void runtimeState.controlUiLinkReaderNotifications?.stop();
     runtimeState.sessionViewerPresence?.stop();
     runtime.stopPresencePublications();
     cronReconciliation.invalidate();
@@ -464,6 +455,7 @@ export async function prepareGatewayLifecycle(params: {
         runtimeState.maintenance?.stopPeriodicTasks().catch(() => {}),
       ),
       step("session-pull-requests", () => runtimeState.controlUiSessionPullRequests?.stop()),
+      step("link-readers", () => runtimeState.controlUiLinkReaderNotifications?.stop()),
       step("health-work", () => healthWork.drain()),
     ]);
   };

@@ -19,6 +19,7 @@ export function installTestLinkReader<T extends HTMLElement>(provider: T): T {
   Object.assign(provider, {
     readers: [TEST_LINK_READER],
     client: {
+      addEventListener: () => () => {},
       request: () => new Promise(() => {}),
       connected: true,
     } as unknown as GatewayBrowserClient,

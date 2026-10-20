@@ -38,6 +38,7 @@ export const GATEWAY_EVENTS = [
   "sessions.processes.changed",
   "socket.drain",
   "controlUi.sessionPullRequests.changed",
+  "controlUi.linkReader.changed",
   "plugins.controlUi.changed",
   "presence",
   "tick",

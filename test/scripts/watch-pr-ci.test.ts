@@ -12,7 +12,7 @@ import {
 } from "../../scripts/watch-pr-ci.mts";
 import { withTempDir } from "../../src/test-utils/temp-dir.js";
 import placeholderFixture from "../fixtures/watch-pr-ci-queued-placeholder.js";
-import { runWatcher, sha } from "./watch-pr-ci.test-support.js";
+import { isRunStatusRead, runWatcher, sha } from "./watch-pr-ci.test-support.js";
 
 function expectRun(
   result: Awaited<ReturnType<typeof runWatcher>>,
@@ -31,6 +31,7 @@ function parseCalls(text: string): string[][] {
   return text
     .trim()
     .split("\n")
+    .filter(Boolean)
     .map((line) => JSON.parse(line));
 }
 
@@ -146,12 +147,17 @@ else if (args.includes("repos/openclaw/openclaw/pulls/42")) {
     head: { sha: pr.headRefOid },
   };
 }
-else if (args[0] === "run" && args[1] === "view") {
-  const reads = calls.filter((call) => call[0] === "run" && call[1] === "view").length;
-  value = fixture.runViewSnapshots?.[Math.min(reads, fixture.runViewSnapshots.length - 1)] ?? fixture.run;
+else if (isRunStatusRead(args)) {
+  const evidenceRead = args.includes("Cache-Control: max-age=0");
+  const reads = calls.filter((call) => isRunStatusRead(call) && !call.includes("Cache-Control: max-age=0")).length;
+  const collected = calls.some((call) => call[1]?.includes("/attempts/3/jobs?"));
+  value = evidenceRead
+    ? fixture.runSnapshots?.[collected ? fixture.runSnapshots.length - 1 : 0] ?? fixture.run
+    : fixture.runViewSnapshots?.[Math.min(reads, fixture.runViewSnapshots.length - 1)] ?? fixture.run;
 }
 else if (args[0] === "api" && args[1] === "graphql") {
   if (fixture.rest) {
+    process.stdout.write('HTTP/2.0 403 Forbidden\\nX-RateLimit-Remaining: 0\\nX-RateLimit-Resource: graphql\\nX-RateLimit-Reset: 3600\\n\\n{"message":"API rate limit exceeded for fixture-user."}\\n');
     console.error("gh: API rate limit exceeded for fixture-user.");
     process.exit(1);
   }
@@ -180,10 +186,6 @@ else if (args[1]?.startsWith("repos/openclaw/openclaw/actions/runs?head_sha=")) 
   value = { total_count: 1, workflow_runs: [{ ...fixture.run, event: "pull_request" }] };
 }
 else if (args.includes("repos/openclaw/openclaw/actions/workflows/ci.yml/runs")) value = { workflow_runs: [fixture.run] };
-else if (args[1] === runPath) {
-  const reads = calls.filter((call) => call[1] === runPath).length;
-  value = fixture.runSnapshots?.[Math.min(reads, fixture.runSnapshots.length - 1)] ?? fixture.run;
-}
 else if (args[1]?.startsWith(runPath + "/attempts/3/jobs?per_page=100&page=")) {
   const page = Number(new URLSearchParams(args[1].split("?")[1]).get("page"));
   value = (fixture.jobPages ?? [fixture.jobs])[page - 1];
@@ -208,10 +210,12 @@ else throw new Error("unexpected gh invocation: " + JSON.stringify(args));
         evidence.watchTimeout === undefined
           ? []
           : [
+              "--attach-timeout",
+              evidence.clock === "wall" ? "1" : "10",
               "--timeout",
-              String(evidence.watchTimeout),
+              String(evidence.watchTimeout * (evidence.clock === "wall" ? 1 : 30)),
               "--interval",
-              String(evidence.watchTimeout),
+              String(evidence.watchTimeout * (evidence.clock === "wall" ? 1 : 30)),
             ],
       clock: evidence.clock,
     },
@@ -241,7 +245,7 @@ function replaySummary({
 }) {
   return replayGh(
     `
-const runReads = calls.filter((call) => call[0] === "run" && call[1] === "view").length;
+const runReads = calls.filter((call) => isRunStatusRead(call)).length;
 const identity = {
   workflow_id: 10, event: "pull_request", head_sha: "${sha}",
   pull_requests: [{ number: 42, head: { sha: "${sha}" } }],
@@ -259,7 +263,7 @@ if (args[0] === "browse") {
 } else if (args.includes("repos/openclaw/openclaw/actions/workflows/ci.yml/runs")) {
   value = { workflow_runs: [{ ...identity, id: 201, check_suite_id: 20_000 },
     ...(${supersededFailure} ? [{ ...identity, id: 100, check_suite_id: 10_000 }] : [])] };
-} else if (args[0] === "run" && args[1] === "view") {
+} else if (isRunStatusRead(args)) {
   const completed = ${supersededFailure} ? runReads >= ${completeAfter} : ${runStatus === "completed"};
   value = { status: completed ? "completed" : ${JSON.stringify(runStatus)}, conclusion: completed ? "success" : null };
 } else if (args[1] === "repos/openclaw/openclaw/actions/runs/100") {
@@ -353,6 +357,7 @@ function ownedCheck(
 function replayRestRollup(
   fixture: {
     graphqlError?: string;
+    graphqlRemainingZero?: boolean;
     checkPages?: unknown[];
     statusPages?: unknown[];
     runPages?: unknown[];
@@ -365,7 +370,7 @@ function replayRestRollup(
   return replayGh(
     `
 const original = fixture;
-const runReads = calls.filter((call) => call[0] === "run" && call[1] === "view").length;
+const runReads = calls.filter((call) => isRunStatusRead(call)).length;
 const current = { ...original, ...(runReads >= 2 ? original.afterRun : {}) };
 const run = { id: 201, workflow_id: 10, check_suite_id: 20_000, event: "pull_request", head_sha: "${sha}" };
 const checkPages = current.checkPages ?? [{ total_count: 1, check_runs: [${JSON.stringify(restCheck())}] }];
@@ -379,14 +384,26 @@ if (args[0] === "browse") {
     ...(collected ? current.afterCollection : {}) };
 } else if (args.includes("repos/openclaw/openclaw/actions/workflows/ci.yml/runs")) {
   value = { workflow_runs: [run] };
-} else if (args[0] === "run" && args[1] === "view") {
-  const reads = calls.filter((call) => call[0] === "run" && call[1] === "view").length;
+} else if (isRunStatusRead(args)) {
+  const reads = calls.filter((call) => isRunStatusRead(call)).length;
   const snapshots = current.runStatuses ?? ["completed"];
   const status = snapshots[Math.min(reads, snapshots.length - 1)];
   value = { status, conclusion: status === "completed" ? "success" : null };
 } else if (args[1] === "graphql") {
-  console.error(current.graphqlError ?? "gh: API rate limit exceeded for fixture-user.");
-  process.exit(1);
+  if (current.graphqlRemainingZero) {
+    process.stdout.write('HTTP/2.0 200 OK\\nX-RateLimit-Remaining: 0\\nX-RateLimit-Resource: graphql\\nX-RateLimit-Reset: 3600\\n\\n');
+    value = { data: { repository: { pullRequest: {
+      state: "OPEN", mergeable: "MERGEABLE", headRefOid: "${sha}",
+      statusCheckRollup: { state: "PENDING", contexts: {
+        checkRunCountsByState: [{ state: "IN_PROGRESS", count: 1 }],
+        statusContextCountsByState: [],
+      } },
+    } } } };
+  } else {
+    if (!current.graphqlError) process.stdout.write('HTTP/2.0 403 Forbidden\\nX-RateLimit-Remaining: 0\\nX-RateLimit-Resource: graphql\\nX-RateLimit-Reset: 3600\\n\\n{"message":"API rate limit exceeded for fixture-user."}\\n');
+    console.error(current.graphqlError ?? "gh: API rate limit exceeded for fixture-user.");
+    process.exit(1);
+  }
 } else if (args[1]?.includes("/check-runs?filter=latest&")) {
   value = checkPages[page - 1];
 } else if (args[1]?.includes("/status?")) {
@@ -405,11 +422,42 @@ if (args[0] === "browse") {
 }
 if (value === undefined) throw new Error("missing fixture page");
 `,
-    { fixture, args: ["--timeout", "3"] },
+    { fixture, args: ["--timeout", "120", "--interval", "40"] },
   );
 }
 
 describe("watch-pr-ci", () => {
+  it.skipIf(process.platform === "win32")(
+    "stops interval polling after a secondary limit with Retry-After",
+    async () => {
+      await withTempDir("openclaw-watch-pr-ci-quota-", async (root) => {
+        const callsPath = join(root, "calls.jsonl");
+        writeFileSync(callsPath, "");
+        const result = await runWatcher(
+          `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "browse") {
+  console.log("https://github.com/openclaw/openclaw");
+  process.exit(0);
+}
+fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");
+process.stdout.write('HTTP/2.0 403 Forbidden\\nRetry-After: 120\\nX-RateLimit-Remaining: 100\\nX-RateLimit-Resource: core\\n\\n{"message":"You have exceeded a secondary rate limit."}\\n');
+console.error("gh: You have exceeded a secondary rate limit. (HTTP 403)");
+process.exit(1);
+`,
+          sha,
+          ["--attach-timeout", "3", "--interval", "1"],
+          "poll",
+          { GH_TOKEN: "watcher-fixture-token" },
+        );
+        expect(readFileSync(callsPath, "utf8").trim().split("\n")).toHaveLength(1);
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(2);
+        expect(result.stderr).toContain("API request quota");
+        expect(result.stdout).not.toContain("RETRY");
+      });
+    },
+  );
   it("parses defaults and overrides", () => {
     expect(parseArgs(["42", sha])).toEqual({
       pr: 42,
@@ -476,8 +524,7 @@ describe("watch-pr-ci", () => {
         `#!/usr/bin/env bash
 case "$1 $2" in
   "browse "*) printf 'https://github.com/openclaw/openclaw\\n' ;;
-  "api --hostname")
-    if [ "$4" != "repos/openclaw/openclaw/pulls/42" ]; then exit 2; fi
+  "api repos/openclaw/openclaw/pulls/42")
     printf '{"state":"open","mergeable":true,"head":{"sha":"${sha}"}}\\n'
     ;;
   "api --method")
@@ -486,10 +533,12 @@ case "$1 $2" in
       *) printf '{"workflow_runs":[{"id":202,"conclusion":"skipped"},{"id":201,"conclusion":"success"}]}\\n' ;;
     esac
     ;;
-  "run view")
-    if [ "\${OCTOPOOL_FRESH:-}" != "1" ]; then
+  "api repos/openclaw/openclaw/actions/runs/"*)
+    if [[ "$2" == *"/jobs?"* ]]; then
+      printf '{"total_count":0,"jobs":[]}\\n'
+    elif [ "\${OCTOPOOL_FRESH:-}" != "1" ]; then
       printf '{"status":"queued","conclusion":null}\\n'
-    elif [ "$3" = "202" ]; then
+    elif [[ "$2" == *"/202" ]]; then
       printf '{"status":"completed","conclusion":"skipped"}\\n'
     else
       printf '{"status":"completed","conclusion":"success"}\\n'
@@ -515,10 +564,15 @@ esac
       jobs: [
         { name: "tests", status: "in_progress", conclusion: "" },
         { name: "lint", status: "queued", conclusion: null },
+        ...Array.from({ length: 98 }, (_, index) => ({
+          name: `shard ${index}`,
+          status: "completed",
+          conclusion: "success",
+        })),
         { name: "check-dependencies\u001b[31m\n", status: "completed", conclusion: "failure" },
       ],
       progress:
-        'jobs=3 running=1 queued=1 completed=1 other=0 failing=1 failed=["check-dependencies?"]',
+        'jobs=101 running=1 queued=1 completed=99 other=0 failing=1 failed=["check-dependencies?"]',
     },
     { label: "missing job details", jobs: undefined, progress: "jobs=unknown" },
     { label: "malformed job details", jobs: [{ name: "incomplete" }], progress: "jobs=unknown" },
@@ -532,10 +586,13 @@ if (args[0] === "browse") {
   value = { state: "open", mergeable: true, head: { sha: ${JSON.stringify(sha)} } };
 } else if (args.includes("repos/openclaw/openclaw/actions/workflows/ci.yml/runs")) {
   value = { workflow_runs: [{ id: 201 }] };
-} else if (args[0] === "run" && args[1] === "view") {
+} else if (isRunStatusRead(args)) {
   value = { status: "queued", conclusion: null };
-  if (args[args.indexOf("--json") + 1].includes("jobs")) {
-    value = ${JSON.stringify({ status: "queued", conclusion: null, jobs })};
+} else if (args[1]?.startsWith("repos/openclaw/openclaw/actions/runs/201/jobs?")) {
+  value = ${JSON.stringify({ total_count: jobs?.length ?? 0, jobs })};
+  if (value.jobs) {
+    const page = Number(new URLSearchParams(args[1].split("?")[1]).get("page"));
+    value.jobs = value.jobs.slice((page - 1) * 100, page * 100);
   }
 } else {
   throw new Error("unexpected gh invocation: " + JSON.stringify(args));
@@ -547,6 +604,18 @@ if (args[0] === "browse") {
     expect(result.stdout).toContain("TIMEOUT completion=ci-run");
     expect(result.stdout).not.toContain("\nGREEN");
     expect(result.stdout).not.toContain("\nFAILING");
+    expect(
+      result.calls.filter((args) => args.includes("repos/openclaw/openclaw/pulls/42")),
+    ).toHaveLength(2);
+    expect(result.calls.some((args) => args[0] === "pr" || args.includes("graphql"))).toBe(false);
+    expect(result.calls.some((args) => args.some((arg) => arg.includes("/commits/")))).toBe(false);
+    expect(result.calls.filter(isRunStatusRead)).toHaveLength(2);
+    expect(result.calls.filter((args) => args[1]?.includes("/runs/201/jobs?"))).toHaveLength(
+      Math.max(1, Math.ceil((jobs?.length ?? 0) / 100)),
+    );
+    expect(
+      result.calls.filter((args) => args[0] === "api").every((args) => args.includes("--include")),
+    ).toBe(true);
   });
 
   type CiRunScenario = {
@@ -557,6 +626,7 @@ if (args[0] === "browse") {
     output: string;
     slowPr?: boolean;
     slowQuota?: boolean;
+    corePrimary?: boolean;
     notifier?: boolean;
     inheritedNotifier?: boolean;
     host?: string;
@@ -591,11 +661,16 @@ if (args[0] === "browse") {
       exitCode: 16,
       output: "TIMEOUT completion=ci-run",
     }),
-    restScenario("slow quota diagnostics", {
+    restScenario("rate-limited current PR read", {
       phase: "watch",
       slowQuota: true,
-      exitCode: 16,
-      output: "TIMEOUT completion=ci-run",
+      exitCode: 2,
+      output: "ATTACHED run=201",
+    }),
+    restScenario("core primary exhaustion", {
+      corePrimary: true,
+      exitCode: 2,
+      output: "API request quota",
     }),
     restScenario("native notifier", { notifier: true }),
     restScenario("inherited notifier", { inheritedNotifier: true }),
@@ -609,6 +684,7 @@ if (args[0] === "browse") {
       output,
       slowPr = false,
       slowQuota = false,
+      corePrimary = false,
       notifier = false,
       inheritedNotifier = false,
       host = "github.com",
@@ -640,6 +716,11 @@ if (args[0] === "browse") {
 } else if (args[0] === "api" && args.includes(pullPath)) {
   if (args[args.indexOf("--hostname") + 1] !== ${JSON.stringify(host)}) throw new Error("wrong API host");
   if (args[args.indexOf("-H") + 1] !== "Cache-Control: max-age=0") throw new Error("metadata read must revalidate mutable PR state");
+  if (${corePrimary}) {
+    process.stdout.write('HTTP/2.0 403 Forbidden\\nX-RateLimit-Remaining: 0\\nX-RateLimit-Resource: core\\nX-RateLimit-Reset: 3600\\n\\n{"message":"API rate limit exceeded for fixture-user."}\\n');
+    console.error("gh: API rate limit exceeded for fixture-user. (HTTP 403)");
+    process.exit(1);
+  }
   if (${slowPr} && reads > 0) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
     fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(["slow-pr-completed"]) + "\\n");
@@ -651,14 +732,18 @@ if (args[0] === "browse") {
   }
   value = { state: "open", merged_at: null, mergeable: true, head: { sha: "${sha}" },
     ...(${phase === "attach"} || reads > 0 ? ${JSON.stringify(patch)} : {}) };
+} else if (${corePrimary} && args[1] === "graphql") {
+  value = { data: { repository: { pullRequest: { state: "OPEN", mergeable: "MERGEABLE", headRefOid: "${sha}" } } } };
 } else if (${slowQuota} && args.includes("rate_limit")) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 650);
   fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(["slow-quota-completed"]) + "\\n");
   value = { resources: {} };
 } else if (args.includes("repos/" + ${JSON.stringify(repo)} + "/actions/workflows/ci.yml/runs")) {
   value = { workflow_runs: [{ id: 201 }] };
-} else if (args[0] === "run" && args[1] === "view") {
+} else if (isRunStatusRead(args)) {
   value = { status: "completed", conclusion: "success" };
+} else if (args[1]?.includes("/jobs?filter=latest")) {
+  value = { total_count: 0, jobs: [] };
 } else {
   throw new Error("unexpected gh invocation: " + JSON.stringify(args));
 }
@@ -671,9 +756,11 @@ if (args[0] === "browse") {
           notifierPath,
           inheritedNotifier ? { ...process.env, OPENCLAW_PR_LOCK_NOTIFY_FD: "3" } : undefined,
         );
-        expectRun(result, exitCode, output);
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(exitCode);
+        expect(corePrimary ? result.stderr : result.stdout).toContain(output);
         const calls = readCalls(callsPath);
-        expect(calls.some((args) => args[0] === "pr" || args.includes("graphql"))).toBe(false);
+        expect(calls.some((args) => args[0] === "pr")).toBe(false);
+        expect(calls.some((args) => args.includes("graphql"))).toBe(corePrimary);
         expect(calls.some((args) => args.some((arg) => arg.includes("/commits/")))).toBe(false);
         if (phase === "attach" && exitCode !== 0) {
           expect(
@@ -685,15 +772,22 @@ if (args[0] === "browse") {
           expect(result.stdout).toContain("ATTACHED run=201");
         }
         expect(calls.filter((args) => args.includes(pullPath))).toHaveLength(
-          phase === "attach" && exitCode !== 0 ? 1 : 2,
+          corePrimary || (phase === "attach" && exitCode !== 0) ? 1 : 2,
         );
+        if (corePrimary) {
+          expect(calls.filter((args) => args.includes("graphql"))).toHaveLength(1);
+          expect(result.stdout).not.toContain("ATTACHED");
+        }
         expect(calls.filter((args) => args[0] === "browse")).toHaveLength(1);
         if (exitCode !== 0) {
           expect(result.stdout).not.toContain("\nGREEN");
         }
         expect(calls.some((args) => args[0] === "slow-pr-completed")).toBe(false);
         expect(calls.some((args) => args[0] === "slow-quota-completed")).toBe(false);
-        expect(calls.filter((args) => args.includes("rate_limit"))).toHaveLength(slowQuota ? 1 : 0);
+        expect(calls.filter((args) => args.includes("rate_limit"))).toHaveLength(0);
+        if (slowQuota) {
+          expect(result.stderr).toContain("API request quota");
+        }
         if (notifierPath) {
           expect(readFileSync(notifierPath, "utf8")).toBe("browse\napi\napi\n");
         }
@@ -798,7 +892,10 @@ if (args[0] === "browse") {
         expect(query).not.toMatch(/\b(?:nodes|pageInfo)\b/);
         expect(call.some((arg) => arg.startsWith("cursor="))).toBe(false);
       }
-      expect(result.calls.some((call) => call[1]?.includes("/actions/runs/"))).toBe(false);
+      expect(result.calls.filter(isRunStatusRead)).toHaveLength(4);
+      expect(
+        result.calls.some((call) => call[1]?.includes("/actions/runs/") && !isRunStatusRead(call)),
+      ).toBe(false);
       expect(result.calls.filter((call) => call[0] === "browse")).toHaveLength(1);
     });
 
@@ -827,13 +924,37 @@ if (args[0] === "browse") {
             graphql.every((call) => call.some((arg) => arg.includes("checkRunCountsByState"))),
           ).toBe(true);
           expect(result.calls.at(-1)?.[1]).toBe("graphql");
-          expect(result.calls.some((call) => call[1]?.includes("/actions/runs/"))).toBe(false);
+          expect(result.calls.filter(isRunStatusRead)).toHaveLength(2);
+          expect(
+            result.calls.some(
+              (call) => call[1]?.includes("/actions/runs/") && !isRunStatusRead(call),
+            ),
+          ).toBe(false);
         }
       },
     );
   });
 
   describe.skipIf(process.platform === "win32")("GraphQL quota fallback", () => {
+    it.concurrent.each([
+      { label: "the last successful GraphQL allowance", graphqlRemainingZero: true },
+      {
+        label: "a verified headerless primary GraphQL rejection",
+        graphqlError: "gh: API rate limit already exceeded for fixture-user.",
+      },
+    ])("keeps REST fallback after $label", async (fixture) => {
+      const result = await replayRestRollup(fixture);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain("\nGREEN");
+      expect(result.stdout.match(/WARN GraphQL quota exhausted/g)).toHaveLength(1);
+      expect(result.stdout).not.toContain("RETRY");
+      expect(result.calls.filter((call) => call[1] === "graphql")).toHaveLength(1);
+      for (const endpoint of ["/check-runs?", "/status?", "/check-suites?"]) {
+        expect(result.calls.some((call) => call[1]?.includes(endpoint))).toBe(true);
+      }
+      expect(result.calls.at(-1)).toContain("repos/openclaw/openclaw/pulls/42");
+    });
+
     it.concurrent("stays on REST across pending polls and verifies success without retrying GraphQL", async () => {
       const result = await replayRestRollup({
         runStatuses: ["in_progress", "in_progress", "in_progress", "completed"],
@@ -861,11 +982,19 @@ if (args[0] === "browse") {
       "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
       "gh: Resource not accessible by integration (HTTP 403)",
       "gh: Bad Gateway (HTTP 502)",
-    ])("keeps bounded GraphQL retries for %s", async (graphqlError) => {
+    ])("handles GraphQL failure without primary fallback: %s", async (graphqlError) => {
       const result = await replayRestRollup({ graphqlError });
-      expectRun(result, 16, "RETRY phase=watch", "using REST");
+      const secondary = graphqlError.includes("secondary rate limit");
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(secondary ? 2 : 16);
+      if (secondary) {
+        expect(result.stdout).not.toContain("RETRY");
+        expect(result.stderr).toContain("API request quota");
+      } else {
+        expect(result.stdout).toContain("RETRY phase=watch");
+      }
+      expect(result.stdout).not.toContain("using REST");
       expect(result.stdout).not.toContain("\nGREEN");
-      expect(result.calls.filter((call) => call[1] === "graphql")).toHaveLength(3);
+      expect(result.calls.filter((call) => call[1] === "graphql")).toHaveLength(secondary ? 1 : 3);
       expect(result.calls.some((call) => call[1]?.includes("/commits/"))).toBe(false);
     });
 
@@ -1099,7 +1228,7 @@ if (args[0] === "browse") {
 }
 else if (args.includes("repos/openclaw/openclaw/pulls/42")) value = { state: "open", mergeable: true, head: { sha: "${sha}" } };
 else if (args.includes("repos/openclaw/openclaw/actions/workflows/ci.yml/runs")) value = { workflow_runs: [{ id: 201 }] };
-else if (args[0] === "run" && args[1] === "view") {
+else if (isRunStatusRead(args)) {
   fs.writeFileSync(marker, "");
   value = { status: "in_progress", conclusion: null };
 }
@@ -1483,7 +1612,8 @@ console.log(JSON.stringify(value));
         }
         const result = await replayGh(
           `
-const metadataRead = calls.some((call) => call[1] === "repos/openclaw/openclaw/actions/runs/100");
+const isAttachedStatusRead = (call) => call[0] === "api" && call[1] === "repos/openclaw/openclaw/actions/runs/${expectedRun}";
+const metadataRead = calls.some((call) => call[1] === "repos/openclaw/openclaw/actions/runs/100" && !isAttachedStatusRead(call));
 const pr = { ...${JSON.stringify(pr)}, ...(metadataRead ? ${JSON.stringify(afterMetadata ?? {})} : {}) };
 if (metadataRead && ${Boolean(afterMetadataState)}) pr.statusCheckRollup.state = ${JSON.stringify(afterMetadataState)};
 const runs = ${JSON.stringify(listedRuns)};
@@ -1496,10 +1626,11 @@ else if (args.includes("repos/openclaw/openclaw/pulls/42")) {
   if (${slowWatchPr} && calls.some((call) => call.includes("repos/openclaw/openclaw/pulls/42"))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
   value = { state: pr.state.toLowerCase(), mergeable: pr.mergeable, head: { sha: pr.headRefOid } };
 }
-else if (args[0] === "run" && args[1] === "view") {
-  if (${slowFinalRun} && calls.some((call) => call[0] === "run" && call[1] === "view")) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
-  value = runs.find((run) => String(run.id) === args[2]);
+else if (isAttachedStatusRead(args)) {
+  if (${slowFinalRun} && calls.some((call) => isAttachedStatusRead(call))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+  value = runs.find((run) => args[1].endsWith("/" + run.id));
 }
+else if (args[1]?.includes("/jobs?filter=latest")) value = { total_count: 0, jobs: [] };
 else if (${completion !== "ci-run"} && args[0] === "api" && args[1] === "graphql") {
   if (args.some((arg) => arg.includes("checkRunCountsByState"))) pr.statusCheckRollup.contexts = {};
   value = { data: { repository: { pullRequest: pr } } };
@@ -1516,26 +1647,41 @@ else throw new Error("unexpected gh invocation: " + JSON.stringify(args));
             args: completion
               ? ["--completion", completion]
               : oldRunCount > 1
-                ? ["--timeout", "6"]
+                ? ["--timeout", "300"]
                 : [],
             clock: slowMetadata || slowFinalRun || slowWatchPr ? "wall" : "poll",
           },
         );
         expectRun(result, exitCode, `ATTACHED run=${expectedRun}`);
         expect(result.stdout).toContain(output);
+        expect(result.calls.some((call) => call[0] === "pr")).toBe(false);
+        expect(result.calls.some((call) => call.includes("graphql"))).toBe(completion !== "ci-run");
+        const attachedStatusRead = (call: readonly string[]) =>
+          call[0] === "api" && call[1] === `repos/openclaw/openclaw/actions/runs/${expectedRun}`;
+        if (expectedRun === 100) {
+          expect(result.calls.filter(attachedStatusRead)).toHaveLength(1);
+        }
         expect(
-          result.calls.filter((call) => call[1] === "repos/openclaw/openclaw/actions/runs/100"),
+          result.calls.filter(
+            (call) =>
+              call[1] === "repos/openclaw/openclaw/actions/runs/100" && !attachedStatusRead(call),
+          ),
         ).toHaveLength(olderRunOutsidePage && expectedMetadataReads > 0 ? 1 : 0);
-        const metadataReads = result.calls.filter((call) =>
-          call[1]?.startsWith("repos/openclaw/openclaw/actions/runs/"),
+        const metadataReads = result.calls.filter(
+          (call) =>
+            /^repos\/openclaw\/openclaw\/actions\/runs\/\d+$/u.test(call[1] ?? "") &&
+            !attachedStatusRead(call),
         );
         expect(metadataReads).toHaveLength(olderRunOutsidePage ? expectedMetadataReads : 0);
         let readsThisPoll = 0;
         for (const call of result.calls) {
-          if (call[0] === "run" && call[1] === "view") {
+          if (attachedStatusRead(call)) {
             readsThisPoll = 0;
           }
-          if (call[1]?.startsWith("repos/openclaw/openclaw/actions/runs/")) {
+          if (
+            /^repos\/openclaw\/openclaw\/actions\/runs\/\d+$/u.test(call[1] ?? "") &&
+            !attachedStatusRead(call)
+          ) {
             readsThisPoll += 1;
           }
           expect(readsThisPoll).toBeLessThanOrEqual(32);
@@ -1578,17 +1724,27 @@ else throw new Error("unexpected gh invocation: " + JSON.stringify(args));
             .toSorted((left, right) => left - right),
         ).toEqual(fixture.directJobs.map((job) => job.id).toSorted((left, right) => left - right));
         const finalEvidenceRead = calls.findLastIndex(
-          (call) => call[1] === "repos/openclaw/openclaw/actions/runs/33155056361",
+          (call) =>
+            call[1] === "repos/openclaw/openclaw/actions/runs/33155056361" &&
+            call.includes("Cache-Control: max-age=0"),
         );
         expect(finalEvidenceRead).toBeGreaterThan(
           calls.findLastIndex((call) => call[1]?.includes("/actions/jobs/")),
         );
-        expect(calls[finalEvidenceRead]).toContain("Cache-Control: max-age=0");
         const finalRollupRead = calls.findLastIndex((call) =>
           rest ? call[1]?.includes("/check-runs?") : call[1] === "graphql",
         );
         expect(finalRollupRead).toBeGreaterThan(finalEvidenceRead);
-        expect(calls.findLastIndex((call) => call[0] === "run")).toBeGreaterThan(finalRollupRead);
+        expect(
+          calls.findLastIndex(
+            (call) => isRunStatusRead(call) && !call.includes("Cache-Control: max-age=0"),
+          ),
+        ).toBeGreaterThan(finalRollupRead);
+        expect(
+          calls
+            .filter((call) => isRunStatusRead(call) && !call.includes("Cache-Control: max-age=0"))
+            .every((call) => call.includes("Cache-Control: no-cache")),
+        ).toBe(true);
         if (rest) {
           expect(calls.filter((call) => call[1] === "graphql")).toHaveLength(1);
         }
@@ -2146,9 +2302,9 @@ else throw new Error("unexpected gh invocation: " + JSON.stringify(args));
     ).toEqual(expected);
   });
 
-  it.each([2, 11])("collects a %s-context rollup within ten pages", (totalCount) => {
+  it.each([2, 11])("collects a %s-context rollup within ten pages", async (totalCount) => {
     const cursors: Array<string | null> = [];
-    const result = collectRollupContexts((cursor) => {
+    const result = await collectRollupContexts((cursor) => {
       cursors.push(cursor);
       const calls = cursors.length;
       const complete = totalCount === 2;
@@ -2184,8 +2340,8 @@ else throw new Error("unexpected gh invocation: " + JSON.stringify(args));
     }
   });
 
-  it.each(["changed count", "missing page"])("rejects pagination with a %s", (scenario) => {
-    expect(() =>
+  it.each(["changed count", "missing page"])("rejects pagination with a %s", async (scenario) => {
+    await expect(
       collectRollupContexts((cursor) => {
         if (cursor !== null && scenario === "missing page") {
           return { headRefOid: "b".repeat(40), statusCheckRollup: null };
@@ -2205,6 +2361,6 @@ else throw new Error("unexpected gh invocation: " + JSON.stringify(args));
           },
         };
       }),
-    ).toThrow("rollup snapshot changed during pagination");
+    ).rejects.toThrow("rollup snapshot changed during pagination");
   });
 });

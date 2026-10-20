@@ -136,14 +136,19 @@ it.each([
     const hostScans = vi.spyOn(sqliteQueries, "iterateSqliteQuerySync");
     let recoveryScanStart = 0;
     mocks.runCommand.mockImplementation(async (argv: string[], options?: { input?: string }) => {
+      const secondPage = argv.find(
+        (arg) => arg.startsWith("https://api.github.com/") && arg.includes("page=2"),
+      );
+      if (secondPage) {
+        return commandResult(JSON.stringify([pullRequest]));
+      }
       if (argv.includes("state=all")) {
         recoveryLookup ||= pushed;
         if (mode === "paged") {
-          // gh emits one array per page; the matching open PR is beyond page one.
+          const endpoint = argv.find((arg) => arg.startsWith("repos/") && arg.endsWith("/pulls"))!;
+          // The shared transport follows Link instead of gh-owned pagination.
           return commandResult(
-            [closed, ...(argv.includes("--paginate") ? [[pullRequest]] : [])]
-              .map((page) => JSON.stringify(page))
-              .join("\n"),
+            `HTTP/2.0 200\r\nLink: <https://api.github.com/${endpoint}?state=all&page=2>; rel="next"\r\n\r\n${JSON.stringify(closed)}\n`,
           );
         }
         if (pushed && !readbackAvailable) {

@@ -16,6 +16,7 @@ import {
 import { discordMessage, githubItem, measureReads } from "./reports-data.test-support.js";
 import { completion, type Complete } from "./reports.fixtures.js";
 import type { ReportRunRequest } from "./run-worker-contract.js";
+import { fetchCollectionFixture } from "./run-worker.collection-fixtures.test-support.js";
 import { TeamReportsRunner } from "./run-worker.js";
 import { generateReportPeriods, type ResolvedTeamReportsConfig } from "./run.js";
 import { TeamReportsScheduler } from "./scheduler.js";
@@ -170,7 +171,7 @@ async function setup(
   const runReports = vi.fn(async (params: ReportRunRequest) => {
     runtimes.push(params.runtime);
     return runner
-      ? runner.run(params)
+      ? bindReportFetch({ run: () => runner.run(params) }, fetchCollectionFixture).run()
       : withReportSourceFixtures(sources, () => generateReportPeriods(params));
   });
   const scheduler = new TeamReportsScheduler({

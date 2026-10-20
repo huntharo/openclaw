@@ -12,6 +12,12 @@ import type { ControlUiLinkReaderSection } from "../../shared/control-ui-link-re
 import { truncateOptionalText } from "../../shared/text-truncate.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import type { ControlUiSessionPreview } from "../control-ui-contract.js";
+import {
+  controlUiGitHubReadScope,
+  GitHubReadRequestInactiveError,
+  prepareControlUiGitHubIdentity,
+} from "../control-ui-github-read-identity.js";
+import { controlUiGitHubReaderUrl } from "../control-ui-link-reader-notifications.js";
 import { withControlUiSessionGitHubRead } from "../control-ui-session-github-read.js";
 import type { ControlUiSessionPullRequestChecksParams } from "../control-ui-session-pr-check-details.js";
 import {
@@ -26,7 +32,6 @@ import {
   type ControlUiGitHubPreviewIdentity,
   type ControlUiGitHubSessionIdentity,
 } from "../github-public-api.js";
-import { prepareGitHubReaderIdentity } from "../github-reader-identity.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { withReadySessionRows } from "../session-row-prepared-read.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
@@ -34,37 +39,7 @@ import { createSessionListEntryFilter } from "../session-sharing.js";
 import { retainGatewaySessionEntryReadOnly } from "../session-utils-read-lifetime.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import { respondError } from "./response.js";
-import type {
-  GatewayClient,
-  GatewayRequestContext,
-  GatewayRequestHandlerOptions,
-  GatewayRequestHandlers,
-} from "./types.js";
-
-class GitHubReadRequestInactiveError extends Error {
-  constructor() {
-    super("GitHub request is no longer active. Try again.");
-  }
-}
-
-async function prepareControlUiGitHubIdentity(
-  { context, client, signal, hasCurrentClientAuthority }: GatewayRequestHandlerOptions,
-  agentId: string,
-) {
-  // Nested plugin requests may decorate the client; transport authority retains its owner.
-  const assertActive = () => {
-    if (
-      signal?.aborted ||
-      (hasCurrentClientAuthority
-        ? !hasCurrentClientAuthority()
-        : client?.connId &&
-          !context.getClientConnIds?.((current) => current === client).has(client.connId))
-    ) {
-      throw new GitHubReadRequestInactiveError();
-    }
-  };
-  return prepareGitHubReaderIdentity(context, agentId, assertActive);
-}
+import type { GatewayClient, GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 
 function createGitHubReadHandler<
   T extends NonNullable<ReturnType<typeof gitHubPublicApi.parseGitHubTarget>>,
@@ -113,6 +88,12 @@ function createGitHubReadHandler<
     }
     const startedAt = performance.now();
     let preparedAt: number | undefined;
+    const readerUrl = controlUiGitHubReaderUrl(params);
+    const connId = options.client?.connId;
+    const endRead =
+      readerUrl && connId
+        ? context.controlUiLinkReaderNotifications?.beginRead(connId, resolved.agentId, readerUrl)
+        : undefined;
     try {
       if (params.sessionKey !== undefined || params.githubHost !== undefined) {
         await withControlUiSessionGitHubRead(
@@ -132,6 +113,16 @@ function createGitHubReadHandler<
       preparedAt = performance.now();
       const result = await load(target, identity, undefined, params.refresh === true, section);
       assertSelected();
+      const pullTarget = gitHubPublicApi.parseGitHubTarget(params);
+      if (readerUrl && connId && pullTarget?.kind === "pull") {
+        context.controlUiLinkReaderNotifications?.remember({
+          ...controlUiGitHubReadScope(identity),
+          connId,
+          agentId: resolved.agentId,
+          url: readerUrl,
+          target: { ...pullTarget, kind: "pull" },
+        });
+      }
       respond(true, result, undefined);
     } catch (error) {
       const { message, ...details } =
@@ -151,6 +142,7 @@ function createGitHubReadHandler<
           loadMs: preparedAt === undefined ? 0 : Math.round(finishedAt - preparedAt),
         });
       }
+      endRead?.();
     }
   };
 }

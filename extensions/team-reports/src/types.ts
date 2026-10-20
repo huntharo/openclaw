@@ -50,9 +50,17 @@ export type ReportDocument = z.infer<typeof reportDocumentSchema>;
 
 export type SummaryDocument = z.infer<typeof summaryDocumentSchema>;
 
+export type GithubReadStats = { apiCalls: number; rateLimitRemaining?: number };
+export type GithubApiRead = (
+  path: string,
+  options?: { signal?: AbortSignal; recordStats?: (stats: GithubReadStats) => void },
+) => Promise<Response>;
+
 /** Per-run context handed to sources. Sources must never log credentials. */
 export type SourceRuntime = {
   logger: RuntimeLogger;
+  /** Worker collection uses the host's credential-bound request and response owner. */
+  githubRead?: GithubApiRead;
 };
 
 /** Resolved (secret already materialized) GitHub source configuration. */

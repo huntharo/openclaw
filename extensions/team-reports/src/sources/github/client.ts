@@ -1,15 +1,12 @@
-import { parseRetryAfterHeaderSeconds } from "openclaw/plugin-sdk/retry-runtime";
+import { ApiQuotaError } from "openclaw/plugin-sdk/retry-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { z } from "zod";
-import type { GithubSourceConfig, SourceStatus } from "../../types.js";
-import {
-  ApiResponseReadError,
-  createResponseParser,
-  parseApiBase,
-  readApiResponse,
-} from "../http.js";
+import type { GithubSourceConfig, SourceRuntime, SourceStatus } from "../../types.js";
+import { createResponseParser, parseApiBase } from "../http.js";
+import { createGithubApiReader, GithubSourceError, resolveGithubApiUrl } from "./api-reader.js";
 
-export class GithubSourceError extends Error {}
+export { GithubSourceError } from "./api-reader.js";
+const GithubErrorBodySchema = z.object({ message: z.string() });
 
 export class GithubHttpError extends GithubSourceError {
   constructor(readonly status: number) {
@@ -27,13 +24,16 @@ export function pathWithQuery(path: string, query: Record<string, string>): stri
 
 export class GithubClient {
   private readonly base: URL;
+  private readonly read;
 
   constructor(
     private readonly cfg: GithubSourceConfig,
+    runtime: SourceRuntime,
     readonly status: SourceStatus,
   ) {
     try {
       this.base = parseApiBase(cfg.apiBaseUrl, "GitHub");
+      this.read = runtime.githubRead ?? createGithubApiReader(cfg);
     } catch {
       throw new GithubSourceError(
         "GitHub API base URL must be HTTPS without credentials, query, or fragment",
@@ -63,75 +63,59 @@ export class GithubClient {
   }
 
   private url(path: string): URL {
-    const url = new URL(path.replace(/^\/(?!\/)/, ""), this.base);
-    if (
-      url.origin !== this.base.origin ||
-      !url.pathname.startsWith(this.base.pathname) ||
-      url.username ||
-      url.password
-    ) {
-      throw new GithubSourceError("Refused API pagination outside the configured base URL");
-    }
-    return url;
+    return resolveGithubApiUrl(this.base, path);
   }
 
   async get(path: string): Promise<{ data: unknown; next?: string }> {
     const url = this.url(path);
     for (let failures = 0; ;) {
-      let response: Awaited<ReturnType<typeof readApiResponse>>;
+      let response: Response;
       let data: unknown;
+      let errorMessage: string | undefined;
       try {
-        response = await readApiResponse(
-          url,
-          {
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            Authorization: `Bearer ${this.cfg.token}`,
+        response = await this.read(url.href, {
+          recordStats: (stats) => {
+            this.status.stats.apiCalls = Number(this.status.stats.apiCalls) + stats.apiCalls;
+            if (stats.rateLimitRemaining !== undefined) {
+              this.status.stats.rateLimitRemaining = stats.rateLimitRemaining;
+            }
           },
-          this.status,
-        );
-        data = response.data;
-        if (response.status >= 200 && response.status < 300 && data === undefined) {
-          throw new GithubSourceError("Invalid JSON API response");
+        });
+        const remaining = response.headers.get("x-ratelimit-remaining");
+        if (remaining !== null && Number.isFinite(Number(remaining))) {
+          this.status.stats.rateLimitRemaining = Number(remaining);
         }
+        // Error payloads can echo credentials; neither parse errors nor API bodies escape this client.
+        const body = await response.text();
+        if (response.ok) {
+          try {
+            data = JSON.parse(body);
+          } catch {
+            throw new GithubSourceError("Invalid JSON API response");
+          }
+        } else if (response.status === 403 || response.status === 409 || response.status === 429) {
+          try {
+            data = JSON.parse(body);
+          } catch {
+            data = undefined;
+          }
+        }
+        const errorBody = GithubErrorBodySchema.safeParse(data);
+        errorMessage = errorBody.success ? errorBody.data.message : undefined;
       } catch (error) {
+        if (error instanceof ApiQuotaError) {
+          if (error.reason === "admission") {
+            await sleepWithAbort(error.retryAfterMs);
+            continue;
+          }
+          throw new GithubSourceError(
+            `API rate limited; retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds`,
+          );
+        }
         if (error instanceof GithubSourceError) {
           throw error;
         }
-        throw new GithubSourceError(
-          error instanceof ApiResponseReadError
-            ? error.kind === "timeout"
-              ? "API request timed out"
-              : "Could not release API response"
-            : "Request failed; check API access and connectivity",
-        );
-      }
-      const remaining = response.headers.get("x-ratelimit-remaining");
-      if (remaining !== null && Number.isFinite(Number(remaining))) {
-        this.status.stats.rateLimitRemaining = Number(remaining);
-      }
-      const retryAfter = parseRetryAfterHeaderSeconds(response.headers.get("retry-after"));
-      const resetHeader = response.headers.get("x-ratelimit-reset");
-      const resetDelay =
-        resetHeader === null ? 0 : Math.max(0, Number(resetHeader) * 1000 - Date.now());
-      const errorBody = z.object({ message: z.string() }).safeParse(data);
-      const limited =
-        response.status === 429 ||
-        (response.status === 403 &&
-          (remaining === "0" ||
-            retryAfter !== undefined ||
-            (errorBody.success &&
-              /(?:secondary )?rate limit|abuse detection/i.test(errorBody.data.message))));
-      if (limited) {
-        await sleepWithAbort(
-          Math.max(
-            1000,
-            (retryAfter ?? 0) * 1000,
-            Number.isFinite(resetDelay) ? resetDelay : 0,
-            retryAfter === undefined && remaining !== "0" ? 60_000 : 0,
-          ),
-        );
-        continue;
+        throw new GithubSourceError("Request failed; check API access and connectivity");
       }
       if (response.status >= 500 && failures < 3) {
         failures += 1;
@@ -144,8 +128,7 @@ export class GithubClient {
         if (
           response.status === 409 &&
           /^repos\/[^/]+\/[^/]+\/commits$/u.test(url.pathname.slice(this.base.pathname.length)) &&
-          errorBody.success &&
-          errorBody.data.message === "Git Repository is empty."
+          errorMessage === "Git Repository is empty."
         ) {
           return { data: [] };
         }

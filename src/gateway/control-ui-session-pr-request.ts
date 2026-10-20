@@ -1,3 +1,4 @@
+import { getSharedApiStore, type ApiRequestStore } from "../infra/http-api-quota.js";
 import { recordSessionPrDiagnostic } from "./control-ui-session-pr-diagnostics.js";
 import { gitHubPublicApi } from "./github-public-api.js";
 
@@ -31,6 +32,10 @@ export function createGitHubReadGroup() {
   return {
     signal: abort.signal,
     assertCurrent,
+    abort: () => {
+      readers.clear();
+      abort.abort(new Error("GitHub read owner closed"));
+    },
     add(assertReader: () => void, signal?: AbortSignal) {
       const reader = () => {
         signal?.throwIfAborted();
@@ -64,6 +69,9 @@ export function prepareSessionPullRequestGitHubRead(
     optionalAuth?: boolean;
     signal?: AbortSignal;
     credential?: SessionPullRequestReadCredential;
+    refresh?: boolean;
+    onRequest?: (url: string, store: ApiRequestStore) => void;
+    onResponse?: (url: string, store: ApiRequestStore, observation: number) => void;
   } = {},
 ) {
   const fetchRequest = fetch;
@@ -91,11 +99,23 @@ export function prepareSessionPullRequestGitHubRead(
     }
   };
   const identity = { assertSelected: assertCurrent, revalidate: async () => assertCurrent() };
+  const store = getSharedApiStore({
+    apiBaseUrl: selected.apiBaseUrl,
+    token: selected.token,
+    fetchImpl: fetchRequest,
+  });
+  let responseStore = store;
   return {
     ...selected,
     host,
     credential,
+    get store() {
+      return responseStore;
+    },
     assertCurrent,
+    refresh: options.refresh,
+    observeRequest: options.onRequest,
+    observeResponse: options.onResponse,
     async request(
       this: void,
       url: string,
@@ -110,6 +130,13 @@ export function prepareSessionPullRequestGitHubRead(
       const requestSignal =
         sourceSignals.length > 1 ? AbortSignal.any(sourceSignals) : sourceSignals[0];
       const readJson = async (token: string | undefined) => {
+        const requestStore = getSharedApiStore({
+          apiBaseUrl: selected.apiBaseUrl,
+          token,
+          fetchImpl: fetchRequest,
+        });
+        // Failed observations remain dependencies so another reader's recovery wakes this view.
+        options.onRequest?.(url, requestStore);
         recordSessionPrDiagnostic("github-fetch-started");
         const response = await gitHubPublicApi.fetchGitHubApi(
           url,
@@ -121,10 +148,13 @@ export function prepareSessionPullRequestGitHubRead(
           requestSignal,
           undefined,
           selected.apiBaseUrl,
+          { refresh: options.refresh },
         );
         recordSessionPrDiagnostic("github-fetch-returned");
         const value = await gitHubPublicApi.readGitHubJsonResponse(response, maxBytes);
         recordSessionPrDiagnostic("github-json-returned");
+        responseStore = requestStore;
+        options.onResponse?.(url, requestStore, requestStore.responses.observationOf(response));
         return value;
       };
       const value = optionalAuth

@@ -10,6 +10,11 @@ export const LINK_READER_BADGE_TONES = [
 ] as const;
 
 /** Passive link-reader models shared by plugins and the Control UI. */
+export const CONTROL_UI_LINK_READER_CHANGED_EVENT = "controlUi.linkReader.changed";
+
+/** Targeted invalidation for a resource this connection already read successfully. */
+export type ControlUiLinkReaderChanged = { url: string; agentId: string };
+
 export type ControlUiLinkReaderMetadata = ControlUiLinkReaderDescriptor["linkReader"];
 
 /** Scope-filtered descriptor advertised in hello.controlUiLinkReaders. */
