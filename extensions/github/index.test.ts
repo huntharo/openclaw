@@ -249,6 +249,7 @@ it.each([undefined, "overview", "checks", "files", "discussion"])(
     });
     expect(dispatchGatewayMethod).toHaveBeenCalledExactlyOnceWith("controlUi.githubDetail", {
       ...pullTarget,
+      readerUrl: url,
       agentId: "selected-agent",
       refresh: true,
       ...(section ? { section } : {}),
@@ -310,10 +311,10 @@ it.each([
     },
     meta,
   );
-  expect(dispatchGatewayMethod).toHaveBeenCalledExactlyOnceWith(
-    "controlUi.githubPreview",
-    pullTarget,
-  );
+  expect(dispatchGatewayMethod).toHaveBeenCalledExactlyOnceWith("controlUi.githubPreview", {
+    ...pullTarget,
+    readerUrl: pullUrl,
+  });
   expect(respond.mock.calls[0]?.[1]).not.toHaveProperty("kind");
   expect(fetchMock).not.toHaveBeenCalled();
 });

@@ -296,6 +296,7 @@ describe("loadControlUiSessionPullRequests", () => {
     expect(result.pullRequests[0]?.number).toBe(103469);
     expect(result.pullRequests[0]?.checks).toBeUndefined();
     expect(result.rateLimited).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it.each([

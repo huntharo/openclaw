@@ -98,7 +98,7 @@ function observeSharedReadAdmission() {
   vi.spyOn(lazyPromise, "getOrCreatePromise").mockImplementation((cache, key, create, options) => {
     const pending = cache.get(key);
     const shared = getOrCreatePromise(cache, key, create, options);
-    // Credential verification precedes filesystem awaits; wait for actual singleflight admission.
+    // Wait for the caller to join existing work before changing its authority.
     if (pending === shared) {
       joined.resolve();
     }
@@ -564,7 +564,7 @@ describe("board authenticated GitHub Actions", () => {
     });
     const freshGateway = await reader();
     await freshGateway.read();
-    expect(actionCalls()).toHaveLength(4);
+    expect(actionCalls()).toHaveLength(3);
   });
 
   it.for(["success", "failure"] as const)(

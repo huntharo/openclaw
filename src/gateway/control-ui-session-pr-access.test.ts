@@ -814,7 +814,7 @@ it("keeps warm default-loader SQL constant as readers join without a native row 
   });
 });
 
-it("drops cached subscription hydration after physical database replacement", async () => {
+it("revalidates a replaced source before reusing shared GitHub facts", async () => {
   let rateLimited = false;
   const provider = vi.fn<typeof fetch>(async (input) => {
     const url = new URL(requestUrl(input));
@@ -849,12 +849,12 @@ it("drops cached subscription hydration after physical database replacement", as
       {
         payload: {
           sessions: {
-            [sessionKey]: { pullRequests: [], rateLimited: true, status: "rate-limited" },
+            [sessionKey]: { pullRequests: [{ number: 300 }], rateLimited: false, status: "ready" },
           },
         },
       },
     ]);
-    expect(provider).toHaveBeenCalledTimes(requestsBeforeReplacement + 1);
+    expect(provider).toHaveBeenCalledTimes(requestsBeforeReplacement);
   });
 });
 

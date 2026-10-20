@@ -22,6 +22,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { ApiRequestQuota } from "../infra/http-api-quota.js";
 import type { GitHubPublicationRequesterSnapshot } from "../state/github-publication-requester.js";
 import { insertGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.worker.js";
 import {
@@ -37,6 +38,8 @@ import {
 } from "../state/openclaw-state-db.js";
 import { ensureCanonicalUserProfileForEmail } from "../state/user-profile-writes.js";
 import { currentGitHubPublicationConfig } from "./github-publication-availability.js";
+import { commandResult } from "./github-publication-command.test-support.js";
+export { commandResult } from "./github-publication-command.test-support.js";
 import {
   prepareGitHubPublicationRequesterV2,
   type GitHubPublicationRequesterV2,
@@ -152,7 +155,9 @@ vi.mock("./session-utils-store-worker.js", async (importOriginal) => {
 
 vi.mock("../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/exec.js")>()),
-  runCommandBuffered: mocks.runCommand,
+  runCommandBuffered: (
+    await import("./github-publication-command.test-support.js")
+  ).createPublicationCommandMock(mocks.runCommand),
 }));
 
 vi.mock("../secrets/runtime-state.js", () => ({
@@ -291,16 +296,6 @@ export function publicationRequest(
   > = {},
 ) {
   return { sessionKey: SESSION_KEY, agentId: "main", idempotencyKey, ...overrides };
-}
-
-export function commandResult(stdout = "", code = 0) {
-  return {
-    code,
-    signal: null,
-    killed: false,
-    stdout: Buffer.from(stdout),
-    stderr: Buffer.alloc(0),
-  };
 }
 
 export function seedLocalPublication(
@@ -508,6 +503,10 @@ export function installGitHubPublicationTestHarness(
     }),
   );
   beforeEach(async () => {
+    // Receipt tests use synthetic API dispatches while preserving real lease time.
+    // Admission and cooldown behavior are exercised by the transport suite.
+    const admission = vi.spyOn(ApiRequestQuota.prototype, "admit").mockReturnValue(() => {});
+    onTestFinished(() => admission.mockRestore());
     mocks.persistedSessionKeys.clear();
     for (const mock of Object.values(mocks)) {
       if (vi.isMockFunction(mock)) {
@@ -579,7 +578,7 @@ export function installGitHubPublicationTestHarness(
       account: { accountId: 42, login: "roboclaw-bot", avatarUrl: null },
       env: {
         GH_CONFIG_DIR: "/private/github-profile",
-        GH_TOKEN: undefined,
+        GH_TOKEN: "synthetic-publication-" + randomUUID(),
         GITHUB_TOKEN: undefined,
       },
     });

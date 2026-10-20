@@ -65,7 +65,11 @@ function connect(
   provider: LinkReaderHovercardProvider,
   request = vi.fn().mockResolvedValue(preview()),
 ) {
-  provider.client = { request, connected: true } as unknown as GatewayBrowserClient;
+  provider.client = {
+    addEventListener: () => () => {},
+    request,
+    connected: true,
+  } as unknown as GatewayBrowserClient;
   return request;
 }
 function card() {

@@ -29,6 +29,14 @@ const mocks = githubPublicationTestMocks();
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
 
+function requestEndpoint(argv: string[]) {
+  const endpoint = argv.find((arg) => arg.startsWith("repos/") || arg.startsWith("user/"));
+  if (!endpoint) {
+    throw new Error("Missing fixture GitHub API endpoint");
+  }
+  return endpoint;
+}
+
 async function fixture(
   options: { linked?: boolean; host?: string; repository?: string; login?: string } = {},
 ) {
@@ -56,7 +64,10 @@ async function fixture(
   mocks.prepareIdentity.mockResolvedValue({
     source: "system-detected",
     host,
-    env: {},
+    env: {
+      GH_TOKEN: "synthetic-inspection-token",
+      GH_ENTERPRISE_TOKEN: "synthetic-inspection-token",
+    },
     account: { accountId: 42, login: "publisher" },
   });
   const baseRepo = {
@@ -88,7 +99,7 @@ async function fixture(
     if (argv[0] !== "gh" || !argv.includes("GET")) {
       throw new Error("Inspection attempted a non-read command");
     }
-    const endpoint = argv.at(-1)!;
+    const endpoint = requestEndpoint(argv);
     await beforeRead?.(endpoint);
     const value =
       endpoint === `repos/${baseRepo.full_name}`
@@ -192,7 +203,7 @@ describe("own PR inspection through the admitted agent tool and Gateway", () => 
       expect(loadSessionEntryReadOnly({ agentId: "main", sessionKey: SESSION_KEY })).toEqual(
         before,
       );
-      expect(f.requests.map((args) => args.at(-1))).toEqual([
+      expect(f.requests.map((args) => requestEndpoint(args))).toEqual([
         "repos/example/repository",
         "repos/example/repository/pulls/7",
         ...(variant === "fork" ? ["repos/contributor/repository"] : []),
@@ -223,7 +234,9 @@ describe("own PR inspection through the admitted agent tool and Gateway", () => 
     if (variant === "unlinked") {
       expect(f.requests).toEqual([]);
     }
-    expect(f.requests.some((args) => args.at(-1) === "repos/contributor/repository")).toBe(false);
+    expect(
+      f.requests.some((args) => requestEndpoint(args) === "repos/contributor/repository"),
+    ).toBe(false);
   });
 
   it.each(["role", "linked identity", "publisher", "session"])(
@@ -254,7 +267,9 @@ describe("own PR inspection through the admitted agent tool and Gateway", () => 
       });
       await expect(f.invoke()).rejects.toThrow();
       expect(entered).toBe(true);
-      expect(f.requests.some((args) => args.at(-1) === "repos/contributor/repository")).toBe(false);
+      expect(
+        f.requests.some((args) => requestEndpoint(args) === "repos/contributor/repository"),
+      ).toBe(false);
     },
   );
 
@@ -266,13 +281,13 @@ describe("own PR inspection through the admitted agent tool and Gateway", () => 
       f.setAccess(permission === "none" ? "none" : "read", permission === "wrong id" ? 999 : 101);
       if (permission === "read") {
         expect(await f.invoke()).toMatchObject({ author: { accountId: 101 } });
-        const endpoints = f.requests.map((args) => args.at(-1)!);
+        const endpoints = f.requests.map((args) => requestEndpoint(args));
         expect(
           endpoints.indexOf("repos/example/repository/collaborators/contributor/permission"),
         ).toBeLessThan(endpoints.indexOf("repos/example/repository/pulls/7"));
       } else {
         await expect(f.invoke()).rejects.toThrow("could not be verified as yours");
-        expect(f.requests.some((args) => args.at(-1)?.endsWith("/pulls/7"))).toBe(false);
+        expect(f.requests.some((args) => requestEndpoint(args).endsWith("/pulls/7"))).toBe(false);
       }
     },
   );
@@ -301,7 +316,7 @@ describe("own PR inspection through the admitted agent tool and Gateway", () => 
     async (host) => {
       const f = await fixture({ host });
       const canonical = await f.invoke();
-      const endpoints = f.requests.map((args) => args.at(-1));
+      const endpoints = f.requests.map((args) => requestEndpoint(args));
       for (const suffix of [
         "/",
         "?diff=unified&w=1",
@@ -316,7 +331,7 @@ describe("own PR inspection through the admitted agent tool and Gateway", () => 
       ]) {
         f.requests.length = 0;
         expect(await f.invoke({ pullRequestUrl: f.pr.html_url + suffix })).toEqual(canonical);
-        expect(f.requests.map((args) => args.at(-1))).toEqual(endpoints);
+        expect(f.requests.map((args) => requestEndpoint(args))).toEqual(endpoints);
       }
     },
   );
@@ -340,7 +355,8 @@ describe("own PR inspection through the admitted agent tool and Gateway", () => 
       expect(
         f.requests.some(
           (args) =>
-            args.at(-1) === "repos/mona-cat_octo/.repo.._/collaborators/mona-cat_octo/permission",
+            requestEndpoint(args) ===
+            "repos/mona-cat_octo/.repo.._/collaborators/mona-cat_octo/permission",
         ),
       ).toBe(true);
     },

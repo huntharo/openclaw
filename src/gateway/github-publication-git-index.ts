@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { hasErrnoCode, isErrno } from "../infra/errno.js";
 import { gitNullConfigPath } from "../infra/git-exec.js";
+import { invalidateGitReads } from "../infra/git-read-cache.js";
 import { statIfExists } from "../infra/path-existence.js";
 import { assertionSucceeds } from "../shared/assertion.js";
 import { GitHubPublicationWorkspaceChangedError } from "./github-publication-failure.js";
@@ -137,6 +138,7 @@ export async function recoverGitHubPublicationBranchAndIndex(params: {
     );
   }
   await mutate(async () => await fs.rename(lockPath, indexPath));
+  invalidateGitReads(params.cwd);
   await mutate(async () => await syncDirectory(path.dirname(indexPath)));
   await mutate(async () => await fs.rm(recoveryPath, { force: true }));
 }
@@ -195,6 +197,7 @@ export async function updateGitHubPublicationBranchAndIndex(params: {
       await fs.rename(lockPath, indexPath);
       ownsLock = false;
       installed = true;
+      invalidateGitReads(params.cwd);
       params.assertCustody();
       await syncDirectory(path.dirname(indexPath));
       params.assertCustody();

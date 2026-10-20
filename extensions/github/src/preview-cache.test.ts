@@ -1,6 +1,7 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as githubApi from "./github-api.js";
 import { loadControlUiGitHubPreview as loadPreview } from "./preview.js";
 import {
   avatarDataUrl,
@@ -120,6 +121,10 @@ describe("GitHub preview decoration cache", () => {
   );
 
   it("retries failed avatars and evicts the oldest of 200 retained images", async () => {
+    // This fixture exercises anonymous avatar retention; API admission has its own owner tests.
+    vi.spyOn(githubApi, "fetchGitHubApi").mockImplementation(async (url, fetchImpl) =>
+      fetchImpl(url),
+    );
     let avatarReads = 0;
     const fetchMock = previewFetch(async (rawUrl) => {
       const url = new URL(rawUrl);
@@ -200,7 +205,8 @@ describe("GitHub preview decoration cache", () => {
           : {}),
       });
       expect(avatars).toHaveLength(2 * coldReads);
-      expect(f.itemHeaders.length + f.commitsHeaders.length).toBe(kind === "pull" ? 14 : 7);
+      // The simultaneous refreshes share one metadata observation.
+      expect(f.itemHeaders.length + f.commitsHeaders.length).toBe(kind === "pull" ? 12 : 6);
     },
   );
 

@@ -1,10 +1,7 @@
-import type {
-  ControlUiLinkReaderDescriptor,
-  ControlUiLinkReaderPreview,
-} from "../../../src/shared/control-ui-link-reader.js";
-import type { GatewayBrowserClient } from "../api/gateway.ts";
+import type { ControlUiLinkReaderDescriptor } from "../../../src/shared/control-ui-link-reader.js";
 import { registerLinkReaderEnglish } from "../i18n/locales/en-link-reader.ts";
 import { clearLinkPreviews, loadLinkPreview } from "../lib/link-preview.ts";
+import { linkReaderChangeScope, subscribeLinkReaderChanges } from "../lib/link-reader-changes.ts";
 import { anchorFromNavigationEvent, composedParent } from "../lib/navigation-click.ts";
 import { listen } from "../lib/reactive/listener.ts";
 import "../styles/link-reader-hovercard.css";
@@ -26,6 +23,7 @@ import {
 } from "./link-reader-preview.tsx";
 import {
   LINK_READER_METADATA_UPDATED_EVENT,
+  linkReaderResponseMatchesTarget,
   type LinkReaderMetadataUpdate,
 } from "./link-reader-response.ts";
 import {
@@ -52,6 +50,32 @@ export class HovercardOwner {
   private stopGateway?: () => void;
   private stopConfig?: () => void;
   private stopListeners?: () => void;
+  private changeScope: ReturnType<typeof linkReaderChangeScope> = null;
+  private stopChanges?: () => void;
+
+  private syncChanges(): void {
+    const scope =
+      this.connected && this.host.readers.length ? linkReaderChangeScope(this.host.client) : null;
+    if (scope === this.changeScope) {
+      return;
+    }
+    this.stopChanges?.();
+    this.changeScope = scope;
+    this.stopChanges = scope
+      ? subscribeLinkReaderChanges(
+          scope.client,
+          () => this.host.agentId,
+          ({ url }) => {
+            this.syncPreviewContext();
+            this.previews.invalidate(url);
+            if (this.activeTarget && linkReaderResponseMatchesTarget(this.activeTarget, url)) {
+              this.previewRequest?.controller.abort();
+              void this.requestPreview(this.activeTarget);
+            }
+          },
+        )
+      : undefined;
+  }
 
   constructor(
     private readonly host: LinkReaderHovercardProvider,
@@ -66,13 +90,7 @@ export class HovercardOwner {
 
   propertyChanged(key: keyof HovercardProperties): void {
     if (key === "previewSeeds") {
-      this.seeds = {
-        client: this.host.client,
-        agentId: this.host.agentId,
-        sessionKey: this.host.sessionKey,
-        recoveryScope: this.host.client?.recoveryScope,
-        previews: this.host.previewSeeds,
-      };
+      this.previews.seed(this.host.previewSeeds);
     } else if (key === "pagePreviewContext") {
       this.watchPageContext();
     } else if (key === "claimedReaders") {
@@ -132,39 +150,13 @@ export class HovercardOwner {
     syncConfig();
   }
 
-  private seeds: {
-    client: GatewayBrowserClient | null;
-    agentId: string | undefined;
-    sessionKey: string | undefined;
-    recoveryScope: string | undefined;
-    previews: readonly ControlUiLinkReaderPreview[];
-  } | null = null;
-
-  private seedPreview(target: LinkReaderTarget): LinkPreview | undefined {
-    const seeds = this.seeds;
-    if (
-      !seeds ||
-      seeds.client !== this.host.client ||
-      seeds.agentId !== this.host.agentId ||
-      seeds.sessionKey !== this.host.sessionKey ||
-      seeds.recoveryScope !== this.host.client?.recoveryScope
-    ) {
-      return undefined;
-    }
-    const seed = seeds.previews.find((preview) => {
-      const seedTarget = resolveLinkReaderTarget(preview.url, [target.reader]);
-      return seedTarget && linkReaderTargetKey(seedTarget) === linkReaderTargetKey(target);
-    });
-    return seed ? { ...seed, ...target } : undefined;
-  }
-
   private readonly previews: LinkReaderPreviewCache;
   private previewContext: PreviewContext | null = null;
   private allowLoading = false;
   private requestStarted = false;
 
   private invalidatePreviewContext(): void {
-    this.seeds = null;
+    this.previews.clearSeeds();
     this.previewContext = null;
     this.close();
     this.clearPreviews();
@@ -340,6 +332,7 @@ export class HovercardOwner {
       attributeFilter: ["href"],
     });
     this.watchPageContext();
+    this.syncChanges();
     // Restore focus intent after the bridge finishes adopting its caller's nodes.
     queueMicrotask(() => {
       const root = this.host.getRootNode();
@@ -353,6 +346,7 @@ export class HovercardOwner {
 
   disconnect(): void {
     this.connected = false;
+    this.syncChanges();
     this.stopListeners?.();
     this.stopListeners = undefined;
     this.inlineObserver.disconnect();
@@ -363,6 +357,7 @@ export class HovercardOwner {
   }
 
   private update(): void {
+    this.syncChanges();
     const context = this.syncPreviewContext();
     this.syncInlineStates();
     if (this.page) {
@@ -392,7 +387,7 @@ export class HovercardOwner {
       return;
     }
     if (request?.state === "pending") {
-      const seed = request.preview ?? this.seedPreview(target);
+      const seed = request.preview ?? this.previews.seedPreview(target);
       if (this.hovercard.held) {
         if (seed) {
           this.show(anchor, seed, true);
@@ -405,7 +400,7 @@ export class HovercardOwner {
         this.show(anchor, request.preview);
       }
     } else if (request?.state === "error" && (this.hovercard.card || this.hovercard.held)) {
-      this.show(anchor, request.preview ?? this.seedPreview(target), true, () =>
+      this.show(anchor, request.preview ?? this.previews.seedPreview(target), true, () =>
         linkReaderErrorMessage(request.error),
       );
     }
@@ -547,7 +542,7 @@ export class HovercardOwner {
           return;
         }
         this.requestStarted = true;
-        const seed = this.seedPreview(target);
+        const seed = this.previews.seedPreview(target);
         if (seed) {
           this.show(anchor, seed, true);
         }

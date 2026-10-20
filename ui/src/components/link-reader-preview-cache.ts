@@ -1,6 +1,6 @@
 import { pruneMapToMaxSize } from "../../../src/infra/map-size.ts";
 import type { ControlUiLinkReaderPreview } from "../../../src/shared/control-ui-link-reader.js";
-import { GatewayRequestError } from "../api/gateway.ts";
+import { GatewayRequestError, type GatewayBrowserClient } from "../api/gateway.ts";
 import { subscribeToSharedRequest } from "../lib/shared-request-subscription.ts";
 import type { HovercardProperties } from "./link-reader-hovercard.types.ts";
 import {
@@ -9,9 +9,14 @@ import {
   previewContextFor,
   requestReaderPreview,
   type CacheEntry,
+  type LinkPreview,
   type PreviewContext,
 } from "./link-reader-preview.tsx";
-import { linkReaderTargetKey, type LinkReaderTarget } from "./link-reader-target.ts";
+import {
+  resolveLinkReaderTarget,
+  linkReaderTargetKey,
+  type LinkReaderTarget,
+} from "./link-reader-target.ts";
 
 const SUCCESS_CACHE_MS = 5 * 60_000;
 const FAILURE_CACHE_MS = 30_000;
@@ -30,11 +35,64 @@ export class LinkReaderPreviewCache {
     private readonly onChange: () => void,
   ) {}
 
+  private seeds: {
+    client: GatewayBrowserClient | null;
+    agentId: string | undefined;
+    sessionKey: string | undefined;
+    recoveryScope: string | undefined;
+    previews: readonly ControlUiLinkReaderPreview[];
+  } | null = null;
+
+  seedPreview(target: LinkReaderTarget): LinkPreview | undefined {
+    const seeds = this.seeds;
+    if (
+      !seeds ||
+      seeds.client !== this.host.client ||
+      seeds.agentId !== this.host.agentId ||
+      seeds.sessionKey !== this.host.sessionKey ||
+      seeds.recoveryScope !== this.host.client?.recoveryScope
+    ) {
+      return undefined;
+    }
+    const seed = seeds.previews.find((preview) => {
+      const seedTarget = resolveLinkReaderTarget(preview.url, [target.reader]);
+      return seedTarget && linkReaderTargetKey(seedTarget) === linkReaderTargetKey(target);
+    });
+    return seed ? { ...seed, ...target } : undefined;
+  }
+
+  seed(previews: readonly ControlUiLinkReaderPreview[]): void {
+    this.seeds = {
+      client: this.host.client,
+      agentId: this.host.agentId,
+      sessionKey: this.host.sessionKey,
+      recoveryScope: this.host.client?.recoveryScope,
+      previews,
+    };
+  }
+
+  clearSeeds(): void {
+    this.seeds = null;
+  }
+
   clear(): void {
     for (const entry of this.entries.values()) {
       entry.controller.abort();
     }
     this.entries.clear();
+  }
+
+  invalidate(url: string): void {
+    for (const reader of this.host.readers) {
+      const target = resolveLinkReaderTarget(url, [reader]);
+      if (!target) {
+        continue;
+      }
+      const key = linkReaderTargetKey(target);
+      this.entries.get(key)?.controller.abort();
+      this.entries.delete(key);
+    }
+    this.onChange();
   }
 
   syncGeneration(): void {

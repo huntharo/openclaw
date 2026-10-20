@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { subscribeGitReadChanges } from "../infra/git-read-cache.js";
 import { runCommandBuffered } from "../process/exec.js";
 import {
   createOpenClawTestState,
@@ -251,6 +252,8 @@ describe("GitHub publication index update", () => {
   });
 
   it("settles the accepted branch and index after publication authority ends", async () => {
+    const changed = vi.fn();
+    onTestFinished(subscribeGitReadChanges(changed));
     let current = true;
     await f.update({
       assertCurrent: () => {
@@ -264,6 +267,7 @@ describe("GitHub publication index update", () => {
       },
     });
 
+    expect(changed).toHaveBeenCalledExactlyOnceWith({ root: f.cwd, type: "invalidated" });
     expect(await f.state()).toEqual({
       head: f.headCommit,
       tree: f.workspaceTree,

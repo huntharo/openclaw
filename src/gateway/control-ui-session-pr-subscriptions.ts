@@ -1,12 +1,7 @@
 import pLimit from "p-limit";
 import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
-import {
-  sessionChanges,
-  sessionChangeScopeAffectsStoredRows,
-} from "../sessions/session-row-changes.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
-import { githubPublicationReceipts } from "../state/github-publication-receipts.js";
 import type {
   ControlUiSessionPullRequestSnapshot,
   ControlUiSessionPullRequestsChanged,
@@ -28,6 +23,7 @@ import type {
   ControlUiSessionPrTarget,
 } from "./control-ui-session-pr-read.js";
 import { withControlUiSessionPrSource } from "./control-ui-session-pr-source.js";
+import { createSessionPrStoreNotifications } from "./control-ui-session-pr-store-notifications.js";
 import type { ControlUiSessionPullRequestsParams } from "./control-ui-session-prs.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
@@ -320,6 +316,7 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
                 target: state.target,
                 sourceIdentity,
                 branchSnapshot: state.branchSnapshot,
+                onTaskMetadataRead: notifications.beginTaskRead(state),
                 onBranchRead: (branch) => {
                   assertReadCurrent();
                   prepared.publishBranchSnapshot(state.target, pushedSnapshot(branch));
@@ -432,6 +429,13 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
       }
     });
   };
+  const notifications = createSessionPrStoreNotifications({
+    states: keyStates,
+    scope,
+    pending: (key) => inflight.get(key)?.promise,
+    reload: (key) => loadSnapshot(key),
+    reconcile: currentKeyState,
+  });
 
   const schedulePoll = () => {
     if (scope.isClosing || pollJob || subscriptions.size === 0) {
@@ -460,71 +464,11 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
           );
         }
       }
-      await Promise.all([Promise.allSettled(replacements), prepared.settle(), ...loads]);
+      await notifications.settle([Promise.allSettled(replacements), prepared.settle(), ...loads]);
       // Revalidation can migrate an audience to a new cell during this pass.
       await Promise.allSettled(replacements);
     });
   };
-
-  const stopLineage = sessionChanges.subscribeFacts((change) => {
-    const ownAuthorityChanged =
-      "all" in change &&
-      (change.scope === "profiles" ||
-        change.scope === "config" ||
-        change.scope === "config-profiles");
-    if (
-      keyStates.size === 0 ||
-      (!ownAuthorityChanged && !sessionChangeScopeAffectsStoredRows(change)) ||
-      ("facts" in change && change.facts?.kind === "unchanged")
-    ) {
-      return;
-    }
-    // One notification owns the concurrent reads; each watcher still authorizes its audience.
-    const keys: string[] = [];
-    for (const [key, state] of keyStates) {
-      // A removed root may be immediately replaced under the same key. The next
-      // entry notification (or normal poll) reconciles that watch after replacement.
-      const removedRoot =
-        "sessionKey" in change &&
-        change.sessionKey === state.target.params.sessionKey &&
-        change.facts?.kind === "removed";
-      if (
-        !removedRoot &&
-        (!ownAuthorityChanged || state.target.ownGitHubProfileId) &&
-        (state.target.taskReceipts || state.target.ownGitHubProfileId) &&
-        state.connIds.size
-      ) {
-        keys.push(key);
-      }
-    }
-    if (keys.length > 0) {
-      void scope.track(() => Promise.allSettled(keys.map(currentKeyState))).catch(() => {});
-    }
-  });
-
-  const stopReceipts = githubPublicationReceipts.subscribeFacts((change) => {
-    if (change.kind !== "committed" && change.kind !== "unknown") {
-      return;
-    }
-    // Commit events refresh the existing watched union; no child poller is created.
-    for (const [key, state] of keyStates) {
-      if (!state.target.taskReceipts) {
-        continue;
-      }
-      state.snapshot = undefined;
-      if (state.prepared) {
-        sessionChanges.emit({ ...state.target.params, scope: "runtime" });
-      }
-      if (state.connIds.size) {
-        void scope
-          .track(async () => {
-            await inflight.get(key)?.promise;
-            await loadSnapshot(key);
-          })
-          .catch(() => {});
-      }
-    }
-  });
 
   const replace = (
     connId: string,
@@ -701,7 +645,7 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
       }
     };
     void replacement.then(releaseReplacement, releaseReplacement);
-    return replacement;
+    return replacement.then(() => notifications.settle());
   };
 
   const unsubscribe = (connId: string) => {
@@ -725,8 +669,7 @@ export function createControlUiSessionPullRequestSubscriptions(deps: Subscriptio
     scope.beginClose();
     scheduler.beginClose();
     prepared.stop();
-    stopReceipts();
-    stopLineage();
+    notifications.stop();
     subscriptions.clear();
     replacementGenerations.clear();
     replacements.clear();
