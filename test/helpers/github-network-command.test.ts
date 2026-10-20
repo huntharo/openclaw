@@ -1,5 +1,5 @@
 import { execFile, execFileSync, execSync, spawnSync } from "node:child_process";
-import { chmodSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -10,6 +10,39 @@ import { useAutoCleanupTempDirTracker } from "./temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const forbidden = "GitHub network access is forbidden in ordinary tests";
+
+it.skipIf(process.platform === "win32")(
+  "keeps literal Bash array entries as data while inspecting substitutions",
+  () => {
+    const run = (source: string) =>
+      execFileSync("/bin/bash", ["-c", source], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    expect(
+      run(
+        'path=local-data; components=(scripts/pr scripts/pr-lib); printf "%s" "${#components[@]}"',
+      ),
+    ).toBe("2");
+    expect(() =>
+      negativeControl(() => run("components=($(curl https://api.github.com/negative-control))")),
+    ).toThrow(forbidden);
+  },
+);
+
+it
+  .skipIf(process.platform === "win32" || !existsSync("/bin/zsh"))
+  .each(["command", "script", "sourced script"])(
+  "blocks Zsh path array replacement through %s",
+  (entry) => {
+    const file = join(tempDirs.make("github-zsh-path-"), "probe.zsh");
+    const source = "path=(/usr/bin /bin); true";
+    writeFileSync(file, source);
+    const args =
+      entry === "command" ? ["-c", source] : entry === "script" ? [file] : ["-c", `. '${file}'`];
+    expect(() => negativeControl(() => execFileSync("/bin/zsh", args))).toThrow(forbidden);
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "allows native loopback curl and refuses redirects before dispatch",

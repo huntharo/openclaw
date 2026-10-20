@@ -13,7 +13,9 @@ const controls = new WeakMap();
 
 /** Each expected URL consumes one control in this dedicated browser context. */
 export async function withGitHubBrowserNegativeControls(context, urls, action) {
-  if (controls.has(context)) throw new Error("Browser controls already active for this context");
+  if (controls.has(context)) {
+    throw new Error("Browser controls already active for this context");
+  }
   const expected = new Map(
     urls.map((url) => [
       url,
@@ -35,14 +37,18 @@ function record(context, url, transport) {
   const control = expected?.get(url);
   expected?.delete(url);
   try {
-    if (control) control(transport);
-    else blockGitHubTestCommand(transport);
+    if (control) {
+      control(transport);
+    } else {
+      blockGitHubTestCommand(transport);
+    }
   } catch (error) {
     if (
       !(error instanceof Error) ||
       !error.message.startsWith("GitHub network access is forbidden")
-    )
+    ) {
       throw error;
+    }
   }
 }
 
@@ -108,7 +114,9 @@ async function guardContext(context) {
       };
       // Fulfilled mock routes never dispatch, so only refused requests count.
       context.on("requestfailed", (request) => {
-        if (request.failure()?.errorText === "net::ERR_NAME_NOT_RESOLVED") recordRequest(request);
+        if (request.failure()?.errorText === "net::ERR_NAME_NOT_RESOLVED") {
+          recordRequest(request);
+        }
       });
       await context.route(
         (url) => isGitHubTestHost(url.hostname),
@@ -132,7 +140,9 @@ async function guardContext(context) {
 }
 
 function guardBrowser(browser) {
-  if (browsers.has(browser)) return browser;
+  if (browsers.has(browser)) {
+    return browser;
+  }
   browsers.add(browser);
   const newContext = browser.newContext.bind(browser);
   browser.newContext = async (options) => {
@@ -160,14 +170,25 @@ function guardBrowser(browser) {
 
 /** Public Playwright launch APIs are shared by Node UI tests and Vitest's provider. */
 export function installGitHubChromiumGuard(chromium) {
-  if (chromium[installed]) return;
+  if (chromium[installed]) {
+    return;
+  }
   const launch = chromium.launch.bind(chromium);
   chromium.launch = async (options) => guardBrowser(await launch(launchOptions(options)));
   const persistent = chromium.launchPersistentContext.bind(chromium);
   chromium.launchPersistentContext = async (directory, options) => {
     // The caller must navigate after the context has its reporting routes. Resolver
     // blocking alone cannot attribute requests made by an initial app document.
-    if (options?.args?.some((arg) => arg.startsWith("--app=") && arg !== "--app=about:blank")) {
+    // Empty data HTML creates a real app window; Chromium treats about:blank as
+    // an ordinary browser window. Neither inert document can dispatch requests.
+    if (
+      options?.args?.some(
+        (arg) =>
+          arg.startsWith("--app=") &&
+          arg !== "--app=about:blank" &&
+          arg !== "--app=data:text/html,",
+      )
+    ) {
       blockGitHubTestCommand("unresolved-browser-startup");
     }
     const context = await persistent(directory, launchOptions(options));

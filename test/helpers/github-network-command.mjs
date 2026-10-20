@@ -66,6 +66,7 @@ export function readTestShellSource(command, args, options, resolveExecutable, b
     .replace(/^-/u, "");
   const shells = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
   const powershell = ["powershell", "pwsh"].includes(name);
+  const zsh = name === "zsh";
   if (shells.has(name) && String(options.argv0 ?? command).startsWith("-")) {
     block("unresolved-shell-startup");
   }
@@ -92,14 +93,14 @@ export function readTestShellSource(command, args, options, resolveExecutable, b
         if (args[index + 1] === "-") {
           break;
         }
-        return { source: args.slice(index + 1).join(" "), powershell };
+        return { source: args.slice(index + 1).join(" "), powershell, zsh };
       }
       if (["-file", "-f"].includes(arg)) {
         file = args[index + 1];
         break;
       }
       if (["-help", "-?"].includes(arg) || (name === "pwsh" && ["-version", "-v"].includes(arg))) {
-        return { source: "", powershell };
+        return { source: "", powershell, zsh };
       }
       if (["-noninteractive", "-nologo", "-sta", "-mta"].includes(arg)) {
         continue;
@@ -137,10 +138,10 @@ export function readTestShellSource(command, args, options, resolveExecutable, b
         block("unresolved-shell-startup");
       }
       if (/^-[^-]*c/u.test(args[index])) {
-        return { source: args[index + 1] ?? "", powershell };
+        return { source: args[index + 1] ?? "", powershell, zsh };
       }
       if (["--version", "--help"].includes(args[index])) {
-        return { source: "", powershell };
+        return { source: "", powershell, zsh };
       }
       if (args[index] === "--") {
         file = args[index + 1];
@@ -157,7 +158,7 @@ export function readTestShellSource(command, args, options, resolveExecutable, b
   if (powershell || shells.has(name)) {
     if (!file || file === "-") {
       if (typeof options.input === "string" || Buffer.isBuffer(options.input)) {
-        return { source: String(options.input), powershell };
+        return { source: String(options.input), powershell, zsh };
       }
       block("unresolved-shell-input");
     }
@@ -225,7 +226,7 @@ export function readTestShellSource(command, args, options, resolveExecutable, b
   if (source.includes("\0")) {
     block("unresolved-shell-encoding");
   }
-  return { source, powershell, cmd: batch };
+  return { source, powershell, zsh, cmd: batch };
 }
 
 /** Inspect literal delegation without executing or rewriting the shell program. */
@@ -233,7 +234,7 @@ export function inspectTestShellSource(script, options, resolveExecutable, check
   const active = new Set();
   let sourceBytes = 0;
   const visit = (current, depth, scopedOptions = options) => {
-    const key = `${current.powershell}:${current.cmd ?? false}:${current.source}`;
+    const key = `${current.powershell}:${current.cmd ?? false}:${current.zsh ?? false}:${current.source}`;
     if (active.has(key)) {
       block("unresolved-shell-delegation");
     }
@@ -245,8 +246,14 @@ export function inspectTestShellSource(script, options, resolveExecutable, check
     const source = current.source.replace(/^\s*#[^\r\n]*/gmu, "");
     // Appending to PATH preserves shim precedence. Other shell-side lookup changes
     // need a fixture with an explicit child environment so the launcher can guard it.
+    // Zsh ties its lowercase path array to PATH; Bash lowercase variables are unrelated.
     const assignments = source.matchAll(
-      /(?:^|[\s;|&"'])(?:\$env:)?PATH(?:\[[^\]]+\])?\s*\+?=("(?:\\.|[^"\\])*"|'[^']*'|[^\s;|&]*)/giu,
+      new RegExp(
+        /(?:^|[\s;|&"'])(?:\$env:)?PATH(?:\[[^\]]+\])?\s*\+?=("(?:\\.|[^"\\])*"|'[^']*'|[^\s;|&]*)/u,
+        process.platform === "win32" || current.cmd || current.powershell || current.zsh
+          ? "giu"
+          : "gu",
+      ),
     );
     for (const assignment of assignments) {
       if (
@@ -288,6 +295,13 @@ export function inspectTestShellSource(script, options, resolveExecutable, check
         lookup(powershell ?? braced ?? plain ?? cmd) ?? original,
     );
     const matches = [...expanded.matchAll(/(?:\\.|"[^"]*"|'[^']*'|[^\s;&|()"'\\])+/gu)];
+    // Literal Bash array entries are inventory data, not delegated commands.
+    // Leave substitutions and nested parentheses to normal command inspection.
+    const literalArrays = [
+      ...expanded.matchAll(
+        /\b[A-Za-z_]\w*=\((?:[^()$`"'\\]|"(?:\\.|[^"\\$`])*"|'[^']*'|\\[^$`])*\)/gu,
+      ),
+    ];
     const tokens = matches.map((match) =>
       match[0].replace(/\\(.)|"([^"]*)"|'([^']*)'/gu, (fragment, escaped, double, single) =>
         escaped === undefined
@@ -327,9 +341,14 @@ export function inspectTestShellSource(script, options, resolveExecutable, check
         assignmentPrefix = false;
       }
       const boundary =
-        separated ||
-        assignmentPrefix ||
-        ["exec", "command", "builtin", "then", "do", "if"].includes(tokens[index - 1]);
+        !literalArrays.some(
+          (array) =>
+            matches[index].index >= array.index &&
+            matches[index].index < array.index + array[0].length,
+        ) &&
+        (separated ||
+          assignmentPrefix ||
+          ["exec", "command", "builtin", "then", "do", "if"].includes(tokens[index - 1]));
       const assignment = boundary && /^([A-Za-z_][A-Za-z_\d]*)=(.*)$/u.exec(token);
       if (assignment) {
         commandEnv = { ...commandEnv, [assignment[1]]: assignment[2] };
@@ -429,7 +448,13 @@ export function inspectTestShellSource(script, options, resolveExecutable, check
         ) {
           const file =
             resolveExecutable(tokens[index + 1], commandEnv, candidate.cwd) ?? tokens[index + 1];
-          const child = readTestShellSource("sh", [file], candidate, resolveExecutable, block);
+          const child = readTestShellSource(
+            current.zsh ? "zsh" : "sh",
+            [file],
+            candidate,
+            resolveExecutable,
+            block,
+          );
           if (child) {
             for (const directory of visit(child, depth + 1, candidate)) {
               addDirectory(directory);
