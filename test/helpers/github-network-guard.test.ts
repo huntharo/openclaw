@@ -24,6 +24,7 @@ import { installSharedTestSetup } from "../setup.shared.js";
 import {
   githubNetworkAttemptCounts,
   withGitHubNegativeControl as negativeControl,
+  withGitHubTestProfile,
 } from "./github-network-guard.mjs";
 import { requireNodeTool } from "./node-toolchain.js";
 import { useAutoCleanupTempDirTracker } from "./temp-dir.js";
@@ -357,6 +358,40 @@ catch (error) { console.log(error.message); }`,
     );
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([]);
+  });
+
+  it("retains only a scoped synthetic profile while keeping credentials and GitHub dispatch blocked", () => {
+    const directory = tempDirs.make("github-synthetic-profile-");
+    const token = "test-only-profile-token";
+    const hostsPath = join(directory, "hosts.yml");
+    writeFileSync(hostsPath, `github.com:\n  oauth_token: ${token}\n`);
+    const readChildEnvironment = () => {
+      const result = spawnSync(
+        node,
+        [
+          "-e",
+          "console.log(JSON.stringify({ profile: process.env.GH_CONFIG_DIR, token: process.env.GH_TOKEN }))",
+        ],
+        {
+          env: { GH_CONFIG_DIR: directory, GH_TOKEN: "ambient-synthetic-token" },
+          encoding: "utf8",
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout);
+    };
+    expect(readChildEnvironment()).toEqual({});
+    withGitHubTestProfile({ directory, token }, () => {
+      expect(readChildEnvironment()).toEqual({ profile: directory });
+      expect(() =>
+        negativeControl(() =>
+          execFileSync("git", ["ls-remote", "https://github.com/test/fixture.git"]),
+        ),
+      ).toThrow(forbidden);
+      writeFileSync(hostsPath, "github.com:\n  oauth_token: undeclared-token\n");
+      expect(readChildEnvironment).toThrow("only its declared synthetic token");
+    });
+    expect(readChildEnvironment()).toEqual({});
   });
   it.each([false, true])(
     "retains the real-home network barrier with profile loading %s",

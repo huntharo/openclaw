@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import workerThreads, { threadId } from "node:worker_threads";
 import { Agent as UndiciAgent, Dispatcher1Wrapper, getGlobalDispatcher } from "undici";
 import undiciSymbols from "undici/lib/core/symbols.js";
+import { parse as parseYaml } from "yaml";
 import {
   guardNativeHttpArgs,
   inspectTestShellSource,
@@ -67,7 +68,18 @@ export function setGitHubTestContext(context) {
 
 /** Mark only a deliberate negative-control action, including its child transports. */
 export function withGitHubNegativeControl(action) {
-  return report.controls.run({ ...report.context(), negativeControl: true }, action);
+  return report.controls.run({ ...currentContext(), negativeControl: true }, action);
+}
+
+/** Admit only a declared synthetic profile, without admitting token environment variables. */
+export function withGitHubTestProfile({ directory, token }, action) {
+  if (!/^test-only-[a-z\d-]+$/u.test(token)) {
+    throw new Error("GitHub fixture profiles require a test-only token");
+  }
+  return report.controls.run(
+    { ...currentContext(), fixtureProfile: { directory: path.resolve(directory), token } },
+    action,
+  );
 }
 
 function currentContext() {
@@ -431,7 +443,7 @@ export function installGitHubNetworkGuard() {
     const nodeOptions = envValue(env, "NODE_OPTIONS") ?? "";
     const childEnv = { ...env };
     // GitHub CLI can also use its config directory or an SSH agent. HTTP token
-    // fixtures must mock their transport; credentials never accompany a real child.
+    // fixtures must mock their transport; ambient credentials never accompany a child.
     // Startup hooks can execute ambient shell code before the inspected command.
     for (const key of Object.keys(childEnv)) {
       if (
@@ -451,6 +463,36 @@ export function installGitHubNetworkGuard() {
       }
     }
     const context = currentContext();
+    const profile = context.fixtureProfile;
+    if (profile && envValue(env, "GH_CONFIG_DIR") === profile.directory) {
+      let valid = false;
+      try {
+        const directory = realpathSync(profile.directory);
+        const relative = path.relative(realpathSync(fixtureRoot), directory);
+        const hostsPath = realpathSync(path.join(directory, "hosts.yml"));
+        const hosts = parseYaml(readFileSync(hostsPath, "utf8"));
+        const account = hosts?.["github.com"];
+        valid = Boolean(
+          relative &&
+          relative !== ".." &&
+          !relative.startsWith(`..${path.sep}`) &&
+          !path.isAbsolute(relative) &&
+          path.dirname(hostsPath) === directory &&
+          profile.directory !== envValue(process.env, "GH_CONFIG_DIR") &&
+          Object.keys(hosts ?? {}).length === 1 &&
+          account?.oauth_token === profile.token &&
+          Object.values(account.users ?? {}).every((user) => user?.oauth_token === profile.token),
+        );
+      } catch {
+        // Do not include profile contents or parser errors in test diagnostics.
+      }
+      if (!valid) {
+        throw new Error(
+          "GitHub fixture profile must contain only its declared synthetic token in test temp storage",
+        );
+      }
+      childEnv.GH_CONFIG_DIR = profile.directory;
+    }
     if (process.platform === "win32") {
       for (const key of Object.keys(childEnv)) {
         if (key.toUpperCase() === "PATH") {

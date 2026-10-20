@@ -5,6 +5,10 @@ export type GitHubTestContext = {
 };
 export function setGitHubTestContext(context: () => GitHubTestContext): void;
 export function withGitHubNegativeControl<T>(action: () => T): T;
+export function withGitHubTestProfile<T>(
+  profile: { directory: string; token: string },
+  action: () => T,
+): T;
 export function githubNetworkAttemptCounts(): { incidental: number; negativeControl: number };
 export function installGitHubNetworkGuard(): () => void;
 export function blockGitHubTestCommand(transport?: string): never;

@@ -7,6 +7,20 @@ import {
 } from "./github-browser-guard.mjs";
 import { githubNetworkAttemptCounts, withGitHubNegativeControl } from "./github-network-guard.mjs";
 
+it.each([
+  "https://github.com/startup-control",
+  "file:///startup-control.html",
+  'data:text/html,<img src="https://github.com/startup-control">',
+])("refuses app startup content before reporting routes exist: %s", async (url) => {
+  const { chromium } = await import("playwright");
+  installGitHubChromiumGuard(chromium);
+  await expect(
+    withGitHubNegativeControl(() =>
+      chromium.launchPersistentContext("", { headless: true, args: [`--app=${url}`] }),
+    ),
+  ).rejects.toThrow("GitHub network access is forbidden in ordinary tests");
+});
+
 it.each(["--proxy-server=http://127.0.0.1:9", "--host-resolver-rules=EXCLUDE *.com"])(
   "refuses Chromium overrides that defeat redirect blocking: %s",
   async (arg) => {

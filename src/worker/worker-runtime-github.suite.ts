@@ -7,6 +7,8 @@ import type {
   WorkerTranscriptCommitParams,
 } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type { WorkerInferenceStartParams } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
+import { withGitHubTestProfile } from "../../test/helpers/github-network-guard.mjs";
+import * as shellEnv from "../infra/shell-env.js";
 import { runExec } from "../process/exec.js";
 import type { WorkerLaunchDescriptor } from "./launch-descriptor.js";
 import { createWorkerRuntimeEnvironment, runWorkerDescriptor } from "./worker.runtime.js";
@@ -27,6 +29,9 @@ export function registerWorkerGitHubTests({ setup, sessionId }: GitHubFixture): 
   it.skipIf(process.platform === "win32")(
     "binds the turn GitHub identity and checkout to real exec without publishing its token",
     async () => {
+      // Login-profile PATH discovery is host state, not part of the turn identity contract.
+      const shellPath = vi.spyOn(shellEnv, "getShellPathFromLoginShell").mockReturnValue(null);
+      vi.stubEnv("OPENCLAW_EXEC_SHELL_SNAPSHOT", "0");
       const { gateway, workspaceDir, launch } = await setup({
         inferencePlans: ["tool", "text"],
         execCommand: [
@@ -42,13 +47,18 @@ export function registerWorkerGitHubTests({ setup, sessionId }: GitHubFixture): 
         ].join("; "),
       });
       const binding = {
-        token: "worker-turn-fixture-token",
+        token: "test-only-worker-turn-token",
         login: "worker-fixture",
         branch: "openclaw/session-fixture",
         remoteUrl: "https://github.com/openclaw/worker-fixture.git",
       };
       launch.assignment.github = binding;
       const environment = await createWorkerRuntimeEnvironment(sessionId);
+      const profileDir = path.join(
+        environment.stateDir,
+        "github-profiles",
+        createHash("sha256").update(launch.assignment.turnId).digest("hex").slice(0, 16),
+      );
       try {
         const git = async (args: string[]) =>
           await runExec("git", ["-C", workspaceDir, ...args], {
@@ -77,18 +87,15 @@ export function registerWorkerGitHubTests({ setup, sessionId }: GitHubFixture): 
         await writeFile(path.join(workspaceDir, ".git", "shallow"), `${baseCommit}\n`);
 
         await expect(
-          runWorkerDescriptor(launch, { environmentStateDir: environment.stateDir }),
+          withGitHubTestProfile({ directory: profileDir, token: binding.token }, () =>
+            runWorkerDescriptor(launch, { environmentStateDir: environment.stateDir }),
+          ),
         ).resolves.toMatchObject({ status: "completed" });
 
         const toolResult = gateway.inferenceRequests[1]?.context.messages
           .filter((message) => message.role === "toolResult")
           .find((message) => message.toolName === "exec");
         expect(toolResult).toMatchObject({ isError: false });
-        const profileDir = path.join(
-          environment.stateDir,
-          "github-profiles",
-          createHash("sha256").update(launch.assignment.turnId).digest("hex").slice(0, 16),
-        );
         const output =
           toolResult?.content
             .filter((block) => block.type === "text")
@@ -120,6 +127,7 @@ export function registerWorkerGitHubTests({ setup, sessionId }: GitHubFixture): 
         expect(JSON.stringify(gateway.transcriptRequests)).not.toContain(binding.token);
         expect(JSON.stringify(gateway.liveEventRequests)).not.toContain(binding.token);
       } finally {
+        shellPath.mockRestore();
         await environment.close();
       }
     },
@@ -128,6 +136,8 @@ export function registerWorkerGitHubTests({ setup, sessionId }: GitHubFixture): 
   it.skipIf(process.platform === "win32")(
     "keeps exec unbound and creates no GitHub profile without a turn identity",
     async () => {
+      const shellPath = vi.spyOn(shellEnv, "getShellPathFromLoginShell").mockReturnValue(null);
+      vi.stubEnv("OPENCLAW_EXEC_SHELL_SNAPSHOT", "0");
       // Direct in-process fixtures bypass the node supervisor's sanitized child environment.
       vi.stubEnv("GH_CONFIG_DIR", undefined);
       vi.stubEnv("GH_TOKEN", undefined);
@@ -155,6 +165,7 @@ export function registerWorkerGitHubTests({ setup, sessionId }: GitHubFixture): 
           code: "ENOENT",
         });
       } finally {
+        shellPath.mockRestore();
         await environment.close();
       }
     },
