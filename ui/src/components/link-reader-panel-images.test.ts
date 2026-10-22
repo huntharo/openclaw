@@ -68,6 +68,7 @@ describe("Plugin link reader panel images", () => {
     const oldImage = panel.querySelector("img")!;
     expect(oldImage.hasAttribute("src")).toBe(false);
     panel.client = {
+      addEventListener: () => () => {},
       request: vi.fn().mockResolvedValue(item()),
     } as unknown as GatewayBrowserClient;
     await panel.updateComplete;

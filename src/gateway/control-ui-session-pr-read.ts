@@ -2,6 +2,7 @@ import { resolveConfiguredGitHubHost } from "../agents/github-host.js";
 import type { SessionGitHubPullRequestBinding } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GitCheckoutContext } from "../infra/git-read-operations.js";
+import type { ApiRequestStore } from "../infra/http-api-quota.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import type { TaskPublicationRead } from "../state/github-publication-task-reads.worker.js";
@@ -63,6 +64,7 @@ export type ControlUiSessionPrReadContext = {
   // Internal consumers can inspect all fetched PRs without expanding the UI.
   projection?: "publication";
   onBranchRead?: (snapshot: ControlUiSessionPullRequests) => void;
+  onTaskMetadataRead?: (url: string, store: ApiRequestStore) => void;
   /** Same-source branch-only facts retained by the subscription owner, not a fresh read. */
   branchSnapshot?: ControlUiSessionPullRequests;
   retainReadAuthority?: (

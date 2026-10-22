@@ -2,7 +2,7 @@ import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { z } from "zod";
 import type { SourceStatus } from "../types.js";
 
-export class ApiResponseReadError extends Error {
+class ApiResponseReadError extends Error {
   constructor(readonly kind: "timeout" | "release") {
     super(kind);
   }

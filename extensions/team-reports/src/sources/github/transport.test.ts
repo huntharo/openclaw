@@ -1,10 +1,14 @@
+import { getSharedApiStore } from "openclaw/plugin-sdk/retry-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createGithubSource } from "./index.js";
 import { config, logger } from "./responses.fixtures.js";
 
 vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({ fetchWithSsrFGuard: vi.fn() }));
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  getSharedApiStore({ apiBaseUrl: config.apiBaseUrl, token: config.token }).responses.close();
+});
 
 it.each([true, false])(
   "releases guarded responses after body consumption (valid JSON: %s)",
@@ -25,6 +29,7 @@ it.each([true, false])(
     expect(options).toMatchObject({
       requireHttps: true,
       timeoutMs: 30_000,
+      signal: expect.any(AbortSignal),
       maxRedirects: 0,
     });
     expect(new Headers(options?.init?.headers).get("Authorization")).toBe(`Bearer ${config.token}`);

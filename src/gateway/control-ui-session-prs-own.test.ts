@@ -6,6 +6,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createFixture, sessionKey } from "./control-ui-session-pr-access.test-support.js";
 import { prepareControlUiSessionPrServiceTarget } from "./control-ui-session-pr-read.js";
 import { githubJson, requestUrl } from "./control-ui-session-prs.test-support.js";
+import { gitHubPublicApi } from "./github-public-api.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 
@@ -131,7 +132,7 @@ async function withOwnFixture(
         throw new Error("Unexpected non-read operation");
       }
       await before?.();
-      const endpoint = argv.at(-1);
+      const endpoint = argv.find((arg) => arg.startsWith("repos/") || arg.startsWith("user/"));
       const value =
         endpoint === "repos/example/repository"
           ? base
@@ -213,6 +214,46 @@ it("does not hydrate public or service cards from an authenticated imported snap
     }
     expect(f.subscriptions.readPrepared(service, () => false)?.pullRequests ?? []).toEqual([]);
   }, "operator.read");
+});
+
+it("pushes newer own-PR observations without another subscription poll", async ({ signal }) => {
+  await withOwnFixture(async (f, remote) => {
+    await syncCanonicalGitHubIdentity({
+      identity: { accountId: 101, login: "contributor" },
+      authenticationAlias: { kind: "email", email: f.readerEmail },
+    });
+    await f.seed(sessionKey, f.profile.id, { worktree });
+    await f.subscribe();
+    await f.subscriptions.pollNow();
+    expect(lastSnapshot(f)?.pullRequests[0].title).toBe("Original contribution");
+    const updated = createDeferredCore();
+    f.socket.send.mockImplementation((data) => {
+      const frame = JSON.parse(data.toString());
+      if (
+        frame.event === "controlUi.sessionPullRequests.changed" &&
+        frame.payload.sessions[sessionKey]?.pullRequests[0]?.title === "Updated by another reader"
+      ) {
+        updated.resolve();
+      }
+    });
+    remote.pr.title = "Updated by another reader";
+    await gitHubPublicApi.readGitHubJsonResponse(
+      await gitHubPublicApi.fetchGitHubApi(
+        "https://api.github.com/repos/example/repository/pulls/7",
+        remote.fetch,
+        "synthetic-own-pr-read-token",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { refresh: true },
+      ),
+    );
+    await withinTest(updated.promise, signal);
+    expect(lastSnapshot(f)?.pullRequests[0].title).toBe("Updated by another reader");
+  });
 });
 
 it("keeps the verified card without counts when the check read is rate limited", async () => {

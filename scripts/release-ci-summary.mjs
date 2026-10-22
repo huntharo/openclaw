@@ -159,11 +159,12 @@ function evidenceReadRetryDelay(args, error, attempt) {
     args[0] === "api" &&
     /^(?:repos\/|rate_limit$)/u.test(args[1] ?? "") &&
     (args.length === 2 || (args.length === 3 && args[2] === "--allow-escape-sequences"));
-  const diagnostic = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
+  const diagnostic = `${error?.message ?? ""}\n${error?.stderr ?? ""}\n${error?.stdout ?? ""}`;
   if (
     !isGet ||
     attempt >= 3 ||
     /HTTP [1-4][0-9]{2}\b/u.test(diagnostic) ||
+    /rate limit|abuse detection|too many requests/iu.test(diagnostic) ||
     classifyReleaseGhTransportError(error) !== "transient"
   ) {
     throw error;
@@ -171,6 +172,8 @@ function evidenceReadRetryDelay(args, error, attempt) {
   return 2_000 * 2 ** attempt;
 }
 
+// Synchronous one-shot consumers retain this public contract without loading
+// the async quota owner. Throttle diagnostics terminate their bounded retry loop.
 export function runReleaseCiGh(args, params = {}) {
   const execFileSyncImpl = params.execFileSyncImpl ?? execFileSync;
   const timeoutMs = params.timeoutMs ?? GH_COMMAND_TIMEOUT_MS;
@@ -199,19 +202,43 @@ export function runReleaseCiGh(args, params = {}) {
   }
 }
 
-async function ghAsync(args, { smallerPageFallback = false } = {}) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await execGhReadAsync(args, {
+/** @param {{operationDeadline?: number, smallerPageFallback?: boolean}} [options] */
+async function ghAsync(args, options = {}) {
+  const { createGitHubAsyncCommandQuota } = await import("./lib/github-command-quota.mjs");
+  const env = { ...process.env };
+  let deadline = options.operationDeadline ?? Date.now() + GH_COMMAND_TIMEOUT_MS;
+  const remainingMs = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error("Release evidence lookup timed out");
+    }
+    return remaining;
+  };
+  const execute = await createGitHubAsyncCommandQuota({
+    env,
+    remainingMs,
+    runGhAsync: (commandArgs) =>
+      execGhReadAsync(commandArgs, {
+        env,
         killSignal: "SIGKILL",
         maxBuffer: 64 * 1024 * 1024,
-        timeout: GH_COMMAND_TIMEOUT_MS,
-      });
+        timeout: remainingMs(),
+      }),
+  });
+  for (let attempt = 0; ; attempt += 1) {
+    deadline = options.operationDeadline ?? Date.now() + GH_COMMAND_TIMEOUT_MS;
+    try {
+      const result = await execute(args);
+      if (result.error) {
+        throw result.error;
+      }
+      return result.body;
     } catch (error) {
-      if (smallerPageFallback && isReleaseGhServerError(error)) {
+      if (options.smallerPageFallback && isReleaseGhServerError(error)) {
         throw error;
       }
-      await sleep(evidenceReadRetryDelay(args, error, attempt));
+      const delay = evidenceReadRetryDelay(args, error, attempt);
+      await sleep(options.operationDeadline === undefined ? delay : Math.min(delay, remainingMs()));
     }
   }
 }
@@ -834,7 +861,7 @@ function findExactChildRun(child, repository = DEFAULT_REPO) {
 // readReleaseJobListing selects.
 const MAX_RUN_JOBS = 1000;
 
-function findRunJobsAll(path, repository = DEFAULT_REPO, requireComplete = false) {
+function findRunJobsAll(path, repository = DEFAULT_REPO, requireComplete = false, options = {}) {
   return readReleaseJobListing(async (perPage, { smallerPageFallback }) => {
     const jobs = [];
     let total;
@@ -844,6 +871,7 @@ function findRunJobsAll(path, repository = DEFAULT_REPO, requireComplete = false
         per_page: String(perPage),
       });
       const response = await githubRestJsonAsync(`${path}${query.toString()}`, repository, {
+        ...options,
         smallerPageFallback,
       });
       const pageJobs = response.jobs ?? [];
@@ -3365,15 +3393,24 @@ function summarizeReleaseCiRun(options) {
 async function watchReleaseCiRun(options) {
   let previousFingerprint;
   while (true) {
-    const parent = jsonGh([
-      "run",
-      "view",
-      options.runId,
-      "--repo",
+    const readOptions = { operationDeadline: Date.now() + GH_COMMAND_TIMEOUT_MS };
+    const run = await githubRestJsonAsync(
+      `actions/runs/${options.runId}`,
       options.repository,
-      "--json",
-      "status,conclusion,attempt,headSha,jobs",
-    ]);
+      readOptions,
+    );
+    const parent = {
+      attempt: run.run_attempt,
+      conclusion: run.conclusion,
+      headSha: run.head_sha,
+      jobs: await findRunJobsAll(
+        `actions/runs/${options.runId}/attempts/${run.run_attempt}/jobs?`,
+        options.repository,
+        false,
+        readOptions,
+      ),
+      status: run.status,
+    };
     const fingerprint = releaseCiWatchFingerprint(parent);
     if (fingerprint !== previousFingerprint) {
       summarizeReleaseCiRun(options);

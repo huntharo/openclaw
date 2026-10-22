@@ -10,7 +10,7 @@ import type { GatewayRequestContext } from "./server-methods/types.js";
 
 /** UI and agent readers share selection; each caller supplies its own live authority. */
 export async function prepareGitHubReaderIdentity(
-  context: GatewayRequestContext,
+  context: Pick<GatewayRequestContext, "getRuntimeConfig">,
   agentId: string,
   assertActive: () => void,
 ) {

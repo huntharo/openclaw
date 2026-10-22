@@ -6,9 +6,10 @@ import { t } from "../i18n/index.ts";
 import { createDockPanelLayout } from "./dock-panel-layout.ts";
 import { iconData, type IconName } from "./icon-data.ts";
 import type { LinkReaderImages } from "./link-reader-images.ts";
+import type { LinkReaderPanelProps } from "./link-reader-panel-lifecycle.ts";
 import type { LinkReaderTarget } from "./link-reader-target.ts";
 import { createIconElement } from "./markdown-icon.ts";
-import type { PanelHostedTab } from "./panel-hosted-tabs.ts";
+import { PANEL_HOSTED_TABS_CHANGE_EVENT, type PanelHostedTab } from "./panel-hosted-tabs.ts";
 import { panelTabStripCss } from "./panel-tab-strip-styles.ts";
 import sessionPanelRailStyles from "../styles/session-panel-rail.css?inline";
 import dockPanelStyles from "./dock-panel.css?inline";
@@ -108,7 +109,7 @@ export type LinkReaderPanelState = {
   activeId: string | null;
 };
 
-export function readerHostedTabs(tabs: ReaderTab[], ownerDocument: Document): PanelHostedTab[] {
+function readerHostedTabs(tabs: ReaderTab[], ownerDocument: Document): PanelHostedTab[] {
   return tabs.map((tab) => ({
     id: tab.id,
     label: tabLabel(tab),
@@ -117,4 +118,45 @@ export function readerHostedTabs(tabs: ReaderTab[], ownerDocument: Document): Pa
     icon: readerIcon(tabTarget(tab)?.reader.icon, ownerDocument),
     className: tab.view.status === "loading" ? "is-connecting" : "",
   }));
+}
+
+/** Hosted-tab publication and selection derive from the panel's synchronous state. */
+export function createReaderPanelView(
+  host: HTMLElement & Pick<LinkReaderPanelProps, "available" | "readers">,
+  state: LinkReaderPanelState,
+) {
+  let hostedSignature = "";
+  const activeTab = () => state.tabs.find((tab) => tab.id === state.activeId);
+  return {
+    activeTab,
+    currentTarget: () => tabTarget(activeTab()),
+    hostedTabs: () => readerHostedTabs(state.tabs, host.ownerDocument),
+    publish(): void {
+      const signature = JSON.stringify([
+        state.activeId,
+        host.available,
+        host.readers.length,
+        state.tabs.map((tab) => [
+          tab.id,
+          tabLabel(tab),
+          tabTarget(tab)?.href,
+          tabTarget(tab)?.reader.icon,
+          tab.view.status,
+        ]),
+      ]);
+      if (signature !== hostedSignature) {
+        hostedSignature = signature;
+        host.dispatchEvent(
+          new Event(PANEL_HOSTED_TABS_CHANGE_EVENT, { bubbles: true, composed: true }),
+        );
+      }
+    },
+  };
+}
+
+export function setTabView(tab: ReaderTab, view: ReaderTab["view"]): void {
+  if (tab.view.status === "ready") {
+    tab.view.images?.dispose();
+  }
+  tab.view = view;
 }

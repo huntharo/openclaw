@@ -81,6 +81,7 @@ const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
   "sessions.changed": [SESSION_READ_SCOPE],
   "sessions.processes.changed": [SESSION_READ_SCOPE],
   "controlUi.sessionPullRequests.changed": [SESSION_READ_SCOPE],
+  "controlUi.linkReader.changed": [READ_SCOPE],
   "plugins.controlUi.changed": [READ_SCOPE],
   "mcp.app.resourceUpdated": [READ_SCOPE],
   "mcp.app.hostContextChanged": [READ_SCOPE],

@@ -1,6 +1,6 @@
 // Fixed remote I/O; collection, worker cancellation and storage remain production-owned.
-export async function fetchWithSsrFGuard(params: { url: string }) {
-  const url = new URL(params.url);
+export async function fetchCollectionFixture(input: string | URL): Promise<Response> {
+  const url = new URL(input);
   let data: unknown;
   if (url.pathname === "/orgs/sample/repos") {
     data = [{ full_name: "sample/widgets", archived: false }];
@@ -27,5 +27,5 @@ export async function fetchWithSsrFGuard(params: { url: string }) {
   } else {
     throw new Error(`Unexpected report fixture endpoint: ${url.pathname}`);
   }
-  return { response: new Response(JSON.stringify(data)), release: async () => {} };
+  return new Response(JSON.stringify(data));
 }

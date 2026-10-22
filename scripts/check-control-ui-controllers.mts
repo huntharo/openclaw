@@ -290,11 +290,20 @@ function solidPatterns(root: string, sources: ReadonlyMap<string, string>) {
       if (ts.isCallExpression(node)) {
         const name = callName(node.expression, aliases);
         const imported = importedName(node.expression);
-        const pattern = PATTERNS.find((entry) =>
-          IMPORTED_PATTERNS.some((importedPattern) => importedPattern === entry)
+        const pattern = PATTERNS.find((entry) => {
+          // Callback-only domain subscriptions are not DOM listeners. A spread can
+          // still supply the DOM event name and callback, so it remains counted.
+          if (
+            entry === "addEventListener" &&
+            node.arguments.length === 1 &&
+            !ts.isSpreadElement(node.arguments[0]!)
+          ) {
+            return false;
+          }
+          return IMPORTED_PATTERNS.some((importedPattern) => importedPattern === entry)
             ? entry === imported
-            : entry === name || (entry === "querySelector" && name === "querySelectorAll"),
-        );
+            : entry === name || (entry === "querySelector" && name === "querySelectorAll");
+        });
         if (pattern) {
           const entries = counts[pattern];
           entries.set(file, (entries.get(file) ?? 0) + 1);
@@ -305,7 +314,7 @@ function solidPatterns(root: string, sources: ReadonlyMap<string, string>) {
         }
         if (
           (name === "createRenderEffect" && !file.startsWith("ui/src/lib/reactive/")) ||
-          (name === "addEventListener" && file.endsWith(".tsx")) ||
+          (pattern === "addEventListener" && file.endsWith(".tsx")) ||
           (pattern === "querySelector" && !DOM_ISLANDS.has(file))
         ) {
           const { line } = tree.getLineAndCharacterOfPosition(node.getStart(tree));

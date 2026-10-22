@@ -773,6 +773,7 @@ describe("Plugin link reader panel", () => {
 
     const replacement = createDeferred<ControlUiLinkReaderDocument>();
     panel.client = {
+      addEventListener: () => () => {},
       request: vi.fn().mockReturnValue(replacement.promise),
     } as unknown as GatewayBrowserClient;
     await panel.updateComplete;

@@ -129,7 +129,7 @@ export async function loadGitHubJobLog(
       undefined,
       undefined,
       GITHUB_API_ORIGIN,
-      redirect,
+      { redirect },
     );
   const job = await readGitHubJsonResponse(await request(jobUrl));
   if (
