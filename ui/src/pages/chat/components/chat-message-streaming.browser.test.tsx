@@ -107,6 +107,50 @@ function drawContent(content: RawContent["content"], media?: MarkdownMedia) {
 }
 
 describe("streaming Markdown DOM", () => {
+  it.each([0, 16, 64, 256, 512])(
+    "bounds DOM sibling visits after %i completed paragraphs",
+    (completed) => {
+      let source = "";
+      // Separate updates create retained prefix fragments rather than one large fragment.
+      for (let index = 0; index < completed; index++) {
+        source += `Paragraph ${index}.\n\n`;
+        draw(source);
+      }
+      source += "Live tail";
+      draw(source);
+      const firstParagraph = container.querySelector("p");
+      const text = container.querySelector(".chat-text");
+      const nextSibling = Object.getOwnPropertyDescriptor(Node.prototype, "nextSibling")!;
+      let visits = 0;
+      const readSibling = vi.spyOn(Node.prototype, "nextSibling", "get");
+      try {
+        readSibling.mockImplementation(function (this: Node) {
+          if (this.parentNode === text) {
+            visits += 1;
+          }
+          return nextSibling.get!.call(this);
+        });
+        for (let index = 0; index < 16; index++) {
+          source += ` chunk-${index}`;
+          draw(source);
+        }
+      } finally {
+        readSibling.mockRestore();
+      }
+      // Completed paragraphs must not add a DOM traversal on each received chunk.
+      expect(visits).toBeLessThanOrEqual(128);
+      expect(container.querySelector("p")).toBe(firstParagraph);
+      draw(source, { streaming: false });
+      expect(container.querySelector("p")).toBe(firstParagraph);
+      expect(
+        [...container.querySelectorAll("p")].map((paragraph) => paragraph.textContent),
+      ).toEqual([
+        ...Array.from({ length: completed }, (_, index) => `Paragraph ${index}.`),
+        `Live tail${Array.from({ length: 16 }, (_, index) => ` chunk-${index}`).join("")}`,
+      ]);
+    },
+  );
+
   it.each([
     { label: "paragraph", initial: "A growing reply", suffix: " with more text", selector: "p" },
     {
