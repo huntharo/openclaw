@@ -120,6 +120,8 @@ describe("Control UI controller guard", () => {
     'import { createRenderEffect as render } from "solid-js"; render(() => 1, () => {});',
     'import * as solid from "solid-js"; solid.createRenderEffect(() => 1, () => {});',
     'element["addEventListener"]("click", handler);',
+    'element?.addEventListener?.("click", handler);',
+    'element.addEventListener(...["click", handler]);',
     'element?.querySelector<HTMLElement>("button");',
     'element[`querySelectorAll`]("button");',
     'import { createComponent as render } from "solid-js"; render(View, {});',
@@ -133,6 +135,25 @@ describe("Control UI controller guard", () => {
     expect(main(root, [])).toBe(1);
     expect(errors.mock.calls.flat().join("\n")).toContain("ui/src/new.tsx:1");
     expect(errors.mock.calls.flat().join("\n")).toContain("refactor-checklist.md");
+  });
+
+  it("excludes callback-only domain subscriptions while retaining DOM listener checks", () => {
+    const root = fixture();
+    const subscriptions = [
+      "client.addEventListener(handler);",
+      "client?.addEventListener?.(handler);",
+      'client["addEventListener"]((event) => consume(event));',
+    ].join("\n");
+    for (const file of ["ui/src/view.ts", "ui/src/view.tsx"]) {
+      const target = path.join(root, file);
+      fs.writeFileSync(target, subscriptions);
+      expect(main(root, []), file).toBe(0);
+      fs.appendFileSync(target, '\nelement.addEventListener("click", handler);');
+      errors.mockClear();
+      expect(main(root, []), file).toBe(1);
+      expect(errors.mock.calls.flat().join("\n")).toContain(file);
+      fs.writeFileSync(target, subscriptions);
+    }
   });
 
   it("excludes test helpers, comments, and strings; permits primitive render effects", () => {

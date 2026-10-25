@@ -469,9 +469,8 @@ it("credits event dates despite later updates and emits events within half-open 
   ]);
 });
 
-it.each([403, 429])("waits for the rate reset on HTTP %s and records quota", async (code) => {
-  vi.useFakeTimers();
-  vi.setSystemTime(sinceMs);
+it.each([403, 429])("stops at the rate reset on HTTP %s and records quota", async (code) => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(sinceMs);
   let calls = 0;
   const { api } = source(() => {
     calls++;
@@ -487,13 +486,38 @@ it.each([403, 429])("waits for the rate reset on HTTP %s and records quota", asy
         )
       : json([{ login: "builder" }], { "X-RateLimit-Remaining": "4999" });
   });
-  const pending = api.loadRoster(config);
-  await vi.advanceTimersByTimeAsync(1999);
+  const limited = await api.loadRoster(config);
+  expect(limited.status.ok).toBe(false);
+  expect(limited.status.stats.rateLimitRemaining).toBe(0);
+  expect(limited.status.warnings).toContainEqual(expect.stringContaining("retry in 2 seconds"));
+  await api.loadRoster(config);
   expect(calls).toBe(1);
-  await vi.advanceTimersByTimeAsync(1);
-  const result = await pending;
+  clock.mockReturnValue(sinceMs + 2000);
+  const result = await api.loadRoster(config);
   expect(calls).toBe(2);
-  expect(result.status.stats).toMatchObject({ apiCalls: 2, rateLimitRemaining: 4999 });
+  expect(result.status.stats.apiCalls).toBe(1);
+  expect(result.status.stats.rateLimitRemaining).toBe(4999);
+});
+
+it.each([403, 429])("retains HTTP %s header cooldowns when its unread body fails", async (code) => {
+  vi.spyOn(Date, "now").mockReturnValue(sinceMs);
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error("synthetic response body failure"));
+      },
+    }),
+    { status: code, headers: { "Retry-After": "120" } },
+  );
+  let calls = 0;
+  const { api, fetchImpl } = source(() =>
+    ++calls === 1 ? response : json([{ login: "builder" }]),
+  );
+  const limited = await api.loadRoster(config);
+  expect(limited.status.ok).toBe(false);
+  expect(limited.status.warnings).toContainEqual(expect.stringContaining("retry in 120 seconds"));
+  await api.loadRoster(config);
+  expect(fetchImpl).toHaveBeenCalledOnce();
 });
 
 it("never includes transport failures or server payloads in logs and status", async () => {

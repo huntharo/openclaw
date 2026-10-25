@@ -465,15 +465,17 @@ least one closed daily report.
 status and the report. Failed-run errors name each affected period and source
 (for example, `day/2026-08-20/github`). Check GitHub token access, organization/team names,
 excluded repositories, and Discord bot access to each configured channel and
-its history. Rate limits can delay a run. Regenerate affected days once access
-or rate limits recover, then refresh aggregates. After rotating a file, exec, or
-store secret, run `openclaw plugins reload team-reports`; environment changes
+its history. GitHub requests share the host's credential budget with readers,
+identity checks, and publication. Local admission can delay a run; a GitHub rate
+limit stops collection with a warning and preserves its retry deadline. Regenerate
+affected days once access or rate limits recover, then refresh aggregates. After
+rotating a file, exec, or store secret, run `openclaw plugins reload team-reports`; environment changes
 require a Gateway restart with the updated environment.
 
 Repository advisories are optional. An advisory request returning HTTP 403 or
 404 counts toward `advisoriesSkipped` in the GitHub source stats without adding
-a warning or marking the day stale. Rate-limit responses still wait and retry;
-other advisory failures retain their warnings.
+a warning or marking the day stale. Rate-limit responses stop collection with a
+warning until the shared cooldown ends; other advisory failures retain their warnings.
 
 Discord collection includes active and archived threads, including forum and
 media posts. Private archives require `MANAGE_THREADS` and

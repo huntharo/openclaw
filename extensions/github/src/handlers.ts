@@ -99,6 +99,7 @@ async function handleGitHubRequest(
       {
         ...parsed.target,
         ...(sessionHost ? { githubHost: sessionHost, sessionKey: params.sessionKey } : {}),
+        readerUrl: parsed.url,
         ...(parsed.agentId ? { agentId: parsed.agentId } : {}),
         ...(parsed.refresh ? { refresh: true } : {}),
         ...(parsed.section ? { section: parsed.section } : {}),

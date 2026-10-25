@@ -16,6 +16,10 @@ import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import {
+  runPublicationApiCommand,
+  type PublicationApiCommandOptions,
+} from "./github-publication-api-command.js";
+import {
   githubPublicationUnsafeConfigArgs,
   parseGitHubPublicationBaseRef,
 } from "./github-publication-base.js";
@@ -24,12 +28,7 @@ import {
   isGitHubPublicationWorkflowPath,
 } from "./github-publication-workflows.js";
 
-type GitCommandOptions = {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  input?: string | Buffer | (() => string | Buffer);
-  maxOutputBytes?: number;
-  beforeRun?: () => void;
+type GitCommandOptions = PublicationApiCommandOptions & {
   operation?: GitProcessOperation;
 };
 type GitCommandResult = { code: number | null; stdout: Buffer };
@@ -52,6 +51,19 @@ export function githubPublicationApiArgs(
 }
 
 export async function runPublicationCommand(argv: string[], options: GitCommandOptions = {}) {
+  const env = {
+    ...(argv[0] === "git"
+      ? gitReadOnlyEnvironment(argv.slice(1), options.env ?? {})
+      : (options.env ?? {})),
+    GIT_NO_REPLACE_OBJECTS: "1",
+    // gh can invoke Git; keep every publication child pinned against repository hooks.
+    ...appendGitConfig(gitMaintenanceEnvironment(), [["core.hooksPath", os.devNull]]),
+  };
+  if (argv[0] === "gh" && argv[1] === "api") {
+    return withGitProcessOperation(options.operation ?? "publication", () =>
+      runPublicationApiCommand(argv, { ...options, env: { ...process.env, ...env } }),
+    );
+  }
   return await withGitProcessOperation(options.operation ?? "publication", () =>
     withGitNetworkRetry(
       argv[0] === "git" ? retryableGitNetworkOperation(argv.slice(1)) : undefined,
@@ -59,14 +71,7 @@ export async function runPublicationCommand(argv: string[], options: GitCommandO
       (timeoutMs) =>
         runCommandBuffered(argv, {
           ...(options.cwd ? { cwd: options.cwd } : {}),
-          env: {
-            ...(argv[0] === "git"
-              ? gitReadOnlyEnvironment(argv.slice(1), options.env ?? {})
-              : (options.env ?? {})),
-            GIT_NO_REPLACE_OBJECTS: "1",
-            // Pin every command against repository hooks; explicit hook-disabling -c flags stay stronger.
-            ...appendGitConfig(gitMaintenanceEnvironment(), [["core.hooksPath", os.devNull]]),
-          },
+          env,
           // Resolve optional disclosure after beforeRun, directly at the transport boundary.
           ...(options.input !== undefined
             ? { input: typeof options.input === "function" ? options.input() : options.input }

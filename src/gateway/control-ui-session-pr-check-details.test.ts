@@ -326,13 +326,22 @@ it("coalesces reads and respects the retry window with stale data", async () => 
   expect(h.fetchImpl).toHaveBeenCalledTimes(calls);
 });
 
-it("does not reuse details across session generations or credential selections", async () => {
-  await h.load();
+it("shares details across admitted session generations while isolating credential selections", async () => {
+  const initial = await h.load();
+  const calls = h.fetchImpl.mock.calls.length;
   h.state.status = 404;
-  const nextSession = await h.load({}, { sessionScope: "next-session-" + ++scope });
-  expect(nextSession).toMatchObject(unavailable);
+  expect(await h.load({}, { sessionScope: "next-session-" + ++scope })).toEqual(initial);
+  expect(h.fetchImpl).toHaveBeenCalledTimes(calls);
+  expect(
+    await h.load(
+      {},
+      { loadPullRequests: vi.fn(async () => ({ pullRequests: [], rateLimited: false })) },
+    ),
+  ).toMatchObject(unavailable);
+  expect(h.fetchImpl).toHaveBeenCalledTimes(calls);
   vi.stubEnv("GH_TOKEN", "another-ci-credential");
   expect(await h.load()).toMatchObject(unavailable);
+  expect(h.fetchImpl).toHaveBeenCalledTimes(calls + 1);
 });
 
 it("rejects unbound PRs and heads without fetching details", async () => {
@@ -341,15 +350,95 @@ it("rejects unbound PRs and heads without fetching details", async () => {
   expect(h.fetchImpl).not.toHaveBeenCalled();
 });
 
-it("bounds distinct concurrent loads without extra GitHub requests", async () => {
-  const jobs = holdJobs(4);
-  const pending = Array.from({ length: 4 }, (_, i) =>
-    h.load({}, { sessionScope: h.sessionScope + "-" + i }),
+it("bounds distinct concurrent detail loads without multiplying GitHub requests", async () => {
+  const boundedHarness = harness();
+  const gate = createDeferred();
+  const started = createDeferred();
+  const targets = Array.from({ length: 4 }, (_, i) => {
+    const selected = {
+      ...target,
+      sessionKey: target.sessionKey + "-" + i,
+      number: target.number + i + 1,
+      headSha: String.fromCharCode(98 + i).repeat(40),
+    };
+    return {
+      selected,
+      pull: { ...chip, ...selected, url: chip.url.replace(/\d+$/, String(selected.number)) },
+      checkId: i + 1,
+      suiteId: 17 + i,
+      runId: 23 + i,
+    };
+  });
+  let waiting = 0;
+  boundedHarness.fetchImpl.mockImplementation(async (input) => {
+    const url = new URL(requestUrl(input));
+    const match = targets.find(
+      ({ selected, runId }) =>
+        url.pathname.endsWith("/pulls/" + selected.number) ||
+        url.pathname.includes("/commits/" + selected.headSha + "/") ||
+        url.searchParams.get("head_sha") === selected.headSha ||
+        url.pathname.endsWith("/actions/runs/" + runId + "/jobs"),
+    );
+    if (!match) {
+      throw new Error("Unexpected route: " + url.href);
+    }
+    const { selected, pull, checkId, suiteId, runId } = match;
+    if (url.pathname.endsWith("/pulls/" + selected.number)) {
+      return githubJson(
+        pullListItem({
+          number: selected.number,
+          html_url: pull.url,
+          head: { sha: selected.headSha },
+        }),
+      );
+    }
+    if (url.pathname.endsWith("/check-runs")) {
+      return githubJson({
+        total_count: 1,
+        check_runs: [
+          check(checkId, {
+            head_sha: selected.headSha,
+            check_suite: { id: suiteId },
+            details_url: `https://github.com/openclaw/openclaw/actions/runs/${runId}/job/${checkId + 1000}`,
+          }),
+        ],
+      });
+    }
+    if (url.pathname.endsWith("/actions/runs")) {
+      return githubJson({
+        total_count: 1,
+        workflow_runs: [
+          { id: runId, check_suite_id: suiteId, head_sha: selected.headSha, run_attempt: 2 },
+        ],
+      });
+    }
+    if (url.pathname.endsWith("/jobs")) {
+      if (++waiting === 4) {
+        started.resolve();
+      }
+      await gate.promise;
+      return githubJson({
+        total_count: 1,
+        jobs: [job(checkId, { run_id: runId, head_sha: selected.headSha })],
+      });
+    }
+    throw new Error("Unexpected route: " + url.href);
+  });
+  const pending = targets.map(({ selected, pull }, i) =>
+    loadControlUiSessionPullRequestChecks(selected, {
+      ...boundedHarness,
+      sessionScope: boundedHarness.sessionScope + "-" + i,
+      loadPullRequests: vi.fn(async () => ({ pullRequests: [pull], rateLimited: false })),
+    }),
   );
-  await jobs.started;
-  const busy = await h.load();
+  await started.promise;
+  const calls = boundedHarness.fetchImpl.mock.calls.length;
+  const busy = await boundedHarness.load();
   expect(busy).toMatchObject({ status: "unavailable", retryAfterMs: 5_000, checks: [] });
-  jobs.release();
+  expect(boundedHarness.fetchImpl).toHaveBeenCalledTimes(calls);
+  // Four distinct loads need 24 requests; refill the shared 20-token budget before final checks.
+  vi.advanceTimersByTime(12_000);
+  gate.resolve();
   expect((await Promise.all(pending)).every((value) => value.status === "ready")).toBe(true);
 });
 
