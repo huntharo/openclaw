@@ -15,6 +15,15 @@ import {
 import { landingSnapshotQuery } from "./pr-merge-snapshot.test-support.js";
 import { validReview, writeReviewArtifacts } from "./pr-review-artifact-fixture.js";
 
+type MergeObservation = {
+  main?: string;
+  pr?: Record<string, unknown>;
+  advanceMain?: boolean;
+  priorCi?: Partial<ReturnType<typeof createPriorCiFixtureState>>;
+  restUnseenSuite?: string;
+  advanceSeconds?: number;
+};
+
 export function createMergeOutcomeFixtureHarness() {
   const temps = useAutoCleanupTempDirTracker(afterEach);
   const templateDirs = useAutoCleanupTempDirTracker(afterAll);
@@ -48,6 +57,14 @@ export function createMergeOutcomeFixtureHarness() {
     GIT_COMMITTER_NAME: "Merge Fixture",
     GIT_COMMITTER_EMAIL: "fixture@example.invalid",
   };
+  // Select Git through its own installed tool directory, as the real wrapper
+  // preflight does. Shell helpers can then use the retained native executable
+  // without starting a Node transport shim for every local metadata read.
+  // File-only transport remains enforced for every subprocess in this fixture.
+  const gitExecutable = join(
+    execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim(),
+    process.platform === "win32" ? "git.exe" : "git",
+  );
   // Git 2.45 introduced no-lazy-fetch; older Git cannot prove offline probes.
   const supportsNoLazyFetch =
     spawnSync("git", ["--no-lazy-fetch", "--version"], { env: gitEnv }).status === 0;
@@ -208,28 +225,17 @@ export function createMergeOutcomeFixtureHarness() {
         observed: boolean;
         main: string;
       },
-      restObservation: null as null | {
-        main?: string;
-        pr?: Record<string, unknown>;
-        advanceMain?: boolean;
-        gates?: string;
-        restPolicy?: string;
-        priorCi?: Partial<ReturnType<typeof createPriorCiFixtureState>>;
-        restUnseenSuite?: string;
-        advanceSeconds?: number;
-        afterRestMainReads?: number;
-        afterPolicyRead?: boolean;
-        afterHistoricalRead?: boolean;
-      },
+      restObservation: null as
+        | null
+        | (MergeObservation & {
+            gates?: string;
+            restPolicy?: string;
+            afterRestMainReads?: number;
+            afterPolicyRead?: boolean;
+            afterHistoricalRead?: boolean;
+          }),
       restObservationAppliedAt: 0,
-      restObservations: [] as Array<{
-        main?: string;
-        advanceMain?: boolean;
-        pr?: Record<string, unknown>;
-        priorCi?: Partial<ReturnType<typeof createPriorCiFixtureState>>;
-        restUnseenSuite?: string;
-        advanceSeconds?: number;
-      }>,
+      restObservations: [] as MergeObservation[],
       restMergePayload: null as null | {
         sha: string;
         merge_method: string;
@@ -264,19 +270,15 @@ export function createMergeOutcomeFixtureHarness() {
       mainProofDelayMain: "",
       mainProofDelayAfterObservations: 2,
       mainProofDelayedAt: null as number | null,
-      observations: [] as Array<{
-        pr?: Record<string, unknown>;
-        priorCi?: Partial<ReturnType<typeof createPriorCiFixtureState>>;
-        restUnseenSuite?: string;
-        advanceSeconds?: number;
-        main?: string;
-        invalid?: boolean;
-        unavailable?: boolean;
-        advanceMain?: boolean;
-        advanceAfterRead?: boolean;
-        reportedMain?: string;
-        tamperProviderCapture?: boolean | string;
-      }>,
+      observations: [] as Array<
+        MergeObservation & {
+          invalid?: boolean;
+          unavailable?: boolean;
+          advanceAfterRead?: boolean;
+          reportedMain?: string;
+          tamperProviderCapture?: boolean | string;
+        }
+      >,
       mainAdvances: [] as string[],
       calls: [] as string[][],
       nodeArgs: [] as string[],
@@ -327,17 +329,15 @@ export function createMergeOutcomeFixtureHarness() {
     writeFileSync(clockPath, "0\n");
     const save = (state: typeof initial) => {
       writeFileSync(statePath, JSON.stringify(state));
-      if (!state.review) {
-        const file = join(worktree, ".local/review.json");
-        writeFileSync(
-          file,
-          JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), docs: "invalid" }),
-        );
-      }
-      if (!state.ready) {
+      if (!state.review || !state.ready) {
         const file = join(worktree, ".local/review.json");
         const review = JSON.parse(readFileSync(file, "utf8"));
-        review.recommendation = "NEEDS WORK";
+        if (!state.review) {
+          review.docs = "invalid";
+        }
+        if (!state.ready) {
+          review.recommendation = "NEEDS WORK";
+        }
         writeFileSync(file, JSON.stringify(review));
       }
     };
@@ -871,7 +871,7 @@ source "$script_parent_dir/pr-lib/gates.sh"
 source "$script_parent_dir/pr-lib/prepare-core.sh"
 repo_root() { printf '%s\\n' "$FIXTURE_REPO"; }
 ensure_gh_api_auth() { :; }
-verify_prep_branch_matches_prepared_head() { [ "$(command git rev-parse HEAD)" = "$2" ]; }
+verify_prep_branch_matches_prepared_head() { [ "$("$FIXTURE_GIT" rev-parse HEAD)" = "$2" ]; }
 node() { if [[ "$1" == */watch-pr-ci.mjs ]]; then shift; command node "$FIXTURE_GH" watch "$@"; else command node "$@"; fi; }
 pr_gh() {
   if [ "$1" = commit-authors ] || { [ "$1" = pr ] && [ "$2" = view ]; }; then pr_gh_run read "$@";
@@ -926,29 +926,30 @@ pr_git() {
     [ "$(command jq -r .priorCi.unsupportedNoLazy "$FIXTURE_STATE")" = true ]; then return 129; fi
   if [ "$1" = fetch ] && [ "\${2:-}" = --no-tags ] && [ "\${3:-}" = --no-write-fetch-head ] &&
     [ "$(command jq -r .priorCi.revokeAdminOnMainFetch "$FIXTURE_STATE")" = true ]; then
-    command git "$@" || return
+    "$FIXTURE_GIT" "$@" || return
     command node -e 'const fs=require("node:fs");const path=process.env.FIXTURE_STATE;const state=JSON.parse(fs.readFileSync(path,"utf8"));state.priorCi.membership="member";state.priorCi.revokeAdminOnMainFetch=false;state.priorCi.adminRevokedDuringMainFetch=true;fs.writeFileSync(path,JSON.stringify(state));'
     return
   fi
   if [ "$1" = update-ref ] && [ "\${3-}" = refs/openclaw/pr-merge-outcomes/123 ]; then
     local crash
     crash=$(command jq -r .crash "$FIXTURE_STATE")
-    if [ "$crash" = receipt ] && command git show-ref --verify --quiet "$3"; then return 1; fi
+    if [ "$crash" = receipt ] && "$FIXTURE_GIT" show-ref --verify --quiet "$3"; then return 1; fi
     if [ "$crash" = successor ]; then
-      command git update-ref "$3" "$(printf 'successor\\n' | command git hash-object -w --stdin)"
+      "$FIXTURE_GIT" update-ref "$3" "$(printf 'successor\\n' | "$FIXTURE_GIT" hash-object -w --stdin)"
     fi
-    command git "$@" || return
+    "$FIXTURE_GIT" "$@" || return
     if [ "$crash" = capture ]; then
       local attempt
-      attempt=$(command git show "$4:outcome.json" | command jq -r .attempt)
+      attempt=$("$FIXTURE_GIT" show "$4:outcome.json" | command jq -r .attempt)
       ln -s "$FIXTURE_ROOT/capture-target" ".local/merge-output.$attempt.log"
     fi
     if [ "$crash" = intent ]; then kill -KILL "$$"; fi
     return
   fi
-  command git "$@"
+  "$FIXTURE_GIT" "$@"
 }
 export FIXTURE_LEADER="$$"
+
 acquire_pr_operation_lock 123
 begin_pr_operation_validation_phase
 if [ "$FIXTURE_WORKFLOW_BINDING" = true ]; then
@@ -997,6 +998,7 @@ fi
     const tracePath = join(root, "git.trace.jsonl");
     const env = {
       ...gitEnv,
+      FIXTURE_GIT: gitExecutable,
       PATH: `${bin}:${gitEnv.PATH}`,
       TMPDIR: root,
       // Reuse compiled owner modules across native children, never mutable fixture state.

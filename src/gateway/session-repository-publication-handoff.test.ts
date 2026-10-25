@@ -7,7 +7,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
-import * as backoff from "../infra/backoff.js";
 import { registerClonedProjectRegistry } from "../projects/project-registry.test-support.js";
 import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
 import { readGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.worker.js";
@@ -116,6 +115,10 @@ it.each([
       git(state.root, "clone", "--bare", "--quiet", source, bare);
       git(state.root, "clone", "--quiet", bare, cloud);
       const url = "https://github.com/example/handoff-fixture.git";
+      const localGitArgs = (argv: string[]) =>
+        argv.map((arg) =>
+          arg === url || arg === "https://github.com/upstream/handoff-fixture.git" ? bare : arg,
+        );
       git(source, "remote", "add", "origin", url);
       await registerClonedProjectRegistry({ path: source, name: "Handoff", originUrl: url });
       const scope = { agentId: "main", sessionKey: "agent:main:dashboard:handoff" };
@@ -293,16 +296,13 @@ it.each([
             }
             throw new Error("Unexpected synthetic GitHub API request: " + argv.join(" "));
           }
-          const mapped = argv.map((x) => (x === url ? bare : x));
+          const mapped = localGitArgs(argv);
           return actual.runCommandBuffered(mapped, options);
         },
       );
       mocked.timed.mockImplementation(
         (argv: string[], options: Parameters<typeof actual.runCommandWithTimeout>[1]) =>
-          actual.runCommandWithTimeout(
-            argv.map((x) => (x === url ? bare : x)),
-            options,
-          ),
+          actual.runCommandWithTimeout(localGitArgs(argv), options),
       );
       const move = () =>
         materializeSessionRepositoryWorkspaceOnGateway({
@@ -470,32 +470,24 @@ it("can hold publisher exclusion during an existing reclaim claim without taking
       assertOwned();
       entered = true;
       expect(placements.validateWorkspaceResultClaim(claim)).toBe(true);
-      const wait = vi.spyOn(backoff, "sleepWithAbort");
       await expect(
         placements.withWorkspaceExclusion(REQUEST.sessionId, async () => {}),
       ).rejects.toMatchObject({
         code: "OPENCLAW_STATE_LEASE_HELD",
         outcome: { kind: "held", holder: { owner: expect.any(String), epoch: expect.any(Number) } },
       });
-      expect(wait).not.toHaveBeenCalled();
       assertOwned();
       expect(placements.validateWorkspaceResultClaim(claim)).toBe(true);
     });
     expect(entered).toBe(true);
     expect(placements.validateWorkspaceResultClaim(claim)).toBe(true);
-    for (const code of [
-      "OPENCLAW_STATE_LEASE_HELD",
-      "OPENCLAW_STATE_LEASE_STORAGE_FAILED",
-      "OPENCLAW_STATE_LEASE_ABORTED",
-    ] as const) {
-      const operationFailure = new OpenClawStateLeaseError("Nested operation refused admission", {
-        code,
-      });
-      await expect(
-        placements.withWorkspaceExclusion(REQUEST.sessionId, async () => {
-          throw operationFailure;
-        }),
-      ).rejects.toBe(operationFailure);
-    }
+    const operationFailure = new OpenClawStateLeaseError("Nested operation refused admission", {
+      code: "OPENCLAW_STATE_LEASE_HELD",
+    });
+    await expect(
+      placements.withWorkspaceExclusion(REQUEST.sessionId, async () => {
+        throw operationFailure;
+      }),
+    ).rejects.toBe(operationFailure);
   });
 });

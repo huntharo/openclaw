@@ -90,6 +90,69 @@ For remote-environment proof, invoke `node scripts/crabbox-wrapper.mjs`
 directly. Avoid local `pnpm crabbox:run` in linked worktrees because pnpm may
 reconcile dependencies before the remote wrapper starts.
 
+## GitHub stays offline in ordinary tests
+
+Repository test launchers install a blocking GitHub tripwire before loading test
+configurations. It covers Node fetch, HTTP, TLS and socket entry points, inherited
+workers and subprocesses, native `gh`/Git/HTTP shell commands, and the Chromium
+contexts used by the UI lanes. GitHub.com, GitHubusercontent.com, GHE.com and the
+configured `GH_HOST` are blocked. Children lose ambient GitHub token variables,
+CLI credential-directory overrides and SSH agent/askpass access. Native Git
+children use file-only transport; use local repositories or mocked transports.
+
+Use `pnpm test:live` for deliberately selected live tests. Ordinary test commands
+do not grant GitHub access because a shell exports `LIVE` or
+`OPENCLAW_LIVE_TEST`, a test selects the real home, or a profile exports those
+flags. A temporary script fixture can stand in for `gh`; a native CLI cannot use
+the developer's keychain during an ordinary test. Native curl transfers accept
+only literal HTTP(S) URLs on `127.0.0.1` or `[::1]`, with ambient proxies and
+curl configuration disabled. Native HTTP redirects, configuration-driven
+destinations and unsupported command forms are refused. Chromium proxy settings
+must use Playwright's `proxy` option; raw proxy switches and resolver exclusions
+are refused so redirects cannot override GitHub blocking.
+Node fetch checks every redirected destination before proxy dispatch, preserving
+dispatchers selected by guarded Request construction and cloning. A Request
+created before guard installation needs an explicit dispatcher because its
+private routing cannot be inspected. Direct Undici requests are checked at the
+shared dispatcher before proxy routing. HTTP checks the final request line and
+Host when headers are serialized. Undici iterable headers are materialized once
+so their Host values are checked without consuming the caller's headers twice.
+Client and Pool requests also check their constructor-bound origin before a custom
+connector runs, using the pinned Undici dependency's origin symbol.
+Literal shell-file delegation, including PATH lookup and directory changes, is
+inspected at launch with bounded recursion and directory alternatives.
+Shell-side PATH replacement and removal of the Node preload are refused; pass a
+fixture's environment through the process API so the launcher can guard it.
+Children lose ambient `BASH_ENV`, `ENV`, and imported Bash functions; `ZDOTDIR`
+points to the guard's isolated directory so Zsh cannot fall back to user startup
+files under `HOME`. Login and interactive shell modes, explicit Bash startup-file
+switches, and shell-side reintroduction of these hooks are refused; pass a shell
+fixture as the script being tested. Startup admission includes `argv0`, script interpreter arguments,
+and delegated shells, including `.cmd` and `.bat` source files. Cmd `start`/`call`
+and PowerShell `Start-Process` delegation are refused; use an inspected direct
+child command. PowerShell requires `-NoProfile` before its command or file;
+explicit Cmd invocation requires `/d` before `/c` to suppress AutoRun. A synchronous
+Node preload installs the guard before existing `--require` and `--import` modules
+in children and workers.
+Opaque native programs and dynamically assembled shell code require an external
+egress fence for a strict no-network audit. The tripwire is not an operating-system sandbox.
+
+The tripwire rejects access before dispatch and counts each blocked attempt.
+Unexpected attempts fail the test or enclosing run even when a caller catches
+the rejection. Explicit negative-control scopes in the guard's own tests have a
+separate count. A blocked operation is not proof that a GitHub request happened:
+conservative command refusals and local fixture incompatibilities must be
+classified separately from attempted GitHub traffic.
+
+The enclosing launcher prints bounded totals and attribution after workers join.
+Failures retain their report directory under `.artifacts/github-test-reports/`;
+set `OPENCLAW_TEST_GITHUB_REPORT_DIR` to retain reports beneath another directory,
+including successful negative-control runs. Reports contain transport, test
+identity and a bounded stack, never command arguments, request URLs or tokens.
+For an audit that must continue through all ordinary failures, use
+`OPENCLAW_NODE_TEST_PLAN_CONTINUE_ON_FAILURE=1 pnpm test` and retain the native
+final receipt. An interrupted invocation is incomplete evidence.
+
 ## Core commands
 
 Node 24.16+ or Node 26.1+ is required for orchestration and build preparation.
@@ -98,7 +161,7 @@ Older Node bindings can truncate SQLite TEXT values at embedded NUL characters.
 ### OpenClaw Bun fork
 
 Local source development uses the [OpenClaw Bun fork](https://github.com/openclaw/bun)
-for tests, `pnpm dev`, and local formatting, with a linter opt-in described below.
+for tests, `pnpm dev`, local formatting, and linting.
 The exact release, revision, and checksums are pinned in
 `scripts/lib/openclaw-bun.json`. Use this fork for the Bun development path:
 its runtime and built-in formatter and linter are the versions validated against
@@ -106,7 +169,7 @@ this repository. These defaults do not change an installed Gateway's runtime;
 see [Bun compatibility](/install/bun-compatibility).
 
 `scripts/lib/pinned-bun.mts` owns resolution for tests, `pnpm dev`, formatting,
-and opt-in Bun linting. On first use it downloads the pinned release through
+and linting. On first use it downloads the pinned release through
 `scripts/stage-openclaw-bun.sh`, verifies the archive and executable checksums
 and release identity, and caches the executable at
 `~/.cache/openclaw/bun/<tag>/<platform>-<arch>/bin/bun`. `XDG_CACHE_HOME` replaces
@@ -121,9 +184,9 @@ they do not enable automatic staging in this development resolver.
 Local tests and `pnpm dev` default to the pinned fork. If it is unavailable, they
 fall back to Node with one notice explaining why. `pnpm format` and
 `pnpm format:check` also default locally to the pinned fork, falling back to
-oxfmt with one notice if it is unavailable. `pnpm lint` defaults to oxlint;
-Bun lint is opt-in until the required upstream fix and exact diagnostic parity
-are verified. The oxlint default needs no Bun download and prints no fallback notice.
+oxfmt with one notice if it is unavailable. `pnpm lint` and its shared lint
+callers default locally to the pinned fork via `bun lint --no-script`, falling
+back to oxlint with the same notice if the fork is unavailable.
 Explicit Bun formatting or linting fails if the fork is unavailable.
 
 The October 18, 2026 comparison used pinned Bun `1.4.4-canary.1+7bd4fdff3`
@@ -143,6 +206,22 @@ or an extra local formatting pass. Every run preserved the tracked bytes.
 The Mac run held the shared build lock but had substantial background load
 (about 65); it does not establish a write-speed gain there. Use the oxfmt
 override below when it performs better on your machine.
+
+The earlier S3 lint comparison used Bun `1.4.4-canary.1+ef37c31de` and
+oxlint 1.87.0 on AWS `c7a.8xlarge`. Summed across core, scripts, extensions,
+and UI at default threads, Bun took 23.3 s versus 143.3 s for oxlint: 6.15×
+faster, with no missing or extra diagnostics. These native timings exclude
+installation and wrapper preparation.
+
+An October 24, 2026 paired run on a loaded M3 Ultra Mac (32 logical cores,
+512 GiB RAM) used the same S3 fork and oxlint 1.88.0 through `pnpm lint
+--format=json`, under the shared build lock. Both reported the same 243
+diagnostics, including complete diagnostic payloads. Whole-command times were
+635.0 s for Bun and 912.7 s for oxlint. Summed native lint times were 1,037.8 s
+for Bun and 819.6 s for oxlint, with the wrapper's one-thread policy. The first
+oxlint run generated declarations that the Bun run reused, and background load
+reached 86. This single pair confirms parity, not a Mac lint-speed gain; use the
+oxlint override when it performs better locally.
 
 Formatting reads `.oxfmtrc.jsonc`, including the 100-column print width and ignore
 patterns. Selecting Bun lint retains the existing pipeline, configuration,
@@ -164,7 +243,7 @@ OPENCLAW_LINT_TOOL=bun pnpm lint
 ```
 
 Explicit `bun` selection fails if the executable is unavailable instead of
-silently using another tool. Explicit Node or oxfmt selection suppresses the
+silently using another tool. Explicit Node, oxfmt, or oxlint selection suppresses the
 fallback notice. `OPENCLAW_BUN_PATH=/absolute/path/to/bun` overrides the executable
 for every Bun-selected command. This custom binary must be executable, but does
 not receive the pinned cache's checksum validation. An invalid path follows the
@@ -200,8 +279,14 @@ See [CI runtime selection](/ci/pipeline#test-runtime-selection).
 
 CI formatting always gates on oxfmt and checks that pinned Bun identifies the same
 files needing formatting, even when a format override is set. CI lint continues
-to gate on oxlint. Bun lint becomes the default only after the required upstream
-fix is included in the pin and exact diagnostic parity is verified.
+to gate on oxlint, regardless of the lint override, and runs Bun sequentially
+against the same prepared configs and files. The existing lint jobs fail if exit
+status or full diagnostic multisets differ, preserving duplicate findings and all
+spans, messages, severity, and help text. Only rule spelling, documentation URLs,
+report order, and timing metadata are normalized. No additional runner is needed.
+Windows CI retains oxlint alone unless `OPENCLAW_BUN_PATH` supplies an executable;
+automatic fork staging supports macOS and Linux.
+Metadata queries and commands that write fixes or output files do not run parity.
 
 On macOS, Bun test runs select SQLite like a standalone Bun install and refuse
 Apple's system library; see [SQLite library selection](/install/bun-compatibility#sqlite-library-selection).
